@@ -1,0 +1,98 @@
+import json
+import sqlite3
+from datetime import datetime, timezone
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+
+class ResultBody(BaseModel):
+    status: str  # "executed" | "failed" | "rejected"
+    mt5_ticket: int | None = None
+    error: str | None = None
+    snapshot: dict | None = None
+
+
+class CloseBody(BaseModel):
+    reason: str = ""
+
+
+def build_app(conn: sqlite3.Connection) -> FastAPI:
+    app = FastAPI()
+
+    @app.get("/actions")
+    def get_actions(status: str = "sent", limit: int = 50):
+        rows = conn.execute(
+            "SELECT id, action_type, payload_json, status, created_at "
+            "FROM actions WHERE status=? ORDER BY id ASC LIMIT ?",
+            (status, limit),
+        ).fetchall()
+        return {
+            "actions": [
+                {
+                    "id": r["id"],
+                    "action_type": r["action_type"],
+                    "payload": json.loads(r["payload_json"]),
+                    "status": r["status"],
+                    "created_at": r["created_at"],
+                }
+                for r in rows
+            ]
+        }
+
+    @app.get("/settings/{key}")
+    def get_setting(key: str):
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        if row is None:
+            raise HTTPException(404)
+        return {"key": key, "value": row["value"]}
+
+    @app.post("/actions/{action_id}/result")
+    def post_result(action_id: int, body: ResultBody):
+        row = conn.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404)
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "UPDATE actions SET status=?, executed_at=?, ea_response=? WHERE id=?",
+            (body.status, now, body.error, action_id),
+        )
+        if body.status == "executed" and body.mt5_ticket and body.snapshot:
+            s = body.snapshot
+            conn.execute(
+                "INSERT OR REPLACE INTO positions(action_id, mt5_ticket, symbol, side, "
+                "volume, entry_price, sl, tp, status, opened_at) "
+                "VALUES(?,?,?,?,?,?,?,?, 'open', ?)",
+                (action_id, body.mt5_ticket, s.get("symbol"), s.get("side"),
+                 s.get("volume"), s.get("entry_price"), s.get("sl"), s.get("tp"), now),
+            )
+        return {"ok": True}
+
+    @app.post("/positions/{ticket}/close")
+    def close_position(ticket: int, body: CloseBody):
+        row = conn.execute(
+            "SELECT 1 FROM positions WHERE mt5_ticket=?", (ticket,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404)
+        conn.execute(
+            "UPDATE positions SET status='closed', closed_at=?, close_reason=? "
+            "WHERE mt5_ticket=?",
+            (datetime.now(timezone.utc).isoformat(), body.reason, ticket),
+        )
+        return {"ok": True}
+
+    return app
+
+
+def run() -> None:
+    import uvicorn
+    from src import config
+    from src.db import connect, init_schema
+    conn = connect(config.DB_PATH)
+    init_schema(conn)
+    app = build_app(conn)
+    uvicorn.run(app, host=config.API_HOST, port=config.API_PORT)
+
+
+if __name__ == "__main__":
+    run()
