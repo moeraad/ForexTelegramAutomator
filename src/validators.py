@@ -1,4 +1,6 @@
 import json
+import sqlite3
+from dataclasses import dataclass
 from typing import Literal, Union
 from pydantic import BaseModel, Field, field_validator
 from src.config import SUPPORTED_SYMBOLS
@@ -76,3 +78,54 @@ def parse_ai_response(raw: str) -> AIResponse:
             raise ValueError(f"unknown action type: {t}")
         actions.append(cls(**a))
     return AIResponse(actions=actions, reasoning=data.get("reasoning", ""))
+
+
+@dataclass
+class ValidationResult:
+    ok: bool
+    error: str = ""
+
+
+def _ticket_open(conn: sqlite3.Connection, ticket: int) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM positions WHERE mt5_ticket=? AND status='open'",
+        (ticket,),
+    ).fetchone()
+    return row is not None
+
+
+def _has_overlapping_open_position(
+    conn: sqlite3.Connection, symbol: str, side: str,
+    entry_low: float, entry_high: float,
+) -> bool:
+    rows = conn.execute(
+        "SELECT entry_price FROM positions "
+        "WHERE symbol=? AND side=? AND status='open'",
+        (symbol, side),
+    ).fetchall()
+    for r in rows:
+        ep = r["entry_price"]
+        if ep is None:
+            continue
+        if entry_low <= ep <= entry_high:
+            return True
+    return False
+
+
+def validate_action(action: Action, conn: sqlite3.Connection) -> ValidationResult:
+    if isinstance(action, OpenAction):
+        if _has_overlapping_open_position(
+            conn, action.symbol, action.side, action.entry_low, action.entry_high
+        ):
+            return ValidationResult(False, "duplicate: overlaps existing open position")
+        return ValidationResult(True)
+    if isinstance(action, (CloseAction, ModifyAction)):
+        if not _ticket_open(conn, action.mt5_ticket):
+            return ValidationResult(False, f"unknown or closed ticket {action.mt5_ticket}")
+        return ValidationResult(True)
+    if isinstance(action, CloseAllAction):
+        if action.symbol not in SUPPORTED_SYMBOLS:
+            return ValidationResult(False, f"unsupported symbol {action.symbol}")
+        return ValidationResult(True)
+    # AlertAction
+    return ValidationResult(True)

@@ -4,6 +4,8 @@ from src.validators import (
     OpenAction, ModifyAction, CloseAction, CloseAllAction, AlertAction,
     AIResponse, parse_ai_response,
 )
+from src.validators import validate_action, ValidationResult
+from src.db import connect, init_schema
 
 
 def test_open_action_valid():
@@ -61,3 +63,58 @@ def test_parse_ai_response_unknown_action_type():
     raw = '{"actions":[{"type":"YOLO"}],"reasoning":"x"}'
     with pytest.raises(ValueError):
         parse_ai_response(raw)
+
+
+@pytest.fixture
+def db_with_position(tmp_path):
+    conn = connect(str(tmp_path / "v.db"))
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', '{}', 'executed')"
+    )
+    conn.execute(
+        "INSERT INTO positions(action_id, mt5_ticket, symbol, side, volume, "
+        "entry_price, sl, tp, status) "
+        "VALUES(1, 99001, 'XAUUSD', 'BUY', 0.10, 4865, 4855, 4880, 'open')"
+    )
+    return conn
+
+
+def test_validate_open_passes(db_with_position):
+    a = OpenAction(symbol="XAUUSD", side="BUY",
+                   entry_low=4870, entry_high=4872,
+                   tps=[4900], sl=4860)
+    r = validate_action(a, db_with_position)
+    assert r.ok
+
+
+def test_validate_close_unknown_ticket_fails(db_with_position):
+    a = CloseAction(mt5_ticket=999999)
+    r = validate_action(a, db_with_position)
+    assert not r.ok
+    assert "unknown" in r.error.lower()
+
+
+def test_validate_close_known_ticket_passes(db_with_position):
+    a = CloseAction(mt5_ticket=99001)
+    r = validate_action(a, db_with_position)
+    assert r.ok
+
+
+def test_validate_modify_closed_position_fails(db_with_position):
+    db_with_position.execute(
+        "UPDATE positions SET status='closed' WHERE mt5_ticket=99001"
+    )
+    a = ModifyAction(mt5_ticket=99001, new_sl=4866)
+    r = validate_action(a, db_with_position)
+    assert not r.ok
+
+
+def test_validate_open_duplicate_zone_fails(db_with_position):
+    a = OpenAction(symbol="XAUUSD", side="BUY",
+                   entry_low=4864, entry_high=4866,  # overlaps existing 4865
+                   tps=[4900], sl=4855)
+    r = validate_action(a, db_with_position)
+    assert not r.ok
+    assert "duplicate" in r.error.lower()
