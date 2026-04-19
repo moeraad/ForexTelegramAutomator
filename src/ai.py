@@ -60,7 +60,7 @@ def build_messages(
     """
     cached_block = {
         "type": "text",
-        "text": f"RECENT CHAT:\n{recent_chat}",
+        "text": f"RECENT CHAT (last messages, oldest first):\n{recent_chat}",
         "cache_control": {"type": "ephemeral"},
     }
     volatile_block = {
@@ -106,9 +106,9 @@ class AIClient:
             }
         ]
         last_err: Exception | None = None
-        start = time.monotonic()
         for attempt in range(self._max_retries):
             try:
+                start = time.monotonic()
                 resp = self._client.messages.create(
                     model=self._model,
                     max_tokens=1024,
