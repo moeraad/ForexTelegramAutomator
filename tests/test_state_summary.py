@@ -48,3 +48,17 @@ def test_renders_groupings_by_action_id(tmp_path):
     assert "ticket=5880" in out
     assert "ticket=5900" in out
     assert "ticket=5920" in out
+
+
+def test_null_sl_tp_render_as_dash(tmp_path):
+    conn = _setup(tmp_path)
+    conn.execute("INSERT INTO actions(action_type, payload_json) VALUES('OPEN','{}')")
+    conn.execute(
+        "INSERT INTO positions(action_id, mt5_ticket, symbol, side, volume, "
+        "entry_price, sl, tp, status) "
+        "VALUES(1, 777, 'XAUUSD', 'BUY', 0.10, 4865.0, NULL, NULL, 'open')"
+    )
+    out = render_open_positions(conn)
+    assert "ticket=777" in out
+    assert "sl=-" in out
+    assert "tp=-" in out

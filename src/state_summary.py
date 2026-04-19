@@ -2,6 +2,10 @@ import sqlite3
 from collections import defaultdict
 
 
+def _fmt(v: float | None) -> str:
+    return f"{v:.2f}" if v is not None else "-"
+
+
 def render_open_positions(conn: sqlite3.Connection) -> str:
     rows = conn.execute(
         "SELECT action_id, mt5_ticket, symbol, side, volume, "
@@ -23,7 +27,7 @@ def render_open_positions(conn: sqlite3.Connection) -> str:
         for r in group:
             lines.append(
                 f"    ticket={r['mt5_ticket']}  {r['side']} {r['symbol']}  "
-                f"vol={r['volume']:.2f}  entry={r['entry_price']:.2f}  "
-                f"sl={r['sl']:.2f}  tp={r['tp']:.2f}"
+                f"vol={_fmt(r['volume'])}  entry={_fmt(r['entry_price'])}  "
+                f"sl={_fmt(r['sl'])}  tp={_fmt(r['tp'])}"
             )
     return "\n".join(lines)
