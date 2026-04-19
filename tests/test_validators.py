@@ -118,3 +118,14 @@ def test_validate_open_duplicate_zone_fails(db_with_position):
     r = validate_action(a, db_with_position)
     assert not r.ok
     assert "duplicate" in r.error.lower()
+
+
+def test_validate_close_all_supported_symbol_passes(db_with_position):
+    r = validate_action(CloseAllAction(symbol="XAUUSD"), db_with_position)
+    assert r.ok
+
+
+def test_validate_close_all_unsupported_symbol_fails(db_with_position):
+    r = validate_action(CloseAllAction(symbol="EURUSD"), db_with_position)
+    assert not r.ok
+    assert "unsupported" in r.error.lower()
