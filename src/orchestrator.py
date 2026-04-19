@@ -5,10 +5,7 @@ from pathlib import Path
 from src.ai import AIClient
 from src.ai_logger import log_call
 from src.state_summary import render_open_positions
-from src.validators import (
-    Action, AlertAction, validate_action,
-    OpenAction, ModifyAction, CloseAction, CloseAllAction,
-)
+from src.validators import Action, AlertAction, validate_action
 
 
 RECENT_CHAT_WINDOW = 20

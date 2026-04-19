@@ -62,6 +62,23 @@ def test_process_message_skips_duplicate_message(tmp_path):
     process_message(conn, ai, 5, 42, "Y", "hi", tmp_path / "a.jsonl", 30)
     n = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
     assert n == 1
+    assert ai.call.call_count == 1  # second call short-circuited on dedup
+
+
+def test_process_message_ai_exception_writes_alert(tmp_path):
+    conn = connect(str(tmp_path / "o.db"))
+    init_schema(conn)
+    ai = MagicMock()
+    ai.call.side_effect = RuntimeError("boom")
+    ids = process_message(conn, ai, 9, 42, "Y", "x", tmp_path / "a.jsonl", 30)
+    assert len(ids) == 1
+    row = conn.execute("SELECT * FROM actions WHERE id=?", (ids[0],)).fetchone()
+    assert row["action_type"] == "ALERT"
+    assert row["status"] == "pending"
+    assert row["execute_after"] is None
+    payload = json.loads(row["payload_json"])
+    assert "AI error" in payload["text"]
+    assert payload["level"] == "warning"
 
 
 def test_process_message_rejects_invalid_action_writes_rejected_row(tmp_path):
