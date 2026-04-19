@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+from datetime import datetime, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, ContextTypes,
@@ -111,8 +112,8 @@ async def cmd_closeall(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     payload = json.dumps({"symbol": "XAUUSD", "reason": "manual_user_command"})
     cur = conn.execute(
         "INSERT INTO actions(action_type, payload_json, status, execute_after) "
-        "VALUES('CLOSE_ALL', ?, 'pending', datetime('now'))",
-        (payload,),
+        "VALUES('CLOSE_ALL', ?, 'pending', ?)",
+        (payload, datetime.now(timezone.utc).isoformat()),
     )
     await update.message.reply_text(f"Queued CLOSE_ALL action #{cur.lastrowid}")
 
@@ -212,6 +213,10 @@ async def post_init(app: Application):
 
 
 def main() -> None:
+    if not config.TG_BOT_OWNER_USER_ID:
+        raise SystemExit("TG_BOT_OWNER_USER_ID must be set (DM @userinfobot to get yours).")
+    if not config.TG_BOT_TOKEN:
+        raise SystemExit("TG_BOT_TOKEN must be set (get one from @BotFather).")
     conn = connect(config.DB_PATH)
     init_schema(conn)
     app = Application.builder().token(config.TG_BOT_TOKEN).post_init(post_init).build()
