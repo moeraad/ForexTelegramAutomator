@@ -15,9 +15,10 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS actions (
   id              INTEGER PRIMARY KEY,
   source_msg_id   INTEGER REFERENCES messages(id),
-  action_type     TEXT NOT NULL,
+  action_type     TEXT NOT NULL CHECK(action_type IN ('OPEN','MODIFY','CLOSE','CLOSE_ALL','ALERT')),
   payload_json    TEXT NOT NULL,
-  status          TEXT NOT NULL DEFAULT 'pending',
+  status          TEXT NOT NULL DEFAULT 'pending'
+                  CHECK(status IN ('pending','cancelled','sent','executed','failed','rejected')),
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
   notified_at     DATETIME,
   execute_after   DATETIME,
@@ -31,12 +32,12 @@ CREATE TABLE IF NOT EXISTS positions (
   action_id       INTEGER REFERENCES actions(id),
   mt5_ticket      INTEGER UNIQUE,
   symbol          TEXT NOT NULL,
-  side            TEXT NOT NULL,
+  side            TEXT NOT NULL CHECK(side IN ('BUY','SELL')),
   volume          REAL NOT NULL,
   entry_price     REAL,
   sl              REAL,
   tp              REAL,
-  status          TEXT NOT NULL DEFAULT 'open',
+  status          TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
   opened_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
   closed_at       DATETIME,
   close_reason    TEXT

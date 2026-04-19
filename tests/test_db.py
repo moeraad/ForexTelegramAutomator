@@ -1,4 +1,3 @@
-import sqlite3
 from src.db import connect, init_schema, get_setting, set_setting
 
 
@@ -28,3 +27,9 @@ def test_set_and_get_setting(tmp_path):
     init_schema(conn)
     set_setting(conn, "kill_switch", "on")
     assert get_setting(conn, "kill_switch") == "on"
+
+
+def test_get_missing_setting_returns_none(tmp_path):
+    conn = connect(str(tmp_path / "t.db"))
+    init_schema(conn)
+    assert get_setting(conn, "nonexistent_key") is None
