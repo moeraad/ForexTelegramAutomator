@@ -1,9 +1,12 @@
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from typing import Literal, Union
 from pydantic import BaseModel, Field, field_validator
 from src.config import SUPPORTED_SYMBOLS
+
+_FENCE_PATTERN = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 
 class OpenAction(BaseModel):
@@ -65,11 +68,32 @@ class AIResponse(BaseModel):
     reasoning: str = ""
 
 
+def _extract_json(raw: str) -> str:
+    """Tolerate markdown fences or conversational preambles around the JSON."""
+    m = _FENCE_PATTERN.search(raw)
+    if m:
+        return m.group(1)
+    start = raw.find("{")
+    if start < 0:
+        return raw
+    depth = 0
+    for i in range(start, len(raw)):
+        c = raw[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return raw[start:i + 1]
+    return raw[start:]
+
+
 def parse_ai_response(raw: str) -> AIResponse:
     try:
-        data = json.loads(raw)
+        data = json.loads(_extract_json(raw))
     except json.JSONDecodeError as e:
-        raise ValueError(f"invalid JSON: {e}")
+        preview = raw[:200].replace("\n", " ") if raw else "<empty>"
+        raise ValueError(f"invalid JSON: {e}; raw_preview={preview!r}")
     actions = []
     for a in data.get("actions", []):
         t = a.get("type")

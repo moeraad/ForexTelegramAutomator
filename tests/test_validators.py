@@ -59,6 +59,24 @@ def test_parse_ai_response_rejects_bad_json():
         parse_ai_response("not json")
 
 
+def test_parse_ai_response_strips_markdown_fences():
+    raw = '```json\n{"actions":[],"reasoning":"ok"}\n```'
+    resp = parse_ai_response(raw)
+    assert resp.actions == []
+    assert resp.reasoning == "ok"
+
+
+def test_parse_ai_response_tolerates_preamble():
+    raw = 'Here is the result:\n{"actions":[],"reasoning":"ok"}\ndone.'
+    resp = parse_ai_response(raw)
+    assert resp.reasoning == "ok"
+
+
+def test_parse_ai_response_error_includes_raw_preview():
+    with pytest.raises(ValueError, match="raw_preview"):
+        parse_ai_response("")
+
+
 def test_parse_ai_response_unknown_action_type():
     raw = '{"actions":[{"type":"YOLO"}],"reasoning":"x"}'
     with pytest.raises(ValueError):
