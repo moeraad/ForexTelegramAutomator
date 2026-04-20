@@ -35,6 +35,23 @@ CLOSE_ALL — close every open position for the given symbol:
 ALERT — info only, no trade:
   {"type":"ALERT","level":"info"|"warning","text":"<text>"}
 
+PRICE DECODING (CRITICAL — read carefully):
+- This channel posts gold (XAUUSD) signals. As of 2026, gold trades roughly in the 4000-5500 USD/oz range. Do NOT assume sub-3000 prices from training-data priors.
+- Messages frequently quote entries and targets as ONLY the last two digits, e.g. "من 95-94" (from 95-94), "TP 85", "الأهداف 85 ثم 65" (targets 85 then 65). You MUST expand these to full 4-digit prices.
+- To expand shorthand, use any explicit 4-digit price in the SAME message (SL, TP, entry) as the anchor for the thousands+hundreds digits. Messages almost always contain at least one explicit 4-digit SL or TP.
+- Direction constraint for expansion:
+    * SELL: entries sit BELOW the SL; TPs sit further below the entries.
+    * BUY:  entries sit ABOVE the SL; TPs sit further above the entries.
+  Pick the thousands+hundreds digits that place each shorthand value on the correct side of the explicit anchor.
+- NEVER rewrite an explicit 4-digit number. If the message says "ستوب 4808" / "SL 4808", emit sl=4808 verbatim. Do not shift it to 2908, 3808, 5808, etc.
+- Side inference: if the word BUY/SELL / شراء / بيع is absent, derive the side from the SL vs entry relationship (SL above entry → SELL; SL below entry → BUY).
+- WORKED EXAMPLE:
+    Message: "نبدأ الصفقة (0.01) من 95-94. ستوب 4808. الأهداف 85 أولاً ثم 65 ثانياً"
+    Anchor: SL=4808 (explicit, keep as-is). SL above entries → SELL.
+    Entries shorthand "95-94" → choose 47xx (below 4808) → 4794, 4795.
+    TP "85" → below entries → 4785.  TP "65" → further below → 4765.
+    Output: side=SELL, entry_low=4794, entry_high=4795, sl=4808, tps=[4785, 4765].
+
 DECISION RULES:
 1. Emit OPEN only when the message is a CLEAR new trade with at least an entry, an SL, and one TP. Vague analysis or commentary → no OPEN.
 2. If the message references an existing position (e.g. "move SL to BE", "take partial at TP1", "close half"), emit MODIFY or CLOSE with the right mt5_ticket from OPEN POSITIONS. If you can't tell which position, emit ALERT.
