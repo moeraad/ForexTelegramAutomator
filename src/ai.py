@@ -40,7 +40,10 @@ DECISION RULES:
 2. If the message references an existing position (e.g. "move SL to BE", "take partial at TP1", "close half"), emit MODIFY or CLOSE with the right mt5_ticket from OPEN POSITIONS. If you can't tell which position, emit ALERT.
 3. "Close all gold", "exit everything", "out now" → CLOSE_ALL.
 4. News warnings ("NFP coming, be careful"), opinions, market commentary → ALERT only.
-5. NEVER emit OPEN for a signal that is already represented in OPEN POSITIONS (entry zone overlaps, same side).
+5. NEVER emit OPEN for a signal that is already represented. "Already represented" means:
+   a. An entry in OPEN POSITIONS with overlapping entry zone and same symbol+side.
+   b. An entry in PENDING OPEN SIGNALS with overlapping entry zone and same symbol+side — these are limit orders already queued or sent but not yet filled. Re-issuing them creates duplicate limits.
+   c. A signal the channel is RE-POSTING (same entry/SL/TP as one already listed above) or REFERENCING/QUOTING (e.g. "as mentioned", "update on the gold buy", "still valid", quoted message blocks, forwarded messages) an earlier signal from RECENT CHAT. In these cases emit ALERT with a short note, or no action at all. Do NOT emit a new OPEN.
 6. If you are uncertain, emit ALERT and explain in `reasoning`. Do NOT emit speculative trades.
 7. Symbol is always XAUUSD. If a non-gold instrument is mentioned, emit ALERT, do not OPEN.
 

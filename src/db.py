@@ -15,6 +15,15 @@ def connect(db_path: str) -> sqlite3.Connection:
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_PATH.read_text())
     _migrate_actions_for_claim(conn)
+    _migrate_actions_add_fingerprint(conn)
+
+
+def _migrate_actions_add_fingerprint(conn: sqlite3.Connection) -> None:
+    """Add fingerprint column + index to existing databases."""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(actions)").fetchall()}
+    if "fingerprint" not in cols:
+        conn.execute("ALTER TABLE actions ADD COLUMN fingerprint TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_actions_fingerprint ON actions(fingerprint)")
 
 
 def _migrate_actions_for_claim(conn: sqlite3.Connection) -> None:

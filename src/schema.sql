@@ -24,9 +24,11 @@ CREATE TABLE IF NOT EXISTS actions (
   execute_after   DATETIME,
   claimed_at      DATETIME,
   executed_at     DATETIME,
-  ea_response     TEXT
+  ea_response     TEXT,
+  fingerprint     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);
+CREATE INDEX IF NOT EXISTS idx_actions_fingerprint ON actions(fingerprint);
 
 CREATE TABLE IF NOT EXISTS positions (
   id              INTEGER PRIMARY KEY,

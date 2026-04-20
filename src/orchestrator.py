@@ -4,8 +4,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from src.ai import AIClient
 from src.ai_logger import log_call
+from src.config import FINGERPRINT_BAND_PRICE, FINGERPRINT_WINDOW_HOURS
+from src.fingerprint import signal_fingerprint
 from src.state_summary import render_open_positions
-from src.validators import Action, AlertAction, validate_action
+from src.validators import Action, AlertAction, OpenAction, validate_action
 
 
 RECENT_CHAT_WINDOW = 20
@@ -40,6 +42,33 @@ def _payload_for(action: Action) -> dict:
 
 def _action_type(action: Action) -> str:
     return action.type
+
+
+def _has_recent_duplicate_open(
+    conn: sqlite3.Connection, fingerprint: str, window_hours: int
+) -> bool:
+    """True if an OPEN action with the same fingerprint is still "live" —
+    either sitting in the pipeline (pending/sent/claimed) or already executed
+    with the linked position still open — and was created within the window.
+
+    Why: channels often re-post or quote earlier signals. The AI can't always
+    tell these from genuinely new entries, so we gate at the orchestrator.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM actions a "
+        "WHERE a.fingerprint = ? "
+        "  AND a.created_at > datetime('now', ?) "
+        "  AND ("
+        "    a.status IN ('pending','sent','claimed') "
+        "    OR (a.status = 'executed' AND EXISTS ("
+        "      SELECT 1 FROM positions p "
+        "      WHERE p.action_id = a.id AND p.status = 'open'"
+        "    ))"
+        "  ) "
+        "LIMIT 1",
+        (fingerprint, f"-{window_hours} hours"),
+    ).fetchone()
+    return row is not None
 
 
 def process_message(
@@ -81,13 +110,26 @@ def process_message(
 
     inserted: list[int] = []
     for action in result.response.actions:
-        v = validate_action(action, conn)
         payload = json.dumps(_payload_for(action))
+        fp: str | None = None
+        if isinstance(action, OpenAction):
+            fp = signal_fingerprint(action, band=FINGERPRINT_BAND_PRICE)
+            if _has_recent_duplicate_open(conn, fp, FINGERPRINT_WINDOW_HOURS):
+                cur = conn.execute(
+                    "INSERT INTO actions(source_msg_id, action_type, payload_json, "
+                    "status, ea_response, fingerprint) "
+                    "VALUES(?, ?, ?, 'rejected', 'duplicate_signal', ?)",
+                    (msg_id, _action_type(action), payload, fp),
+                )
+                inserted.append(cur.lastrowid)
+                continue
+
+        v = validate_action(action, conn)
         if not v.ok:
             cur = conn.execute(
                 "INSERT INTO actions(source_msg_id, action_type, payload_json, "
-                "status, ea_response) VALUES(?, ?, ?, 'rejected', ?)",
-                (msg_id, _action_type(action), payload, v.error),
+                "status, ea_response, fingerprint) VALUES(?, ?, ?, 'rejected', ?, ?)",
+                (msg_id, _action_type(action), payload, v.error, fp),
             )
             inserted.append(cur.lastrowid)
             continue
@@ -107,8 +149,8 @@ def process_message(
         ).isoformat()
         cur = conn.execute(
             "INSERT INTO actions(source_msg_id, action_type, payload_json, "
-            "status, execute_after) VALUES(?, ?, ?, 'pending', ?)",
-            (msg_id, _action_type(action), payload, execute_after),
+            "status, execute_after, fingerprint) VALUES(?, ?, ?, 'pending', ?, ?)",
+            (msg_id, _action_type(action), payload, execute_after, fp),
         )
         inserted.append(cur.lastrowid)
     return inserted

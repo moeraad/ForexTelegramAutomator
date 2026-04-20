@@ -91,3 +91,90 @@ def test_process_message_rejects_invalid_action_writes_rejected_row(tmp_path):
     row = conn.execute("SELECT * FROM actions WHERE id=?", (ids[0],)).fetchone()
     assert row["status"] == "rejected"
     assert row["execute_after"] is None
+
+
+def test_fingerprint_stored_on_valid_open(tmp_path):
+    conn = connect(str(tmp_path / "o.db"))
+    init_schema(conn)
+    ai = _make_ai([OpenAction(symbol="XAUUSD", side="BUY",
+                              entry_low=4864, entry_high=4866,
+                              tps=[4880], sl=4855)])
+    ids = process_message(conn, ai, 1, 42, "Y", "BUY", tmp_path / "a.jsonl", 30)
+    row = conn.execute("SELECT fingerprint FROM actions WHERE id=?", (ids[0],)).fetchone()
+    assert row["fingerprint"] is not None
+    assert "XAUUSD|BUY" in row["fingerprint"]
+
+
+def test_duplicate_open_signal_rejected(tmp_path):
+    """Second identical OPEN from a later message collapses onto the first."""
+    conn = connect(str(tmp_path / "o.db"))
+    init_schema(conn)
+    signal = OpenAction(symbol="XAUUSD", side="BUY",
+                        entry_low=4864, entry_high=4866,
+                        tps=[4880], sl=4855)
+    ai = _make_ai([signal])
+
+    ids1 = process_message(conn, ai, 1, 42, "Y", "BUY 4865", tmp_path / "a.jsonl", 30)
+    ids2 = process_message(conn, ai, 2, 42, "Y", "re: BUY 4865", tmp_path / "a.jsonl", 30)
+
+    r1 = conn.execute("SELECT status FROM actions WHERE id=?", (ids1[0],)).fetchone()
+    r2 = conn.execute("SELECT status, ea_response FROM actions WHERE id=?",
+                      (ids2[0],)).fetchone()
+    assert r1["status"] == "pending"
+    assert r2["status"] == "rejected"
+    assert r2["ea_response"] == "duplicate_signal"
+
+
+def test_near_miss_within_band_also_rejected(tmp_path):
+    """A quoted signal with slightly tweaked prices still collapses."""
+    conn = connect(str(tmp_path / "o.db"))
+    init_schema(conn)
+    first = OpenAction(symbol="XAUUSD", side="BUY",
+                       entry_low=4864, entry_high=4866,
+                       tps=[4880], sl=4855)
+    process_message(conn, _make_ai([first]), 1, 42, "Y", "BUY",
+                    tmp_path / "a.jsonl", 30)
+
+    near = OpenAction(symbol="XAUUSD", side="BUY",
+                      entry_low=4864.5, entry_high=4866.5,
+                      tps=[4881], sl=4854.2)
+    ids2 = process_message(conn, _make_ai([near]), 2, 42, "Y", "BUY again",
+                           tmp_path / "a.jsonl", 30)
+    r2 = conn.execute("SELECT status, ea_response FROM actions WHERE id=?",
+                      (ids2[0],)).fetchone()
+    assert r2["status"] == "rejected"
+    assert r2["ea_response"] == "duplicate_signal"
+
+
+def test_different_signal_not_rejected(tmp_path):
+    """A distinct entry zone should not collapse."""
+    conn = connect(str(tmp_path / "o.db"))
+    init_schema(conn)
+    a = OpenAction(symbol="XAUUSD", side="BUY",
+                   entry_low=4864, entry_high=4866,
+                   tps=[4880], sl=4855)
+    b = OpenAction(symbol="XAUUSD", side="BUY",
+                   entry_low=4900, entry_high=4902,
+                   tps=[4920], sl=4890)
+    process_message(conn, _make_ai([a]), 1, 42, "Y", "x", tmp_path / "a.jsonl", 30)
+    ids2 = process_message(conn, _make_ai([b]), 2, 42, "Y", "y",
+                           tmp_path / "a.jsonl", 30)
+    r2 = conn.execute("SELECT status FROM actions WHERE id=?", (ids2[0],)).fetchone()
+    assert r2["status"] == "pending"
+
+
+def test_duplicate_allowed_after_first_is_cancelled(tmp_path):
+    """Once the original is cancelled, a new identical signal is not a duplicate."""
+    conn = connect(str(tmp_path / "o.db"))
+    init_schema(conn)
+    sig = OpenAction(symbol="XAUUSD", side="BUY",
+                     entry_low=4864, entry_high=4866,
+                     tps=[4880], sl=4855)
+    ids1 = process_message(conn, _make_ai([sig]), 1, 42, "Y", "x",
+                           tmp_path / "a.jsonl", 30)
+    conn.execute("UPDATE actions SET status='cancelled' WHERE id=?", (ids1[0],))
+
+    ids2 = process_message(conn, _make_ai([sig]), 2, 42, "Y", "y",
+                           tmp_path / "a.jsonl", 30)
+    r2 = conn.execute("SELECT status FROM actions WHERE id=?", (ids2[0],)).fetchone()
+    assert r2["status"] == "pending"

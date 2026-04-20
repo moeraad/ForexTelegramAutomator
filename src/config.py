@@ -28,3 +28,8 @@ API_PORT = int(os.getenv("API_PORT", "8765"))
 DEFAULT_AUTO_EXECUTE_DELAY_SEC = 30
 RECENT_CHAT_WINDOW = 20  # messages
 SUPPORTED_SYMBOLS = {"XAUUSD"}
+
+# Dedup: collapse resent/quoted signals into one fingerprint bucket.
+# BAND_PRICE is the rounding granularity; WINDOW_HOURS how far back to look.
+FINGERPRINT_BAND_PRICE = float(os.getenv("FINGERPRINT_BAND_PRICE", "5.0"))
+FINGERPRINT_WINDOW_HOURS = int(os.getenv("FINGERPRINT_WINDOW_HOURS", "6"))
