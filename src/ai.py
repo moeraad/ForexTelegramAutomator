@@ -4,6 +4,7 @@ from typing import Any
 
 import anthropic
 
+from src import config
 from src.validators import AIResponse, parse_ai_response
 
 
@@ -98,6 +99,26 @@ class AICallResult:
     latency_ms: int
 
 
+def _extract_text_block(content: Any) -> str:
+    """Find the assistant's text output among mixed content blocks.
+
+    With extended thinking enabled, content is a list like
+    [ThinkingBlock(thinking=...), TextBlock(text=...)]. We want the text block.
+    Real SDK blocks expose `.type`; test MagicMocks set `.text` to a string
+    directly. Handle both.
+    """
+    if not content:
+        raise ValueError("empty response content")
+    for block in content:
+        if getattr(block, "type", None) == "text":
+            return block.text
+    for block in content:
+        t = getattr(block, "text", None)
+        if isinstance(t, str) and t:
+            return t
+    raise ValueError("no text block in response content")
+
+
 class AIClient:
     def __init__(
         self,
@@ -105,11 +126,21 @@ class AIClient:
         model: str = "claude-sonnet-4-6",
         max_retries: int = 3,
         retry_sleep: float = 1.5,
+        thinking_enabled: bool | None = None,
+        thinking_budget_tokens: int | None = None,
     ):
         self._client = client if client is not None else anthropic.Anthropic()
         self._model = model
         self._max_retries = max_retries
         self._retry_sleep = retry_sleep
+        self._thinking_enabled = (
+            config.AI_THINKING_ENABLED if thinking_enabled is None else thinking_enabled
+        )
+        self._thinking_budget = (
+            config.AI_THINKING_BUDGET_TOKENS
+            if thinking_budget_tokens is None
+            else thinking_budget_tokens
+        )
 
     def call(
         self,
@@ -125,17 +156,31 @@ class AIClient:
                 "cache_control": {"type": "ephemeral"},
             }
         ]
+        # Reserve budget_tokens for thinking and ~1024 for the JSON answer.
+        output_budget = 1024
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "max_tokens": (
+                self._thinking_budget + output_budget
+                if self._thinking_enabled
+                else output_budget
+            ),
+            "system": system,
+            "messages": messages,
+        }
+        if self._thinking_enabled:
+            kwargs["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": self._thinking_budget,
+            }
+            # Extended thinking requires temperature=1.
+            kwargs["temperature"] = 1
         last_err: Exception | None = None
         for attempt in range(self._max_retries):
             try:
                 start = time.monotonic()
-                resp = self._client.messages.create(
-                    model=self._model,
-                    max_tokens=1024,
-                    system=system,
-                    messages=messages,
-                )
-                raw_text = resp.content[0].text
+                resp = self._client.messages.create(**kwargs)
+                raw_text = _extract_text_block(resp.content)
                 parsed = parse_ai_response(raw_text)
                 usage = {
                     "input_tokens": getattr(resp.usage, "input_tokens", 0),

@@ -22,6 +22,12 @@ TG_BOT_OWNER_USER_ID = int(os.getenv("TG_BOT_OWNER_USER_ID", "0"))
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
+# Extended thinking: let the model reason step-by-step before producing JSON.
+# Materially improves parsing of ambiguous/shorthand Arabic signals where
+# entries like "95-94" must be anchored to an explicit SL like "4808".
+AI_THINKING_ENABLED = os.getenv("AI_THINKING_ENABLED", "1") not in ("0", "false", "False", "")
+AI_THINKING_BUDGET_TOKENS = int(os.getenv("AI_THINKING_BUDGET_TOKENS", "4000"))
+
 API_HOST = os.getenv("API_HOST", "127.0.0.1")
 API_PORT = int(os.getenv("API_PORT", "8765"))
 
