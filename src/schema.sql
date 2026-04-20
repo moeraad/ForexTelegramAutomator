@@ -28,7 +28,6 @@ CREATE TABLE IF NOT EXISTS actions (
   fingerprint     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);
-CREATE INDEX IF NOT EXISTS idx_actions_fingerprint ON actions(fingerprint);
 
 CREATE TABLE IF NOT EXISTS positions (
   id              INTEGER PRIMARY KEY,
