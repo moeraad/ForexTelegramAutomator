@@ -63,9 +63,13 @@ _ACTION_BY_TYPE = {
 }
 
 
+Category = Literal["ignore", "context", "signal", "partial_signal"]
+
+
 class AIResponse(BaseModel):
     actions: list[Action]
     reasoning: str = ""
+    category: Category | None = None
 
 
 def _extract_json(raw: str) -> str:
@@ -101,7 +105,11 @@ def parse_ai_response(raw: str) -> AIResponse:
         if cls is None:
             raise ValueError(f"unknown action type: {t}")
         actions.append(cls(**a))
-    return AIResponse(actions=actions, reasoning=data.get("reasoning", ""))
+    return AIResponse(
+        actions=actions,
+        reasoning=data.get("reasoning", ""),
+        category=data.get("category"),
+    )
 
 
 @dataclass
