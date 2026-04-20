@@ -14,12 +14,12 @@ RECENT_CHAT_WINDOW = 20
 
 
 def _insert_message(conn: sqlite3.Connection, tg_message_id: int, chat_id: int,
-                    sender: str, text: str) -> int | None:
+                    sender: str, text: str, *, is_backfill: bool = False) -> int | None:
     """Returns row id, or None if duplicate."""
     cur = conn.execute(
-        "INSERT OR IGNORE INTO messages(tg_message_id, chat_id, sender, text) "
-        "VALUES(?,?,?,?)",
-        (tg_message_id, chat_id, sender, text),
+        "INSERT OR IGNORE INTO messages(tg_message_id, chat_id, sender, text, is_backfill) "
+        "VALUES(?,?,?,?,?)",
+        (tg_message_id, chat_id, sender, text, 1 if is_backfill else 0),
     )
     if cur.rowcount == 0:
         return None
@@ -80,9 +80,12 @@ def process_message(
     text: str,
     ai_log_path: Path | str,
     auto_execute_delay_sec: int,
+    *,
+    is_backfill: bool = False,
 ) -> list[int]:
     """Insert message, call AI, validate + persist actions. Returns inserted action IDs."""
-    msg_id = _insert_message(conn, tg_message_id, chat_id, sender, text)
+    msg_id = _insert_message(conn, tg_message_id, chat_id, sender, text,
+                             is_backfill=is_backfill)
     if msg_id is None:
         return []  # duplicate
 

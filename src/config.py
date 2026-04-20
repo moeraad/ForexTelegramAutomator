@@ -33,3 +33,9 @@ SUPPORTED_SYMBOLS = {"XAUUSD"}
 # BAND_PRICE is the rounding granularity; WINDOW_HOURS how far back to look.
 FINGERPRINT_BAND_PRICE = float(os.getenv("FINGERPRINT_BAND_PRICE", "5.0"))
 FINGERPRINT_WINDOW_HOURS = int(os.getenv("FINGERPRINT_WINDOW_HOURS", "6"))
+
+# Backfill replay: on reconnect (not first launch), feed missed Telegram
+# messages through the AI only if they're fresher than this cap. Older
+# messages are archived with is_backfill=1 and not processed because price
+# has likely moved too far for the signal to be safe.
+BACKFILL_MAX_AGE_MIN = int(os.getenv("BACKFILL_MAX_AGE_MIN", "30"))
