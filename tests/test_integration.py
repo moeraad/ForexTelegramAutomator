@@ -70,6 +70,50 @@ def test_full_pipeline_open_to_executed(tmp_path):
     assert pos["close_reason"] == "tp"
 
 
+def test_claim_then_bundled_legs_executes_action(tmp_path):
+    """Full claim/execute/confirm protocol: pending -> sent -> claimed -> executed
+    with multiple positions inserted from one bundled-legs result."""
+    conn = connect(str(tmp_path / "c.db"))
+    init_schema(conn)
+    ai = _ai_returning([OpenAction(symbol="XAUUSD", side="BUY",
+                                   entry_low=4864, entry_high=4866,
+                                   tps=[4880, 4890], sl=4855)])
+    ids = process_message(conn, ai, 1, 42, "Y", "BUY", tmp_path / "a.jsonl", 0)
+    aid = ids[0]
+    assert promote_due_actions(conn) == 1
+
+    app = build_app(conn)
+    client = TestClient(app)
+
+    # First claim wins
+    r1 = client.post(f"/actions/{aid}/claim")
+    assert r1.status_code == 200
+    # Second claim (simulating duplicate EA tick) loses
+    r2 = client.post(f"/actions/{aid}/claim")
+    assert r2.status_code == 409
+
+    # EA reports both legs in one body
+    r = client.post(f"/actions/{aid}/result", json={
+        "status": "executed",
+        "legs": [
+            {"mt5_ticket": 7001, "snapshot": {
+                "symbol": "XAUUSD", "side": "BUY", "volume": 0.05,
+                "entry_price": 4865.0, "sl": 4855.0, "tp": 4880.0}},
+            {"mt5_ticket": 7002, "snapshot": {
+                "symbol": "XAUUSD", "side": "BUY", "volume": 0.05,
+                "entry_price": 4865.0, "sl": 4855.0, "tp": 4890.0}},
+        ],
+    })
+    assert r.status_code == 200
+
+    row = conn.execute("SELECT status FROM actions WHERE id=?", (aid,)).fetchone()
+    assert row["status"] == "executed"
+    tickets = [r["mt5_ticket"] for r in conn.execute(
+        "SELECT mt5_ticket FROM positions WHERE action_id=? ORDER BY mt5_ticket", (aid,)
+    ).fetchall()]
+    assert tickets == [7001, 7002]
+
+
 def test_kill_switch_blocks_promotion(tmp_path):
     conn = connect(str(tmp_path / "k.db"))
     init_schema(conn)

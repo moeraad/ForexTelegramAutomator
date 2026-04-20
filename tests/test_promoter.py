@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 from src.db import connect, init_schema, set_setting
-from src.promoter import promote_due_actions
+from src.promoter import promote_due_actions, release_stale_claims
 
 
 def _insert_pending(conn, execute_after, action_type="OPEN"):
@@ -49,3 +49,34 @@ def test_skips_alerts(tmp_path):
     aid = _insert_pending(conn, None, action_type="ALERT")
     assert promote_due_actions(conn) == 0
     assert conn.execute("SELECT status FROM actions WHERE id=?", (aid,)).fetchone()["status"] == "pending"
+
+
+def _insert_claimed(conn, claimed_at):
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status, claimed_at) "
+        "VALUES('OPEN', '{}', 'claimed', ?)",
+        (claimed_at.isoformat(),),
+    )
+    return cur.lastrowid
+
+
+def test_release_stale_claims_releases_old(tmp_path):
+    conn = connect(str(tmp_path / "s.db"))
+    init_schema(conn)
+    old = datetime.now(timezone.utc) - timedelta(seconds=200)
+    aid = _insert_claimed(conn, old)
+    n = release_stale_claims(conn, max_age_sec=120)
+    assert n == 1
+    row = conn.execute("SELECT status FROM actions WHERE id=?", (aid,)).fetchone()
+    assert row["status"] == "sent"
+
+
+def test_release_stale_claims_keeps_fresh(tmp_path):
+    conn = connect(str(tmp_path / "s.db"))
+    init_schema(conn)
+    fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+    aid = _insert_claimed(conn, fresh)
+    n = release_stale_claims(conn, max_age_sec=120)
+    assert n == 0
+    row = conn.execute("SELECT status FROM actions WHERE id=?", (aid,)).fetchone()
+    assert row["status"] == "claimed"

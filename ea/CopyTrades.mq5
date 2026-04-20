@@ -60,15 +60,26 @@ bool HttpGet(string url, string &outBody) {
 }
 
 bool HttpPostJson(string url, string jsonBody, string &outBody) {
+   int status;
+   return HttpPostJsonWithStatus(url, jsonBody, outBody, status);
+}
+
+bool HttpPostJsonWithStatus(string url, string jsonBody, string &outBody, int &outStatus) {
    char post[]; char result[]; string headers = "Content-Type: application/json\r\n";
    StringToCharArray(jsonBody, post, 0, StringLen(jsonBody));
    ArrayResize(post, StringLen(jsonBody));
    int res = WebRequest("POST", url, headers, "", 5000, post, ArraySize(post), result, headers);
    if(res == -1) {
       Print("WebRequest POST error ", GetLastError(), " url=", url);
+      outStatus = -1;
       return false;
    }
+   outStatus = res;
    outBody = CharArrayToString(result);
+   if(res >= 400) {
+      Print("HTTP ", res, " on ", url, " body=", outBody);
+      return false;
+   }
    return true;
 }
 
@@ -121,6 +132,10 @@ void ExecuteOne(string obj) {
    string payload = ExtractPayload(obj);
    if(id <= 0 || atype == "") return;
 
+   // Two-phase: claim atomically before placing any orders. If another tick
+   // (or another EA instance) already claimed this action, skip silently.
+   if(!ClaimAction(id)) return;
+
    if(CountOurOpenPositions() >= MaxOpenPositions && atype == "OPEN") {
       PostResult(id, "rejected", 0, "max_positions");
       return;
@@ -130,6 +145,16 @@ void ExecuteOne(string obj) {
    else if(atype == "MODIFY") DoModify(id, payload);
    else if(atype == "CLOSE")  DoClose(id, payload);
    else if(atype == "CLOSE_ALL") DoCloseAll(id, payload);
+}
+
+// Atomically transition action from 'sent' to 'claimed'. Returns true if we won.
+bool ClaimAction(long id) {
+   string url = ApiBaseUrl + "/actions/" + IntegerToString(id) + "/claim";
+   string resp; int status;
+   bool ok = HttpPostJsonWithStatus(url, "{}", resp, status);
+   if(!ok && status == 409) return false;     // already claimed — skip
+   if(!ok) { Print("Claim failed for action ", id, " status=", status); return false; }
+   return true;
 }
 
 string ExtractPayload(string obj) {
@@ -179,23 +204,19 @@ void DoOpen(long id, string payload) {
    double price = SymbolInfoDouble(Symbol_Override, side == "BUY" ? SYMBOL_ASK : SYMBOL_BID);
    bool inZone = (price >= entryLow && price <= entryHigh);
 
-   ENUM_ORDER_TYPE type;
    bool useMarket = (EntryZoneMode == 1 && inZone);
-   if(useMarket) {
-      type = (side == "BUY") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-      entry = price;
-   } else {
-      type = (side == "BUY") ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT;
-      entry = (entryLow + entryHigh) / 2.0;
-   }
+   if(useMarket) entry = price;
 
-   long lastTicket = 0;
-   string lastErr = "";
    int n = (TPMode == 1) ? ArraySize(tps) : 1;
    double lotsTotal = LotsFromRisk(sl, entry);
    double lotsEach = NormalizeDouble(lotsTotal / n, 2);
    double minLot = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_MIN);
    if(lotsEach < minLot) lotsEach = minLot;
+
+   // Aggregate per-leg results, then POST once.
+   string legsJson = "";
+   int legsOk = 0;
+   string lastErr = "";
 
    for(int i = 0; i < n; i++) {
       double tp = tps[i];
@@ -209,19 +230,39 @@ void DoOpen(long id, string payload) {
             ? trade.BuyLimit(lotsEach, entry, Symbol_Override, sl, tp, ORDER_TIME_GTC, 0, "copytrades")
             : trade.SellLimit(lotsEach, entry, Symbol_Override, sl, tp, ORDER_TIME_GTC, 0, "copytrades");
       }
-      if(!ok) { lastErr = "trade.send failed: " + IntegerToString(trade.ResultRetcode()); continue; }
-      lastTicket = (long)trade.ResultOrder() != 0 ? (long)trade.ResultOrder() : (long)trade.ResultDeal();
-      // Snapshot back to API
-      string snap = StringFormat(
-         "{\"status\":\"executed\",\"mt5_ticket\":%I64d,"
-         "\"snapshot\":{\"symbol\":\"%s\",\"side\":\"%s\",\"volume\":%.2f,"
-         "\"entry_price\":%.2f,\"sl\":%.2f,\"tp\":%.2f}}",
-         lastTicket, Symbol_Override, side, lotsEach, entry, sl, tp
+      if(!ok) {
+         lastErr = "trade.send failed: " + IntegerToString(trade.ResultRetcode());
+         continue;
+      }
+      long ticket = (long)trade.ResultOrder() != 0
+                    ? (long)trade.ResultOrder()
+                    : (long)trade.ResultDeal();
+      if(ticket <= 0) {
+         lastErr = "no_ticket_returned";
+         continue;
+      }
+      if(legsOk > 0) legsJson += ",";
+      legsJson += StringFormat(
+         "{\"mt5_ticket\":%I64d,\"snapshot\":{\"symbol\":\"%s\",\"side\":\"%s\","
+         "\"volume\":%.2f,\"entry_price\":%.2f,\"sl\":%.2f,\"tp\":%.2f}}",
+         ticket, Symbol_Override, side, lotsEach, entry, sl, tp
       );
-      string resp;
-      HttpPostJson(ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result", snap, resp);
+      legsOk++;
    }
-   if(lastTicket == 0) PostResult(id, "failed", 0, lastErr);
+
+   if(legsOk == 0) {
+      PostResult(id, "failed", 0, lastErr == "" ? "all_legs_failed" : lastErr);
+      return;
+   }
+
+   string body = "{\"status\":\"executed\",\"legs\":[" + legsJson + "]}";
+   string resp; int status;
+   bool postOk = HttpPostJsonWithStatus(
+      ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result", body, resp, status);
+   if(!postOk) {
+      Print("Result POST failed for action ", id, " status=", status,
+            " — sweeper will release after timeout");
+   }
 }
 
 void DoModify(long id, string payload) {

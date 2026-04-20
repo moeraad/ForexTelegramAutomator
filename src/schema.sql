@@ -18,10 +18,11 @@ CREATE TABLE IF NOT EXISTS actions (
   action_type     TEXT NOT NULL CHECK(action_type IN ('OPEN','MODIFY','CLOSE','CLOSE_ALL','ALERT')),
   payload_json    TEXT NOT NULL,
   status          TEXT NOT NULL DEFAULT 'pending'
-                  CHECK(status IN ('pending','cancelled','sent','executed','failed','rejected')),
+                  CHECK(status IN ('pending','cancelled','sent','claimed','executed','failed','rejected')),
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
   notified_at     DATETIME,
   execute_after   DATETIME,
+  claimed_at      DATETIME,
   executed_at     DATETIME,
   ea_response     TEXT
 );

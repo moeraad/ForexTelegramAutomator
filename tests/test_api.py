@@ -66,6 +66,75 @@ def test_post_result_executed(tmp_path):
     assert pos["status"] == "open"
 
 
+def test_claim_moves_sent_to_claimed(tmp_path):
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', '{}', 'sent')"
+    )
+    aid = cur.lastrowid
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{aid}/claim")
+    assert r.status_code == 200
+    row = conn.execute("SELECT status, claimed_at FROM actions WHERE id=?", (aid,)).fetchone()
+    assert row["status"] == "claimed"
+    assert row["claimed_at"] is not None
+
+
+def test_claim_returns_409_if_not_sent(tmp_path):
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', '{}', 'pending')"
+    )
+    aid = cur.lastrowid
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{aid}/claim")
+    assert r.status_code == 409
+
+
+def test_claim_race_only_one_winner(tmp_path):
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', '{}', 'sent')"
+    )
+    aid = cur.lastrowid
+    client = TestClient(build_app(conn))
+    r1 = client.post(f"/actions/{aid}/claim")
+    r2 = client.post(f"/actions/{aid}/claim")
+    assert {r1.status_code, r2.status_code} == {200, 409}
+
+
+def test_post_result_with_legs_inserts_all_positions(tmp_path):
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', '{}', 'claimed')"
+    )
+    aid = cur.lastrowid
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{aid}/result", json={
+        "status": "executed",
+        "legs": [
+            {"mt5_ticket": 1001, "snapshot": {
+                "symbol": "XAUUSD", "side": "BUY", "volume": 0.05,
+                "entry_price": 4865.0, "sl": 4855.0, "tp": 4880.0}},
+            {"mt5_ticket": 1002, "snapshot": {
+                "symbol": "XAUUSD", "side": "BUY", "volume": 0.05,
+                "entry_price": 4865.0, "sl": 4855.0, "tp": 4890.0}},
+        ],
+    })
+    assert r.status_code == 200
+    row = conn.execute("SELECT status FROM actions WHERE id=?", (aid,)).fetchone()
+    assert row["status"] == "executed"
+    positions = conn.execute(
+        "SELECT mt5_ticket, tp FROM positions WHERE action_id=? ORDER BY mt5_ticket", (aid,)
+    ).fetchall()
+    assert [p["mt5_ticket"] for p in positions] == [1001, 1002]
+    assert [p["tp"] for p in positions] == [4880.0, 4890.0]
+
+
 def test_post_result_close_marks_position_closed(tmp_path):
     conn = _setup(tmp_path)
     cur = conn.execute(

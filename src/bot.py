@@ -10,7 +10,7 @@ from telegram.ext import (
 from src import config
 from src.db import connect, init_schema, get_setting, set_setting
 from src.telegram_format import render_action_notification
-from src.promoter import promote_due_actions
+from src.promoter import promote_due_actions, release_stale_claims
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [bot] %(levelname)s %(message)s")
@@ -207,9 +207,23 @@ async def promotion_loop(app: Application):
         await asyncio.sleep(1.0)
 
 
+async def claim_sweeper_loop(app: Application):
+    """Periodically release claimed actions a crashed EA never confirmed."""
+    conn: sqlite3.Connection = app.bot_data["conn"]
+    while True:
+        try:
+            n = release_stale_claims(conn, max_age_sec=120)
+            if n:
+                log.warning("released %s stale claim(s)", n)
+        except Exception as e:
+            log.exception("claim_sweeper_loop error: %s", e)
+        await asyncio.sleep(15.0)
+
+
 async def post_init(app: Application):
     asyncio.create_task(notification_dispatcher(app))
     asyncio.create_task(promotion_loop(app))
+    asyncio.create_task(claim_sweeper_loop(app))
 
 
 def main() -> None:
