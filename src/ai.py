@@ -104,8 +104,9 @@ DECISION RULES (apply within the tier logic above):
       from RECENT CHAT ("as mentioned", "update on the gold buy",
       "still valid", quoted blocks, forwards). Treat as Tier 2 CONTEXT
       (category="context") with a short ALERT note.
-5. Symbol is always XAUUSD. A non-gold instrument → Tier 1 IGNORE
-   (category="ignore", zero actions).
+5. Symbol is always XAUUSD. A non-gold instrument → Tier 2 CONTEXT with a
+   single ALERT level="info" like "[context] non-gold instrument <X>
+   mentioned; skipped" so the user still has visibility.
 
 Be precise. Output JSON ONLY."""
 

@@ -45,3 +45,11 @@ FINGERPRINT_WINDOW_HOURS = int(os.getenv("FINGERPRINT_WINDOW_HOURS", "6"))
 # messages are archived with is_backfill=1 and not processed because price
 # has likely moved too far for the signal to be safe.
 BACKFILL_MAX_AGE_MIN = int(os.getenv("BACKFILL_MAX_AGE_MIN", "30"))
+
+# Signal memory: distilled AI summaries of prior non-ignore messages are
+# accumulated and fed back into every call in place of the raw 20-message
+# chat window. Cleared when an OPEN action lands (the deliberation resolved).
+# Falls back to raw recent-chat when disabled.
+SIGNAL_MEMORY_ENABLED = os.getenv("SIGNAL_MEMORY_ENABLED", "1") not in ("0", "false", "False", "")
+SIGNAL_MEMORY_MAX_ENTRIES = int(os.getenv("SIGNAL_MEMORY_MAX_ENTRIES", "10"))
+SIGNAL_MEMORY_MAX_AGE_HOURS = int(os.getenv("SIGNAL_MEMORY_MAX_AGE_HOURS", "4"))

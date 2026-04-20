@@ -2,9 +2,16 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from src import signal_memory
 from src.ai import AIClient
 from src.ai_logger import log_call
-from src.config import FINGERPRINT_BAND_PRICE, FINGERPRINT_WINDOW_HOURS
+from src.config import (
+    FINGERPRINT_BAND_PRICE,
+    FINGERPRINT_WINDOW_HOURS,
+    SIGNAL_MEMORY_ENABLED,
+    SIGNAL_MEMORY_MAX_AGE_HOURS,
+    SIGNAL_MEMORY_MAX_ENTRIES,
+)
 from src.fingerprint import signal_fingerprint
 from src.state_summary import render_open_positions
 from src.validators import Action, AlertAction, OpenAction, validate_action
@@ -90,10 +97,16 @@ def process_message(
         return []  # duplicate
 
     open_positions_block = render_open_positions(conn)
-    recent_chat = _recent_chat_text(conn, chat_id, RECENT_CHAT_WINDOW)
+    if SIGNAL_MEMORY_ENABLED:
+        entries = signal_memory.load_active(
+            conn, SIGNAL_MEMORY_MAX_ENTRIES, SIGNAL_MEMORY_MAX_AGE_HOURS
+        )
+        context_block = signal_memory.render(entries)
+    else:
+        context_block = _recent_chat_text(conn, chat_id, RECENT_CHAT_WINDOW)
 
     try:
-        result = ai.call(recent_chat, open_positions_block, f"{sender}: {text}")
+        result = ai.call(context_block, open_positions_block, f"{sender}: {text}")
     except Exception as e:
         # Persist as ALERT so user is informed
         cur = conn.execute(
@@ -111,7 +124,14 @@ def process_message(
         **result.usage,
     })
 
+    if SIGNAL_MEMORY_ENABLED and result.response.category and result.response.category != "ignore":
+        signal_memory.record(
+            conn, msg_id, result.response.category,
+            signal_memory.summarize(result.response),
+        )
+
     inserted: list[int] = []
+    open_persisted = False
     for action in result.response.actions:
         payload = json.dumps(_payload_for(action))
         fp: str | None = None
@@ -156,4 +176,9 @@ def process_message(
             (msg_id, _action_type(action), payload, execute_after, fp),
         )
         inserted.append(cur.lastrowid)
+        if isinstance(action, OpenAction):
+            open_persisted = True
+
+    if SIGNAL_MEMORY_ENABLED and open_persisted:
+        signal_memory.clear_on_open(conn)
     return inserted

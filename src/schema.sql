@@ -46,6 +46,17 @@ CREATE TABLE IF NOT EXISTS positions (
 );
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 
+CREATE TABLE IF NOT EXISTS signal_memory (
+  id              INTEGER PRIMARY KEY,
+  message_id      INTEGER REFERENCES messages(id),
+  category        TEXT NOT NULL CHECK(category IN ('context','signal','partial_signal')),
+  summary         TEXT NOT NULL,
+  created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+  cleared_at      DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_signal_memory_active
+  ON signal_memory(cleared_at, created_at);
+
 CREATE TABLE IF NOT EXISTS settings (
   key             TEXT PRIMARY KEY,
   value           TEXT NOT NULL
