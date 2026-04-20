@@ -37,13 +37,19 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             raw = (await request.body()).decode("utf-8", errors="replace")
         except Exception as e:
             raw = f"<unreadable: {e}>"
+        safe_errors = []
+        for err in exc.errors():
+            e = dict(err)
+            if isinstance(e.get("input"), (bytes, bytearray)):
+                e["input"] = bytes(e["input"]).decode("utf-8", errors="replace")
+            safe_errors.append(e)
         log.error(
             "422 on %s %s | errors=%s | raw_body=%r",
-            request.method, request.url.path, exc.errors(), raw,
+            request.method, request.url.path, safe_errors, raw,
         )
         return JSONResponse(
             status_code=422,
-            content={"detail": exc.errors(), "raw_body": raw},
+            content={"detail": safe_errors, "raw_body": raw},
         )
 
     @app.get("/actions")
