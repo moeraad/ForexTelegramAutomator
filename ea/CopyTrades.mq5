@@ -65,10 +65,12 @@ bool HttpPostJson(string url, string jsonBody, string &outBody) {
 }
 
 bool HttpPostJsonWithStatus(string url, string jsonBody, string &outBody, int &outStatus) {
-   char post[]; char result[]; string headers = "Content-Type: application/json\r\n";
+   char post[]; char result[];
+   string reqHeaders = "Content-Type: application/json\r\n";
+   string respHeaders;
    StringToCharArray(jsonBody, post, 0, StringLen(jsonBody));
    ArrayResize(post, StringLen(jsonBody));
-   int res = WebRequest("POST", url, headers, "", 5000, post, ArraySize(post), result, headers);
+   int res = WebRequest("POST", url, reqHeaders, 5000, post, result, respHeaders);
    if(res == -1) {
       Print("WebRequest POST error ", GetLastError(), " url=", url);
       outStatus = -1;
