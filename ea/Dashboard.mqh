@@ -1,0 +1,411 @@
+//+------------------------------------------------------------------+
+//|  Dashboard.mqh — CCanvas-based live dashboard for CopyTrades EA  |
+//|                                                                  |
+//|  The EA populates a DashboardStats struct once per second and    |
+//|  calls CDashboard::Update(). Repaint is gated on a hash of the   |
+//|  stats, so a chart with no state changes does zero canvas work.  |
+//+------------------------------------------------------------------+
+#property strict
+#include <Canvas\Canvas.mqh>
+
+// GitHub-dark-ish palette (AARRGGBB).
+#define DSH_BG       0xFF0E1117
+#define DSH_PANEL    0xFF161B22
+#define DSH_BORDER   0xFF30363D
+#define DSH_TEXT     0xFFC9D1D9
+#define DSH_MUTED    0xFF8B949E
+#define DSH_ACCENT   0xFF58A6FF
+#define DSH_OK       0xFF3FB950
+#define DSH_WARN     0xFFD29922
+#define DSH_DANGER   0xFFF85149
+
+#define DSH_MAX_TRADES 4
+
+// Per-position snapshot for the OPEN TRADES panel. Populated by the EA in
+// BuildStats from g_plans[] (for signals opened this session) or from the
+// MT5 position directly (for pre-restart tickets without an in-memory plan).
+struct DashboardTrade {
+   long     ticket;
+   bool     isBuy;
+   double   currentVol;
+   double   entry;
+   double   origLots;
+   double   tps[3];
+   int      tpCount;
+   int      stage;                 // 0 none hit, 1 tp1 hit, 2 tp2 hit
+   bool     hasPlan;               // false -> only mt5-side single TP is known
+   double   profit_per_stage[3];   // account-ccy profit at each TP's partial close
+   double   profit_total;          // sum if all TPs hit
+};
+
+struct DashboardStats {
+   // Health
+   bool     api_ok;
+   int      api_age_sec;
+   bool     kill_switch_on;
+   bool     algo_allowed;
+   int      uptime_sec;
+
+   // Now
+   int      open_positions;
+   int      watches;
+   long     last_action_id;
+   string   last_action_type;
+   string   last_action_status;
+   int      last_action_age_sec;
+
+   // Today
+   int      signals_today;
+   int      executed_today;
+   int      rejected_today;
+   int      chased_today;
+   double   realized_pnl_today;
+   double   open_pnl;
+
+   // Risk
+   double   balance;
+   double   equity;
+   double   free_margin;
+   double   drawdown_pct;
+   double   risk_if_all_sl_hit_pct;
+
+   // Capacity
+   double   lots_deployed;
+   double   lots_cap;
+   int      max_positions;
+
+   string   account_ccy;
+
+   // Open trades detail (for OPEN TRADES section).
+   DashboardTrade open_trades[DSH_MAX_TRADES];
+   int            open_trades_count;  // may exceed DSH_MAX_TRADES (rendered as "+N more")
+};
+
+class CDashboard {
+private:
+   CCanvas  m_canvas;
+   string   m_name;
+   int      m_width;
+   int      m_height;
+   int      m_x;
+   int      m_y;
+   string   m_font;
+   int      m_font_size;
+   int      m_font_size_big;
+   ulong    m_last_hash;
+   int      m_cursor_y;
+
+   ulong    HashStats(const DashboardStats &s);
+   void     DrawHeader(const DashboardStats &s);
+   void     DrawHealth(const DashboardStats &s);
+   void     DrawNow(const DashboardStats &s);
+   void     DrawOpenTrades(const DashboardStats &s);
+   void     DrawToday(const DashboardStats &s);
+   void     DrawSection(string title);
+   void     DrawRow(string label, string value, uint value_color);
+   void     DrawDivider();
+   void     Pill(int x, int y, string text, uint bg, uint fg);
+   string   FmtDuration(int sec);
+   string   FmtSigned(double v, int decimals);
+   uint     PnlColor(double v);
+
+public:
+   CDashboard() : m_name("CT_Dashboard"), m_width(380), m_height(760),
+                  m_x(20), m_y(20), m_font("Consolas"),
+                  m_font_size(10), m_font_size_big(12), m_last_hash(0),
+                  m_cursor_y(0) {}
+   bool Create(int x = 20, int y = 20);
+   void Destroy();
+   void Update(const DashboardStats &s);
+};
+
+//--- lifecycle ------------------------------------------------------
+
+bool CDashboard::Create(int x, int y) {
+   m_x = x;
+   m_y = y;
+   if(!m_canvas.CreateBitmapLabel(m_name, m_x, m_y, m_width, m_height,
+                                  COLOR_FORMAT_ARGB_NORMALIZE)) {
+      Print("CT dashboard: CreateBitmapLabel failed, err=", GetLastError());
+      return false;
+   }
+   ObjectSetInteger(0, m_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, m_name, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+   ObjectSetInteger(0, m_name, OBJPROP_XDISTANCE, m_x);
+   ObjectSetInteger(0, m_name, OBJPROP_YDISTANCE, m_y);
+   ObjectSetInteger(0, m_name, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, m_name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, m_name, OBJPROP_SELECTABLE, false);
+   m_canvas.FontSet(m_font, -m_font_size * 10, FW_NORMAL);
+   m_canvas.Erase(DSH_BG);
+   m_canvas.Update();
+   return true;
+}
+
+void CDashboard::Destroy() {
+   m_canvas.Destroy();
+}
+
+//--- public update (gated by hash) ----------------------------------
+
+void CDashboard::Update(const DashboardStats &s) {
+   ulong h = HashStats(s);
+   if(h == m_last_hash) return;
+   m_last_hash = h;
+
+   m_canvas.Erase(DSH_BG);
+   m_canvas.Rectangle(0, 0, m_width - 1, m_height - 1, DSH_BORDER);
+
+   m_cursor_y = 10;
+   DrawHeader(s);
+   DrawDivider();
+   DrawHealth(s);
+   DrawDivider();
+   DrawNow(s);
+   DrawDivider();
+   DrawOpenTrades(s);
+   DrawDivider();
+   DrawToday(s);
+
+   m_canvas.Update();
+}
+
+//--- sections -------------------------------------------------------
+
+void CDashboard::DrawHeader(const DashboardStats &s) {
+   m_canvas.FontSet(m_font, -m_font_size_big * 10, FW_BOLD);
+   m_canvas.TextOut(12, m_cursor_y, "COPYTRADES", DSH_ACCENT, TA_LEFT | TA_TOP);
+
+   string pill_text; uint bg;
+   if(s.kill_switch_on)        { pill_text = "HALTED";   bg = DSH_DANGER; }
+   else if(!s.api_ok)          { pill_text = "API DOWN"; bg = DSH_DANGER; }
+   else if(!s.algo_allowed)    { pill_text = "ALGO OFF"; bg = DSH_WARN;   }
+   else                        { pill_text = "LIVE";     bg = DSH_OK;     }
+   Pill(m_width - 80, m_cursor_y - 2, pill_text, bg, 0xFF000000);
+
+   m_cursor_y += 22;
+   m_canvas.FontSet(m_font, -m_font_size * 10, FW_NORMAL);
+   m_canvas.TextOut(12, m_cursor_y,
+      "uptime " + FmtDuration(s.uptime_sec) + "   " + s.account_ccy,
+      DSH_MUTED, TA_LEFT | TA_TOP);
+   m_cursor_y += 16;
+}
+
+void CDashboard::DrawHealth(const DashboardStats &s) {
+   DrawSection("HEALTH");
+   DrawRow("API",
+      s.api_ok ? ("ok, " + IntegerToString(s.api_age_sec) + "s ago") : "unreachable",
+      s.api_ok ? DSH_OK : DSH_DANGER);
+   DrawRow("Kill switch",
+      s.kill_switch_on ? "ON" : "off",
+      s.kill_switch_on ? DSH_DANGER : DSH_TEXT);
+   DrawRow("Algo trading",
+      s.algo_allowed ? "enabled" : "disabled",
+      s.algo_allowed ? DSH_OK : DSH_WARN);
+}
+
+void CDashboard::DrawNow(const DashboardStats &s) {
+   DrawSection("NOW");
+   DrawRow("Open positions",
+      IntegerToString(s.open_positions) + " / " + IntegerToString(s.max_positions),
+      DSH_TEXT);
+   DrawRow("Watches",
+      IntegerToString(s.watches), DSH_TEXT);
+   DrawRow("Lots deployed",
+      DoubleToString(s.lots_deployed, 2) + " / " + DoubleToString(s.lots_cap, 2),
+      DSH_TEXT);
+   DrawRow("Open P&L",
+      FmtSigned(s.open_pnl, 2) + " " + s.account_ccy,
+      PnlColor(s.open_pnl));
+   if(s.last_action_id > 0) {
+      DrawRow("Last action",
+         "#" + IntegerToString(s.last_action_id) + " " +
+         s.last_action_type + " " + s.last_action_status + "  " +
+         FmtDuration(s.last_action_age_sec) + " ago",
+         DSH_MUTED);
+   } else {
+      DrawRow("Last action", "-", DSH_MUTED);
+   }
+}
+
+void CDashboard::DrawOpenTrades(const DashboardStats &s) {
+   DrawSection("OPEN TRADES");
+   if(s.open_trades_count == 0) {
+      m_canvas.TextOut(12, m_cursor_y, "none", DSH_MUTED, TA_LEFT | TA_TOP);
+      m_cursor_y += 16;
+      return;
+   }
+   int shown = s.open_trades_count;
+   if(shown > DSH_MAX_TRADES) shown = DSH_MAX_TRADES;
+   for(int i = 0; i < shown; i++) {
+      // Header line: ticket, side, current vol @ entry
+      string hdr = "#" + IntegerToString(s.open_trades[i].ticket) + " "
+                 + (s.open_trades[i].isBuy ? "BUY " : "SELL ")
+                 + DoubleToString(s.open_trades[i].currentVol, 2);
+      if(s.open_trades[i].entry > 0)
+         hdr += " @ " + DoubleToString(s.open_trades[i].entry, 2);
+      m_canvas.TextOut(12, m_cursor_y, hdr, DSH_TEXT, TA_LEFT | TA_TOP);
+      m_cursor_y += 16;
+
+      if(!s.open_trades[i].hasPlan) {
+         // No in-memory plan (pre-restart ticket or 1-TP signal). Show the
+         // single MT5-side TP if set, otherwise "-".
+         string line;
+         if(s.open_trades[i].tpCount > 0 && s.open_trades[i].tps[0] > 0)
+            line = "TP " + DoubleToString(s.open_trades[i].tps[0], 2);
+         else
+            line = "no TP";
+         m_canvas.TextOut(24, m_cursor_y, line, DSH_MUTED, TA_LEFT | TA_TOP);
+         m_cursor_y += 16;
+         continue;
+      }
+
+      int n = s.open_trades[i].tpCount;
+      int stage = s.open_trades[i].stage;
+      for(int k = 0; k < n; k++) {
+         string glyph = "- ";
+         uint   col   = DSH_TEXT;
+         if(k < stage)       { glyph = "* "; col = DSH_OK;     }  // hit
+         else if(k == stage) { glyph = "> "; col = DSH_ACCENT; }  // next target
+         string lbl = glyph + "TP" + IntegerToString(k + 1) + " "
+                    + DoubleToString(s.open_trades[i].tps[k], 2);
+         string val = FmtSigned(s.open_trades[i].profit_per_stage[k], 2)
+                    + " " + s.account_ccy;
+         m_canvas.TextOut(24, m_cursor_y, lbl, col, TA_LEFT | TA_TOP);
+         m_canvas.TextOut(m_width - 12, m_cursor_y, val,
+                          PnlColor(s.open_trades[i].profit_per_stage[k]),
+                          TA_RIGHT | TA_TOP);
+         m_cursor_y += 16;
+      }
+      // Total if all TPs hit.
+      m_canvas.TextOut(24, m_cursor_y, "Total if all hit",
+                       DSH_MUTED, TA_LEFT | TA_TOP);
+      string tot = FmtSigned(s.open_trades[i].profit_total, 2)
+                 + " " + s.account_ccy;
+      m_canvas.TextOut(m_width - 12, m_cursor_y, tot,
+                       PnlColor(s.open_trades[i].profit_total),
+                       TA_RIGHT | TA_TOP);
+      m_cursor_y += 18;
+   }
+   if(s.open_trades_count > DSH_MAX_TRADES) {
+      m_canvas.TextOut(12, m_cursor_y,
+         "+" + IntegerToString(s.open_trades_count - DSH_MAX_TRADES) + " more",
+         DSH_MUTED, TA_LEFT | TA_TOP);
+      m_cursor_y += 16;
+   }
+}
+
+void CDashboard::DrawToday(const DashboardStats &s) {
+   DrawSection("TODAY");
+   DrawRow("Signals",
+      IntegerToString(s.signals_today) + " received", DSH_TEXT);
+   DrawRow("Executed",
+      IntegerToString(s.executed_today), DSH_OK);
+   DrawRow("Rejected",
+      IntegerToString(s.rejected_today),
+      s.rejected_today > 0 ? DSH_WARN : DSH_MUTED);
+   DrawRow("Chased",
+      IntegerToString(s.chased_today),
+      s.chased_today > 0 ? DSH_ACCENT : DSH_MUTED);
+   DrawRow("Realized P&L",
+      FmtSigned(s.realized_pnl_today, 2) + " " + s.account_ccy,
+      PnlColor(s.realized_pnl_today));
+}
+
+//--- primitives -----------------------------------------------------
+
+void CDashboard::DrawSection(string title) {
+   m_cursor_y += 6;
+   m_canvas.FontSet(m_font, -m_font_size * 10, FW_BOLD);
+   m_canvas.TextOut(12, m_cursor_y, title, DSH_ACCENT, TA_LEFT | TA_TOP);
+   m_cursor_y += 18;
+   m_canvas.FontSet(m_font, -m_font_size * 10, FW_NORMAL);
+}
+
+void CDashboard::DrawRow(string label, string value, uint value_color) {
+   m_canvas.TextOut(12, m_cursor_y, label, DSH_MUTED, TA_LEFT | TA_TOP);
+   m_canvas.TextOut(m_width - 12, m_cursor_y, value, value_color,
+                    TA_RIGHT | TA_TOP);
+   m_cursor_y += 16;
+}
+
+void CDashboard::DrawDivider() {
+   m_cursor_y += 4;
+   m_canvas.Line(12, m_cursor_y, m_width - 12, m_cursor_y, DSH_BORDER);
+   m_cursor_y += 2;
+}
+
+void CDashboard::Pill(int x, int y, string text, uint bg, uint fg) {
+   int w = 68, h = 18;
+   m_canvas.FillRectangle(x, y, x + w, y + h, bg);
+   m_canvas.FontSet(m_font, -9 * 10, FW_BOLD);
+   m_canvas.TextOut(x + w / 2, y + 2, text, fg, TA_CENTER | TA_TOP);
+   m_canvas.FontSet(m_font, -m_font_size * 10, FW_NORMAL);
+}
+
+//--- helpers --------------------------------------------------------
+
+ulong CDashboard::HashStats(const DashboardStats &s) {
+   // FNV-ish: ints + money rounded to cents — sub-cent P&L noise won't redraw.
+   ulong h = 1469598103934665603UL;
+   h = (h ^ (ulong)(s.api_ok ? 1 : 0)) * 1099511628211UL;
+   h = (h ^ (ulong)s.api_age_sec) * 1099511628211UL;
+   h = (h ^ (ulong)(s.kill_switch_on ? 1 : 0)) * 1099511628211UL;
+   h = (h ^ (ulong)(s.algo_allowed ? 1 : 0)) * 1099511628211UL;
+   h = (h ^ (ulong)s.uptime_sec) * 1099511628211UL;
+   h = (h ^ (ulong)s.open_positions) * 1099511628211UL;
+   h = (h ^ (ulong)s.watches) * 1099511628211UL;
+   h = (h ^ (ulong)s.last_action_id) * 1099511628211UL;
+   h = (h ^ (ulong)s.last_action_age_sec) * 1099511628211UL;
+   h = (h ^ (ulong)s.signals_today) * 1099511628211UL;
+   h = (h ^ (ulong)s.executed_today) * 1099511628211UL;
+   h = (h ^ (ulong)s.rejected_today) * 1099511628211UL;
+   h = (h ^ (ulong)s.chased_today) * 1099511628211UL;
+   h = (h ^ (ulong)MathRound(s.realized_pnl_today * 100)) * 1099511628211UL;
+   h = (h ^ (ulong)MathRound(s.open_pnl * 100)) * 1099511628211UL;
+   h = (h ^ (ulong)MathRound(s.balance * 100)) * 1099511628211UL;
+   h = (h ^ (ulong)MathRound(s.equity * 100)) * 1099511628211UL;
+   h = (h ^ (ulong)MathRound(s.free_margin * 100)) * 1099511628211UL;
+   h = (h ^ (ulong)MathRound(s.drawdown_pct * 100)) * 1099511628211UL;
+   h = (h ^ (ulong)MathRound(s.risk_if_all_sl_hit_pct * 100)) * 1099511628211UL;
+   h = (h ^ (ulong)MathRound(s.lots_deployed * 100)) * 1099511628211UL;
+   h = (h ^ (ulong)s.open_trades_count) * 1099511628211UL;
+   int shown = s.open_trades_count > DSH_MAX_TRADES ? DSH_MAX_TRADES : s.open_trades_count;
+   for(int i = 0; i < shown; i++) {
+      h = (h ^ (ulong)s.open_trades[i].ticket) * 1099511628211UL;
+      h = (h ^ (ulong)s.open_trades[i].stage) * 1099511628211UL;
+      h = (h ^ (ulong)s.open_trades[i].tpCount) * 1099511628211UL;
+      h = (h ^ (ulong)MathRound(s.open_trades[i].currentVol * 100)) * 1099511628211UL;
+      h = (h ^ (ulong)(s.open_trades[i].hasPlan ? 1 : 0)) * 1099511628211UL;
+      h = (h ^ (ulong)MathRound(s.open_trades[i].entry * 100)) * 1099511628211UL;
+      h = (h ^ (ulong)MathRound(s.open_trades[i].origLots * 100)) * 1099511628211UL;
+      h = (h ^ (ulong)MathRound(s.open_trades[i].profit_total * 100)) * 1099511628211UL;
+      for(int k = 0; k < 3; k++) {
+         h = (h ^ (ulong)MathRound(s.open_trades[i].tps[k] * 100)) * 1099511628211UL;
+         h = (h ^ (ulong)MathRound(s.open_trades[i].profit_per_stage[k] * 100)) * 1099511628211UL;
+      }
+   }
+   return h;
+}
+
+string CDashboard::FmtDuration(int sec) {
+   if(sec < 60) return IntegerToString(sec) + "s";
+   if(sec < 3600) return IntegerToString(sec / 60) + "m";
+   if(sec < 86400) return IntegerToString(sec / 3600) + "h" +
+                          IntegerToString((sec % 3600) / 60) + "m";
+   return IntegerToString(sec / 86400) + "d" +
+          IntegerToString((sec % 86400) / 3600) + "h";
+}
+
+string CDashboard::FmtSigned(double v, int decimals) {
+   string s = DoubleToString(MathAbs(v), decimals);
+   if(v > 0) return "+" + s;
+   if(v < 0) return "-" + s;
+   return s;
+}
+
+uint CDashboard::PnlColor(double v) {
+   if(v > 0.005) return DSH_OK;
+   if(v < -0.005) return DSH_DANGER;
+   return DSH_TEXT;
+}
