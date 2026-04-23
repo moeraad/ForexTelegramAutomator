@@ -18,16 +18,22 @@ CREATE TABLE IF NOT EXISTS actions (
   action_type     TEXT NOT NULL CHECK(action_type IN ('OPEN','MODIFY','CLOSE','CLOSE_ALL','ALERT')),
   payload_json    TEXT NOT NULL,
   status          TEXT NOT NULL DEFAULT 'pending'
-                  CHECK(status IN ('pending','cancelled','sent','claimed','executed','failed','rejected')),
+                  CHECK(status IN ('pending','cancelled','sent','claimed','watching','executed','failed','rejected')),
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
   notified_at     DATETIME,
   execute_after   DATETIME,
   claimed_at      DATETIME,
   executed_at     DATETIME,
   ea_response     TEXT,
-  fingerprint     TEXT
+  fingerprint     TEXT,
+  watch_json      TEXT,
+  expires_at      DATETIME
 );
 CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);
+-- Partial index on expires_at is created by _migrate_actions_for_watching in
+-- db.py, not here: on existing pre-watching DBs the column doesn't exist until
+-- the migration adds it, so a CREATE INDEX in schema.sql would crash before
+-- the migration runs.
 
 CREATE TABLE IF NOT EXISTS positions (
   id              INTEGER PRIMARY KEY,
@@ -49,13 +55,14 @@ CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE TABLE IF NOT EXISTS signal_memory (
   id              INTEGER PRIMARY KEY,
   message_id      INTEGER REFERENCES messages(id),
+  chat_id         INTEGER NOT NULL,
   category        TEXT NOT NULL CHECK(category IN ('context','signal','partial_signal')),
   summary         TEXT NOT NULL,
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
   cleared_at      DATETIME
 );
 CREATE INDEX IF NOT EXISTS idx_signal_memory_active
-  ON signal_memory(cleared_at, created_at);
+  ON signal_memory(chat_id, cleared_at, created_at);
 
 CREATE TABLE IF NOT EXISTS settings (
   key             TEXT PRIMARY KEY,
@@ -64,5 +71,5 @@ CREATE TABLE IF NOT EXISTS settings (
 
 INSERT OR IGNORE INTO settings(key, value) VALUES
   ('kill_switch', 'off'),
-  ('auto_execute_delay_sec', '30'),
+  ('auto_execute_delay_sec', '0'),
   ('last_seen_tg_msg_id', '0');

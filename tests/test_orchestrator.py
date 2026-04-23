@@ -3,7 +3,19 @@ from unittest.mock import MagicMock
 from src.db import connect, init_schema
 from src.orchestrator import process_message
 from src.ai import AICallResult
+from src.ai_triage import TriageResult
 from src.validators import AIResponse, OpenAction, AlertAction
+
+
+def _make_triage(decision: str):
+    tri = MagicMock()
+    tri.classify.return_value = TriageResult(
+        decision=decision, raw_text=f'{{"decision":"{decision}"}}',
+        usage={"input_tokens": 40, "output_tokens": 3,
+               "cache_read_tokens": 0, "cache_creation_tokens": 40},
+        latency_ms=12,
+    )
+    return tri
 
 
 def _make_ai(actions, reasoning=""):
@@ -161,6 +173,61 @@ def test_different_signal_not_rejected(tmp_path):
                            tmp_path / "a.jsonl", 30)
     r2 = conn.execute("SELECT status FROM actions WHERE id=?", (ids2[0],)).fetchone()
     assert r2["status"] == "pending"
+
+
+def test_triage_ignore_short_circuits(tmp_path):
+    """Triage 'ignore' must skip the Sonnet call and write no actions."""
+    conn = connect(str(tmp_path / "o.db"))
+    init_schema(conn)
+    ai = _make_ai([OpenAction(symbol="XAUUSD", side="BUY",
+                              entry_low=4864, entry_high=4866,
+                              tps=[4880], sl=4855)])
+    tri = _make_triage("ignore")
+    ids = process_message(
+        conn, ai, tg_message_id=1, chat_id=42,
+        sender="Y", text="good morning traders",
+        ai_log_path=tmp_path / "ai.jsonl",
+        auto_execute_delay_sec=30,
+        triage=tri,
+    )
+    assert ids == []
+    assert ai.call.call_count == 0
+    assert conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM signal_memory").fetchone()[0] == 0
+    # message row is still persisted for dedup/audit
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+
+
+def test_triage_keep_proceeds_to_sonnet(tmp_path):
+    conn = connect(str(tmp_path / "o.db"))
+    init_schema(conn)
+    ai = _make_ai([OpenAction(symbol="XAUUSD", side="BUY",
+                              entry_low=4864, entry_high=4866,
+                              tps=[4880], sl=4855)])
+    tri = _make_triage("keep")
+    ids = process_message(
+        conn, ai, 1, 42, "Y", "BUY GOLD",
+        tmp_path / "ai.jsonl", 30, triage=tri,
+    )
+    assert ai.call.call_count == 1
+    assert len(ids) == 1
+    row = conn.execute("SELECT status FROM actions WHERE id=?", (ids[0],)).fetchone()
+    assert row["status"] == "pending"
+
+
+def test_triage_exception_falls_through_to_sonnet(tmp_path):
+    """Never drop a message on triage failure — fall through to the full model."""
+    conn = connect(str(tmp_path / "o.db"))
+    init_schema(conn)
+    ai = _make_ai([AlertAction(level="warning", text="watch NFP")])
+    tri = MagicMock()
+    tri.classify.side_effect = RuntimeError("triage down")
+    ids = process_message(
+        conn, ai, 1, 42, "Y", "careful NFP",
+        tmp_path / "ai.jsonl", 30, triage=tri,
+    )
+    assert ai.call.call_count == 1
+    assert len(ids) == 1
 
 
 def test_duplicate_allowed_after_first_is_cancelled(tmp_path):

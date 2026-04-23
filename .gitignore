@@ -9,6 +9,7 @@ copytrades.db-wal
 copytrades.db-shm
 logs/*.jsonl
 logs/*.log
+logs/*.log.*
 .pytest_cache/
 *.egg-info/
 build/

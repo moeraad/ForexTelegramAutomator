@@ -11,17 +11,19 @@ from telethon import TelegramClient, events
 
 from src import config
 from src.ai import AIClient
+from src.ai_triage import TriageClient
 from src.config import (
+    AI_TRIAGE_ENABLED,
     BACKFILL_MAX_AGE_MIN,
     DEFAULT_AUTO_EXECUTE_DELAY_SEC,
     LOGS_DIR,
 )
 from src.db import connect, init_schema, get_setting, set_setting
+from src.llm_provider import default_interpreter_model, default_triage_model
+from src.logging_setup import configure_logging
 from src.orchestrator import process_message
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s [listener] %(levelname)s %(message)s")
-log = logging.getLogger(__name__)
+log = configure_logging("listener")
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,7 @@ def replay_missed_messages(
     auto_execute_delay_sec: int,
     cap_minutes: int,
     now: datetime,
+    triage: TriageClient | None = None,
 ) -> tuple[int, int]:
     """Replay missed messages through the AI pipeline with an age cap.
 
@@ -64,6 +67,7 @@ def replay_missed_messages(
                     msg.sender, msg.text, ai_log_path,
                     auto_execute_delay_sec,
                     is_backfill=True,
+                    triage=triage,
                 )
                 processed += 1
             except Exception:
@@ -103,12 +107,47 @@ async def _collect_missed(client, chat_id: int, min_id: int) -> list[MissedMessa
 
 
 async def main() -> None:
+    # Provider guard: fail fast on missing API key before Telethon auth
+    # so the user doesn't burn session credentials on a broken config.
+    if config.AI_PROVIDER == "openai":
+        if not config.OPENAI_API_KEY:
+            raise SystemExit(
+                "OPENAI_API_KEY must be set when AI_PROVIDER=openai."
+            )
+    elif config.AI_PROVIDER == "anthropic":
+        if not config.ANTHROPIC_API_KEY:
+            raise SystemExit(
+                "ANTHROPIC_API_KEY must be set when AI_PROVIDER=anthropic."
+            )
+    else:
+        raise SystemExit(
+            f"Unknown AI_PROVIDER={config.AI_PROVIDER!r}; "
+            "expected 'anthropic' or 'openai'."
+        )
+
     conn = connect(config.DB_PATH)
     init_schema(conn)
-    ai = AIClient(model=config.ANTHROPIC_MODEL)
+    interp_model = default_interpreter_model()
+    triage_model = default_triage_model()
+    ai = AIClient(model=interp_model)
+    triage = TriageClient(model=triage_model) if AI_TRIAGE_ENABLED else None
+    log.info("ai provider=%s interpreter=%s", config.AI_PROVIDER, interp_model)
+    if triage is not None:
+        log.info("ai triage enabled: model=%s", triage_model)
     ai_log_path = LOGS_DIR / "ai_calls.jsonl"
 
-    client = TelegramClient(config.TG_SESSION_NAME, config.TG_API_ID, config.TG_API_HASH)
+    # connection_retries=-1 tells Telethon to retry forever instead of bailing
+    # after the default 5 attempts (which surfaced as ConnectionError and crashed
+    # the listener). auto_reconnect handles transient drops without re-auth.
+    client = TelegramClient(
+        config.TG_SESSION_NAME,
+        config.TG_API_ID,
+        config.TG_API_HASH,
+        connection_retries=-1,
+        retry_delay=5,
+        auto_reconnect=True,
+        request_retries=5,
+    )
     await client.start(phone=config.TG_PHONE)
 
     last_seen = int(get_setting(conn, "last_seen_tg_msg_id") or "0")
@@ -128,8 +167,11 @@ async def main() -> None:
             text = msg.message or ""
             log.info("received tg_msg_id=%s text=%r", msg.id, text[:80])
             ids = await asyncio.to_thread(
-                process_message, conn, ai, msg.id, config.TG_WATCHED_CHAT_ID,
-                sender_name, text, ai_log_path, delay,
+                lambda: process_message(
+                    conn, ai, msg.id, config.TG_WATCHED_CHAT_ID,
+                    sender_name, text, ai_log_path, delay,
+                    triage=triage,
+                )
             )
             if ids:
                 log.info("inserted action ids=%s", ids)
@@ -166,13 +208,15 @@ async def main() -> None:
                     or str(DEFAULT_AUTO_EXECUTE_DELAY_SEC))
         now = datetime.now(timezone.utc)
         processed, skipped = await asyncio.to_thread(
-            replay_missed_messages,
-            conn, ai, missed,
-            chat_id=config.TG_WATCHED_CHAT_ID,
-            ai_log_path=ai_log_path,
-            auto_execute_delay_sec=delay,
-            cap_minutes=BACKFILL_MAX_AGE_MIN,
-            now=now,
+            lambda: replay_missed_messages(
+                conn, ai, missed,
+                chat_id=config.TG_WATCHED_CHAT_ID,
+                ai_log_path=ai_log_path,
+                auto_execute_delay_sec=delay,
+                cap_minutes=BACKFILL_MAX_AGE_MIN,
+                now=now,
+                triage=triage,
+            )
         )
         conn.execute(
             "INSERT INTO actions(source_msg_id, action_type, payload_json, status) "
@@ -193,7 +237,57 @@ async def main() -> None:
 
     ready.set()
     log.info("listener live; awaiting new messages")
-    await client.run_until_disconnected()
+
+    # Supervisor: Telethon's connection_retries=-1 should prevent ConnectionError
+    # from ever escaping, but wrap run_until_disconnected anyway so a stray
+    # network fault (DNS flap, laptop sleep, ISP hiccup) doesn't kill the
+    # listener. On reconnect we re-run the missed-message backfill so anything
+    # that arrived during the outage is replayed, capped by BACKFILL_MAX_AGE_MIN.
+    backoff = 5
+    while True:
+        try:
+            await client.run_until_disconnected()
+            log.info("telegram client disconnected cleanly; exiting")
+            return
+        except (ConnectionError, OSError) as e:
+            log.warning("telegram disconnected: %s — reconnecting in %ss", e, backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+            try:
+                if not client.is_connected():
+                    await client.connect()
+            except Exception:
+                log.exception("reconnect attempt failed; will retry")
+                continue
+            backoff = 5  # reset after a successful reconnect
+
+            # Replay anything that arrived during the outage.
+            try:
+                last_seen = int(get_setting(conn, "last_seen_tg_msg_id") or "0")
+                missed = await _collect_missed(
+                    client, config.TG_WATCHED_CHAT_ID, last_seen
+                )
+                if missed:
+                    delay = int(get_setting(conn, "auto_execute_delay_sec")
+                                or str(DEFAULT_AUTO_EXECUTE_DELAY_SEC))
+                    now = datetime.now(timezone.utc)
+                    processed, skipped = await asyncio.to_thread(
+                        lambda: replay_missed_messages(
+                            conn, ai, missed,
+                            chat_id=config.TG_WATCHED_CHAT_ID,
+                            ai_log_path=ai_log_path,
+                            auto_execute_delay_sec=delay,
+                            cap_minutes=BACKFILL_MAX_AGE_MIN,
+                            now=now,
+                            triage=triage,
+                        )
+                    )
+                    set_setting(conn, "last_seen_tg_msg_id",
+                                str(max(m.tg_message_id for m in missed)))
+                    log.info("post-reconnect replay: processed=%s skipped=%s",
+                             processed, skipped)
+            except Exception:
+                log.exception("post-reconnect replay failed; continuing live")
 
 
 if __name__ == "__main__":

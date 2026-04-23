@@ -45,39 +45,42 @@ def summarize(response: AIResponse) -> str:
 def record(
     conn: sqlite3.Connection,
     message_id: int,
+    chat_id: int,
     category: str,
     summary: str,
 ) -> int:
-    """Insert a memory entry. Returns the new row id. Ignores 'ignore'."""
+    """Insert a memory entry scoped to a chat. Returns row id. Ignores 'ignore'."""
     if category == "ignore":
         return 0
     if category not in ("context", "signal", "partial_signal"):
         raise ValueError(f"unexpected category: {category}")
     cur = conn.execute(
-        "INSERT INTO signal_memory(message_id, category, summary) VALUES(?,?,?)",
-        (message_id, category, summary),
+        "INSERT INTO signal_memory(message_id, chat_id, category, summary) VALUES(?,?,?,?)",
+        (message_id, chat_id, category, summary),
     )
     return cur.lastrowid
 
 
 def load_active(
     conn: sqlite3.Connection,
+    chat_id: int,
     max_entries: int,
     max_age_hours: int,
 ) -> list[sqlite3.Row]:
-    """Return active entries (not cleared, within age cap), oldest first.
+    """Return active entries for a chat (not cleared, within age cap), oldest first.
 
     When the active set exceeds max_entries we keep the newest ones and drop
     the oldest so the model always sees the most recent deliberation.
     """
     rows = conn.execute(
-        "SELECT id, message_id, category, summary, created_at "
+        "SELECT id, message_id, chat_id, category, summary, created_at "
         "FROM signal_memory "
-        "WHERE cleared_at IS NULL "
+        "WHERE chat_id=? "
+        "  AND cleared_at IS NULL "
         "  AND created_at > datetime('now', ?) "
         "ORDER BY id DESC "
         "LIMIT ?",
-        (f"-{max_age_hours} hours", max_entries),
+        (chat_id, f"-{max_age_hours} hours", max_entries),
     ).fetchall()
     return list(reversed(rows))
 
@@ -94,15 +97,15 @@ def render(entries: Iterable[sqlite3.Row]) -> str:
     return "\n".join(lines)
 
 
-def clear_on_open(conn: sqlite3.Connection) -> int:
-    """Mark all active memory as cleared. Called after a successful OPEN.
+def clear_on_open(conn: sqlite3.Connection, chat_id: int) -> int:
+    """Mark active memory for one chat as cleared. Called after a successful OPEN.
 
-    Returns number of rows cleared. The simple rule is 'a trade landed,
-    deliberation chapter closed'. Context for the next trade will rebuild
-    from subsequent messages.
+    Scoped per chat so a resolved signal in channel A doesn't wipe the
+    in-flight deliberation in channel B. Returns number of rows cleared.
     """
     cur = conn.execute(
         "UPDATE signal_memory SET cleared_at = CURRENT_TIMESTAMP "
-        "WHERE cleared_at IS NULL"
+        "WHERE chat_id=? AND cleared_at IS NULL",
+        (chat_id,),
     )
     return cur.rowcount

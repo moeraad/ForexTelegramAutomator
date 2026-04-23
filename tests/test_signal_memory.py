@@ -70,41 +70,50 @@ def test_summarize_no_actions_uses_reasoning():
 
 
 def test_record_and_load_active(conn):
-    signal_memory.record(conn, 1, "context", "context: bullish bias")
-    signal_memory.record(conn, 1, "partial_signal", "partial_signal: missing SL")
-    rows = signal_memory.load_active(conn, max_entries=10, max_age_hours=4)
+    signal_memory.record(conn, 1, 100, "context", "context: bullish bias")
+    signal_memory.record(conn, 1, 100, "partial_signal", "partial_signal: missing SL")
+    rows = signal_memory.load_active(conn, 100, max_entries=10, max_age_hours=4)
     assert len(rows) == 2
     assert rows[0]["summary"] == "context: bullish bias"
     assert rows[1]["summary"] == "partial_signal: missing SL"
 
 
 def test_record_ignore_is_noop(conn):
-    new_id = signal_memory.record(conn, 1, "ignore", "ignored")
+    new_id = signal_memory.record(conn, 1, 100, "ignore", "ignored")
     assert new_id == 0
-    assert signal_memory.load_active(conn, 10, 4) == []
+    assert signal_memory.load_active(conn, 100, 10, 4) == []
 
 
 def test_record_rejects_unknown_category(conn):
     with pytest.raises(ValueError):
-        signal_memory.record(conn, 1, "garbage", "x")
+        signal_memory.record(conn, 1, 100, "garbage", "x")
 
 
 def test_load_active_cap_keeps_newest(conn):
     for i in range(15):
-        signal_memory.record(conn, 1, "context", f"entry-{i}")
-    rows = signal_memory.load_active(conn, max_entries=5, max_age_hours=4)
+        signal_memory.record(conn, 1, 100, "context", f"entry-{i}")
+    rows = signal_memory.load_active(conn, 100, max_entries=5, max_age_hours=4)
     summaries = [r["summary"] for r in rows]
     assert summaries == [f"entry-{i}" for i in range(10, 15)]
 
 
 def test_load_active_respects_age(conn):
     conn.execute(
-        "INSERT INTO signal_memory(message_id, category, summary, created_at) "
-        "VALUES(1, 'context', 'stale', datetime('now', '-5 hours'))"
+        "INSERT INTO signal_memory(message_id, chat_id, category, summary, created_at) "
+        "VALUES(1, 100, 'context', 'stale', datetime('now', '-5 hours'))"
     )
-    signal_memory.record(conn, 1, "context", "fresh")
-    rows = signal_memory.load_active(conn, max_entries=10, max_age_hours=4)
+    signal_memory.record(conn, 1, 100, "context", "fresh")
+    rows = signal_memory.load_active(conn, 100, max_entries=10, max_age_hours=4)
     assert [r["summary"] for r in rows] == ["fresh"]
+
+
+def test_load_active_is_scoped_by_chat(conn):
+    signal_memory.record(conn, 1, 100, "context", "chat-A bias")
+    signal_memory.record(conn, 1, 200, "context", "chat-B bias")
+    rows_a = signal_memory.load_active(conn, 100, 10, 4)
+    rows_b = signal_memory.load_active(conn, 200, 10, 4)
+    assert [r["summary"] for r in rows_a] == ["chat-A bias"]
+    assert [r["summary"] for r in rows_b] == ["chat-B bias"]
 
 
 def test_render_empty():
@@ -114,10 +123,10 @@ def test_render_empty():
 
 
 def test_render_entries(conn):
-    signal_memory.record(conn, 1, "context", "context: bullish")
+    signal_memory.record(conn, 1, 100, "context", "context: bullish")
     time.sleep(0.01)
-    signal_memory.record(conn, 1, "signal", "signal: SELL XAUUSD 4794")
-    entries = signal_memory.load_active(conn, 10, 4)
+    signal_memory.record(conn, 1, 100, "signal", "signal: SELL XAUUSD 4794")
+    entries = signal_memory.load_active(conn, 100, 10, 4)
     out = signal_memory.render(entries)
     assert "context: bullish" in out
     assert "signal: SELL XAUUSD 4794" in out
@@ -126,17 +135,26 @@ def test_render_entries(conn):
 
 def test_clear_on_open_marks_all_active(conn):
     m1 = _msg_id(conn, 2)
-    signal_memory.record(conn, 1, "context", "bias")
-    signal_memory.record(conn, m1, "partial_signal", "partial")
-    cleared = signal_memory.clear_on_open(conn)
+    signal_memory.record(conn, 1, 100, "context", "bias")
+    signal_memory.record(conn, m1, 100, "partial_signal", "partial")
+    cleared = signal_memory.clear_on_open(conn, 100)
     assert cleared == 2
-    assert signal_memory.load_active(conn, 10, 4) == []
+    assert signal_memory.load_active(conn, 100, 10, 4) == []
 
 
 def test_clear_on_open_leaves_already_cleared(conn):
-    signal_memory.record(conn, 1, "context", "old")
-    signal_memory.clear_on_open(conn)
-    signal_memory.record(conn, 1, "context", "fresh")
-    cleared = signal_memory.clear_on_open(conn)
+    signal_memory.record(conn, 1, 100, "context", "old")
+    signal_memory.clear_on_open(conn, 100)
+    signal_memory.record(conn, 1, 100, "context", "fresh")
+    cleared = signal_memory.clear_on_open(conn, 100)
     assert cleared == 1
-    assert signal_memory.load_active(conn, 10, 4) == []
+    assert signal_memory.load_active(conn, 100, 10, 4) == []
+
+
+def test_clear_on_open_is_scoped_by_chat(conn):
+    signal_memory.record(conn, 1, 100, "context", "chat-A")
+    signal_memory.record(conn, 1, 200, "context", "chat-B")
+    cleared = signal_memory.clear_on_open(conn, 100)
+    assert cleared == 1
+    assert signal_memory.load_active(conn, 100, 10, 4) == []
+    assert [r["summary"] for r in signal_memory.load_active(conn, 200, 10, 4)] == ["chat-B"]

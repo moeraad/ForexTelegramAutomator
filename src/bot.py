@@ -9,12 +9,11 @@ from telegram.ext import (
 )
 from src import config
 from src.db import connect, init_schema, get_setting, set_setting
+from src.logging_setup import configure_logging
 from src.telegram_format import render_action_notification
-from src.promoter import promote_due_actions, release_stale_claims
+from src.promoter import promote_due_actions, release_stale_claims, expire_stale_watches
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s [bot] %(levelname)s %(message)s")
-log = logging.getLogger(__name__)
+log = configure_logging("bot")
 
 
 def _owner_only(user_id: int) -> bool:
@@ -176,7 +175,8 @@ async def notification_dispatcher(app: Application):
                     ).fetchone()
                     if m:
                         src = m["text"]
-                delay = int(get_setting(conn, "auto_execute_delay_sec") or "30")
+                delay = int(get_setting(conn, "auto_execute_delay_sec")
+                            or str(config.DEFAULT_AUTO_EXECUTE_DELAY_SEC))
                 text = render_action_notification(
                     r["id"], r["action_type"], payload, src, delay
                 )
@@ -220,10 +220,28 @@ async def claim_sweeper_loop(app: Application):
         await asyncio.sleep(15.0)
 
 
+async def watch_sweeper_loop(app: Application):
+    """Reject synthetic-pending watches whose zone expiry has passed.
+
+    Authoritative even when the EA is offline: once expires_at is in the past,
+    the signal is stale regardless of EA state.
+    """
+    conn: sqlite3.Connection = app.bot_data["conn"]
+    while True:
+        try:
+            n = expire_stale_watches(conn)
+            if n:
+                log.info("expired %s stale watch(es)", n)
+        except Exception as e:
+            log.exception("watch_sweeper_loop error: %s", e)
+        await asyncio.sleep(15.0)
+
+
 async def post_init(app: Application):
     asyncio.create_task(notification_dispatcher(app))
     asyncio.create_task(promotion_loop(app))
     asyncio.create_task(claim_sweeper_loop(app))
+    asyncio.create_task(watch_sweeper_loop(app))
 
 
 def main() -> None:
@@ -244,7 +262,11 @@ def main() -> None:
     app.add_handler(CommandHandler("positions", cmd_positions))
     app.add_handler(CommandHandler("closeall", cmd_closeall))
     app.add_handler(CallbackQueryHandler(on_button))
-    app.run_polling()
+    # bootstrap_retries=-1: retry the initial get_me() / getUpdates handshake
+    # forever. Default is 0, so a single transient network blip at startup
+    # (ISP flap, DNS hiccup, laptop just woke up) crashes the bot with
+    # telegram.error.TimedOut before it ever reaches the polling loop.
+    app.run_polling(bootstrap_retries=-1)
 
 
 if __name__ == "__main__":

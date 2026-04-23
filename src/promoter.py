@@ -32,3 +32,20 @@ def release_stale_claims(conn: sqlite3.Connection, max_age_sec: int = 120) -> in
         (cutoff,),
     )
     return cur.rowcount
+
+
+def expire_stale_watches(conn: sqlite3.Connection) -> int:
+    """Reject synthetic-pending watches whose zone expiry has passed.
+
+    Why: once expires_at is in the past, price has likely moved too far for the
+    signal to still be valid. The EA-side watchlist drops it too, but this
+    server-side sweeper is authoritative in case the EA is offline.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cur = conn.execute(
+        "UPDATE actions SET status='rejected', ea_response='zone_expired', "
+        "executed_at=? "
+        "WHERE status='watching' AND expires_at IS NOT NULL AND expires_at < ?",
+        (now_iso, now_iso),
+    )
+    return cur.rowcount

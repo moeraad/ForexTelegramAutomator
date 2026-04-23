@@ -1,10 +1,12 @@
 import json
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from src import signal_memory
 from src.ai import AIClient
 from src.ai_logger import log_call
+from src.ai_triage import TriageClient
 from src.config import (
     FINGERPRINT_BAND_PRICE,
     FINGERPRINT_WINDOW_HOURS,
@@ -15,6 +17,8 @@ from src.config import (
 from src.fingerprint import signal_fingerprint
 from src.state_summary import render_open_positions
 from src.validators import Action, AlertAction, OpenAction, validate_action
+
+log = logging.getLogger(__name__)
 
 
 RECENT_CHAT_WINDOW = 20
@@ -78,6 +82,13 @@ def _has_recent_duplicate_open(
     return row is not None
 
 
+def _open_positions_count(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM positions WHERE status='open'"
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 def process_message(
     conn: sqlite3.Connection,
     ai: AIClient,
@@ -89,6 +100,7 @@ def process_message(
     auto_execute_delay_sec: int,
     *,
     is_backfill: bool = False,
+    triage: TriageClient | None = None,
 ) -> list[int]:
     """Insert message, call AI, validate + persist actions. Returns inserted action IDs."""
     msg_id = _insert_message(conn, tg_message_id, chat_id, sender, text,
@@ -96,10 +108,30 @@ def process_message(
     if msg_id is None:
         return []  # duplicate
 
+    if triage is not None:
+        try:
+            tri = triage.classify(text, _open_positions_count(conn))
+            log_call(ai_log_path, {
+                "msg_id": msg_id,
+                "stage": "triage",
+                "decision": tri.decision,
+                "raw_response": tri.raw_text,
+                "latency_ms": tri.latency_ms,
+                **tri.usage,
+            })
+            if tri.decision == "ignore":
+                return []
+        except Exception as e:
+            # Never drop a message on triage failure — fall through to Sonnet.
+            log.warning("triage failed for msg_id=%s: %s", msg_id, e)
+            log_call(ai_log_path, {
+                "msg_id": msg_id, "stage": "triage", "error": str(e),
+            })
+
     open_positions_block = render_open_positions(conn)
     if SIGNAL_MEMORY_ENABLED:
         entries = signal_memory.load_active(
-            conn, SIGNAL_MEMORY_MAX_ENTRIES, SIGNAL_MEMORY_MAX_AGE_HOURS
+            conn, chat_id, SIGNAL_MEMORY_MAX_ENTRIES, SIGNAL_MEMORY_MAX_AGE_HOURS
         )
         context_block = signal_memory.render(entries)
     else:
@@ -126,7 +158,7 @@ def process_message(
 
     if SIGNAL_MEMORY_ENABLED and result.response.category and result.response.category != "ignore":
         signal_memory.record(
-            conn, msg_id, result.response.category,
+            conn, msg_id, chat_id, result.response.category,
             signal_memory.summarize(result.response),
         )
 
@@ -180,5 +212,5 @@ def process_message(
             open_persisted = True
 
     if SIGNAL_MEMORY_ENABLED and open_persisted:
-        signal_memory.clear_on_open(conn)
+        signal_memory.clear_on_open(conn, chat_id)
     return inserted

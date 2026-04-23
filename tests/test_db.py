@@ -19,7 +19,7 @@ def test_default_settings_seeded(tmp_path):
     conn = connect(str(tmp_path / "t.db"))
     init_schema(conn)
     assert get_setting(conn, "kill_switch") == "off"
-    assert get_setting(conn, "auto_execute_delay_sec") == "30"
+    assert get_setting(conn, "auto_execute_delay_sec") == "0"
 
 
 def test_set_and_get_setting(tmp_path):
