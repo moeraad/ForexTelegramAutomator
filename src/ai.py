@@ -2,9 +2,13 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-import anthropic
-
 from src import config
+from src.llm_provider import (
+    AnthropicProvider,
+    LLMProvider,
+    build_interpreter_provider,
+    reasoning_level,
+)
 from src.validators import AIResponse, parse_ai_response
 
 
@@ -142,26 +146,6 @@ class AICallResult:
     latency_ms: int
 
 
-def _extract_text_block(content: Any) -> str:
-    """Find the assistant's text output among mixed content blocks.
-
-    With extended thinking enabled, content is a list like
-    [ThinkingBlock(thinking=...), TextBlock(text=...)]. We want the text block.
-    Real SDK blocks expose `.type`; test MagicMocks set `.text` to a string
-    directly. Handle both.
-    """
-    if not content:
-        raise ValueError("empty response content")
-    for block in content:
-        if getattr(block, "type", None) == "text":
-            return block.text
-    for block in content:
-        t = getattr(block, "text", None)
-        if isinstance(t, str) and t:
-            return t
-    raise ValueError("no text block in response content")
-
-
 class AIClient:
     def __init__(
         self,
@@ -171,9 +155,19 @@ class AIClient:
         retry_sleep: float = 1.5,
         thinking_enabled: bool | None = None,
         thinking_budget_tokens: int | None = None,
+        provider: LLMProvider | None = None,
     ):
-        self._client = client if client is not None else anthropic.Anthropic()
-        self._model = model
+        # Resolution order:
+        #   1. explicit `provider=` (new-style injection)
+        #   2. legacy `client=` (raw SDK client) → wrap as AnthropicProvider so
+        #      existing tests that pass an anthropic-shaped MagicMock still work
+        #   3. build from config (AI_PROVIDER switch)
+        if provider is not None:
+            self._provider: LLMProvider = provider
+        elif client is not None:
+            self._provider = AnthropicProvider(client=client, model=model)
+        else:
+            self._provider = build_interpreter_provider(model=model)
         self._max_retries = max_retries
         self._retry_sleep = retry_sleep
         self._thinking_enabled = (
@@ -191,52 +185,26 @@ class AIClient:
         open_positions_block: str,
         new_message: str,
     ) -> AICallResult:
-        messages = build_messages(recent_chat, open_positions_block, new_message)
-        system = [
-            {
-                "type": "text",
-                "text": SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ]
-        # Reserve budget_tokens for thinking and ~1024 for the JSON answer.
+        cached_prefix = f"RECENT CHAT (last messages, oldest first):\n{recent_chat}"
+        volatile_suffix = f"{open_positions_block}\n\nNEW MESSAGE:\n{new_message}"
+        level = reasoning_level(self._thinking_enabled, self._thinking_budget)
         output_budget = 1024
-        kwargs: dict[str, Any] = {
-            "model": self._model,
-            "max_tokens": (
-                self._thinking_budget + output_budget
-                if self._thinking_enabled
-                else output_budget
-            ),
-            "system": system,
-            "messages": messages,
-        }
-        if self._thinking_enabled:
-            kwargs["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": self._thinking_budget,
-            }
-            # Extended thinking requires temperature=1.
-            kwargs["temperature"] = 1
         last_err: Exception | None = None
         for attempt in range(self._max_retries):
             try:
-                start = time.monotonic()
-                resp = self._client.messages.create(**kwargs)
-                raw_text = _extract_text_block(resp.content)
-                parsed = parse_ai_response(raw_text)
-                usage = {
-                    "input_tokens": getattr(resp.usage, "input_tokens", 0),
-                    "output_tokens": getattr(resp.usage, "output_tokens", 0),
-                    "cache_read_tokens": getattr(resp.usage, "cache_read_input_tokens", 0),
-                    "cache_creation_tokens": getattr(resp.usage, "cache_creation_input_tokens", 0),
-                }
-                latency_ms = int((time.monotonic() - start) * 1000)
+                result = self._provider.interpret(
+                    system_prompt=SYSTEM_PROMPT,
+                    cached_prefix=cached_prefix,
+                    volatile_suffix=volatile_suffix,
+                    max_output_tokens=output_budget,
+                    reasoning_level=level,
+                )
+                parsed = parse_ai_response(result.raw_text)
                 return AICallResult(
                     response=parsed,
-                    raw_text=raw_text,
-                    usage=usage,
-                    latency_ms=latency_ms,
+                    raw_text=result.raw_text,
+                    usage=result.usage,
+                    latency_ms=result.latency_ms,
                 )
             except Exception as e:
                 last_err = e

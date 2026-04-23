@@ -22,6 +22,19 @@ TG_BOT_OWNER_USER_ID = int(os.getenv("TG_BOT_OWNER_USER_ID", "0"))
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
+# Provider switch: "anthropic" (default) or "openai". Selects the SDK used by
+# both the interpreter (AIClient) and the triage pre-filter (TriageClient).
+AI_PROVIDER = os.getenv("AI_PROVIDER", "anthropic").lower()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
+OPENAI_TRIAGE_MODEL = os.getenv("OPENAI_TRIAGE_MODEL", "gpt-5-nano")
+
+# Two-stage pipeline: a cheap Haiku triage pass decides ignore-vs-keep before
+# the full Sonnet interpreter runs. Cuts Sonnet call volume on noisy channels
+# without losing precision (full model still sees every KEEP message).
+AI_TRIAGE_ENABLED = os.getenv("AI_TRIAGE_ENABLED", "1") not in ("0", "false", "False", "")
+AI_TRIAGE_MODEL = os.getenv("AI_TRIAGE_MODEL", "claude-haiku-4-5-20251001")
+
 # Extended thinking: let the model reason step-by-step before producing JSON.
 # Materially improves parsing of ambiguous/shorthand Arabic signals where
 # entries like "95-94" must be anchored to an explicit SL like "4808".
@@ -31,7 +44,7 @@ AI_THINKING_BUDGET_TOKENS = int(os.getenv("AI_THINKING_BUDGET_TOKENS", "4000"))
 API_HOST = os.getenv("API_HOST", "127.0.0.1")
 API_PORT = int(os.getenv("API_PORT", "8765"))
 
-DEFAULT_AUTO_EXECUTE_DELAY_SEC = 30
+DEFAULT_AUTO_EXECUTE_DELAY_SEC = 0  # 0 = promote on next tick; no grace window
 RECENT_CHAT_WINDOW = 20  # messages
 SUPPORTED_SYMBOLS = {"XAUUSD"}
 
