@@ -216,8 +216,6 @@ void BuildStats(DashboardStats &s) {
    // to the MT5-side single TP for pre-restart tickets or 1-TP signals.
    // Profit math uses OrderCalcProfit() so broker-specific contract/tick
    // settings are honored (tick_value on XAUUSD varies between brokers).
-   double lotStepD  = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_STEP);
-   if(lotStepD <= 0) lotStepD = 0.01;
 
    s.open_trades_count = 0;
    int slot = 0;
@@ -250,27 +248,26 @@ void BuildStats(DashboardStats &s) {
          dt.origLots = g_plans[pi].origLots;
          for(int k = 0; k < 3; k++) dt.tps[k] = g_plans[pi].tps[k];
 
-         // Project per-stage profit using the same portion logic as
-         // ManagePlans: close origLots/tpCount at each intermediate TP
-         // (floored to lotStep), remainder auto-closes at the final TP.
+         // Project per-stage profit as equal shares of origLots across each
+         // TP (1/tpCount per level). This is the design intent of the
+         // staged plan; we show it as a planning figure even when the
+         // broker's minLot/lotStep constraints would skip a real partial
+         // (e.g. 0.01 lot on 3 TPs — the actual EA closes full size at
+         // the final TP, but the user still wants to see what each level
+         // is worth at its target).
          ENUM_ORDER_TYPE otype = dt.isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-         double used = 0.0;
+         double fullPnl[3];
+         for(int k = 0; k < 3; k++) fullPnl[k] = 0.0;
          for(int k = 0; k < dt.tpCount; k++) {
-            double stageLots;
-            if(k == dt.tpCount - 1) {
-               stageLots = dt.origLots - used;
-            } else {
-               stageLots = MathFloor((dt.origLots / (double)dt.tpCount) / lotStepD) * lotStepD;
-               stageLots = NormalizeDouble(stageLots, 2);
-               used += stageLots;
-            }
             double pnl = 0.0;
-            if(stageLots > 0 && !OrderCalcProfit(otype, Symbol_Override,
-                                                 stageLots, dt.entry,
-                                                 dt.tps[k], pnl))
-               pnl = 0.0;
-            dt.profit_per_stage[k] = pnl;
-            dt.profit_total       += pnl;
+            if(!OrderCalcProfit(otype, Symbol_Override, dt.origLots,
+                                dt.entry, dt.tps[k], pnl)) pnl = 0.0;
+            fullPnl[k] = pnl;
+         }
+         double share = 1.0 / (double)dt.tpCount;
+         for(int k = 0; k < dt.tpCount; k++) {
+            dt.profit_per_stage[k] = fullPnl[k] * share;
+            dt.profit_total       += dt.profit_per_stage[k];
          }
       } else {
          double tp = PositionGetDouble(POSITION_TP);
@@ -599,9 +596,23 @@ void RegisterPlan(long ticket, bool isBuy, double origLots, double entry,
    p.tpCount = tpCount;
    p.stage = 0;
    for(int i = 0; i < 3; i++) p.tps[i] = (i < tpCount ? tps[i] : 0.0);
-   int n = ArraySize(g_plans);
-   ArrayResize(g_plans, n + 1);
-   g_plans[n] = p;
+
+   // Dedupe by ticket: two plans for one ticket make ManagePlans fire each
+   // stage twice in a single iteration, closing 2× the intended portion.
+   // Sources of duplicates we've guarded against: a recompile-time
+   // LoadPersistedPlans that matches a ticket the broker later recycled, or
+   // any future call path that double-registers.
+   int existing = FindPlanIdx(ticket);
+   if(existing >= 0) {
+      Print("CT plan REPLACED ticket=", ticket,
+            " (duplicate register — prior stage=", g_plans[existing].stage,
+            " prior origLots=", g_plans[existing].origLots, ")");
+      g_plans[existing] = p;
+   } else {
+      int n = ArraySize(g_plans);
+      ArrayResize(g_plans, n + 1);
+      g_plans[n] = p;
+   }
    PersistPlan(p);
 }
 
@@ -665,6 +676,15 @@ void LoadPersistedPlans() {
       // If the position is already gone (closed while EA was down), just
       // purge the orphan keys and move on.
       if(!PositionSelectByTicket(ticket)) { ErasePersistedPlan(ticket); continue; }
+
+      // If we already have this ticket in memory (should not happen at
+      // OnInit since g_plans starts empty, but guard against any future
+      // double-load), skip rather than create a second plan.
+      if(FindPlanIdx(ticket) >= 0) {
+         Print("CT plan restore SKIPPED ticket=", ticket,
+               " — already in memory");
+         continue;
+      }
 
       TradePlan p;
       p.ticket    = ticket;
