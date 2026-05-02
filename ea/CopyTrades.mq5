@@ -745,6 +745,17 @@ void ManagePlans() {
       // that actually realizes the TP1/TP2 target.
       double exitPrice = p.isBuy ? bid : ask;
 
+      // ---- Staged SL-management policy --------------------------------
+      // 1-TP signal: no plan registered (RegisterPlan gate in DoOpen). The
+      //              broker-set SL + TP rides the position to closure;
+      //              EA never touches it.
+      // 2-TP signal: TP1 closes 1/2; SL stays. TP2 = broker-set final TP
+      //              auto-closes the other 1/2. SL never moves.
+      // 3-TP signal: TP1 closes 1/3; SL stays. TP2 closes 1/3; SL moves
+      //              to entry (Break-Even). TP3 = broker-set final TP
+      //              auto-closes the last 1/3 (with BE protecting it).
+      // -----------------------------------------------------------------
+
       if(p.stage == 0) {
          double tp1 = p.tps[0];
          bool hit = p.isBuy ? (exitPrice >= tp1) : (exitPrice <= tp1);
@@ -768,22 +779,21 @@ void ManagePlans() {
                   " want=", closeLots, " remain=", remaining);
          }
 
-         // Move SL to entry (BE), keep TP at final target.
-         double newTp = p.tps[p.tpCount - 1];
-         if(!trade.PositionModify(p.ticket, p.entry, newTp))
-            Print("CT plan stage1 SL->BE FAILED ticket=", p.ticket,
-                  " code=", trade.ResultRetcode());
-         else
-            Print("CT plan stage1 SL->BE ok ticket=", p.ticket);
+         // SL stays put on TP1. The original SL keeps protecting the
+         // remaining position until TP2 (or the broker-set final TP) is
+         // reached.
+         Print("CT plan stage1 SL unchanged ticket=", p.ticket,
+               " sl=", DoubleToString(p.slOrig, 5));
 
-         // Advance regardless: partial (if any) is irreversible; retrying would
-         // double-close. SL-move failures are logged for manual review.
+         // Advance regardless: partial (if any) is irreversible; retrying
+         // would double-close.
          p.stage = 1;
          g_plans[i] = p;
          GlobalVariableSet(PlanKey(p.ticket, "stage"), (double)p.stage);
          double postVol = PositionSelectByTicket(p.ticket)
                           ? PositionGetDouble(POSITION_VOLUME) : 0.0;
-         PostPositionUpdate(p.ticket, postVol, p.entry);
+         // newSl=0 -> server-side SL is left as-is.
+         PostPositionUpdate(p.ticket, postVol, 0.0);
       }
       else if(p.stage == 1 && p.tpCount == 3) {
          double tp2 = p.tps[1];
@@ -807,19 +817,19 @@ void ManagePlans() {
                   " want=", closeLots, " remain=", remaining);
          }
 
-         // Move SL to tp1, keep TP at tp3.
-         if(!trade.PositionModify(p.ticket, p.tps[0], p.tps[2]))
-            Print("CT plan stage2 SL->TP1 FAILED ticket=", p.ticket,
+         // Move SL to entry (Break-Even), keep TP at tp3.
+         if(!trade.PositionModify(p.ticket, p.entry, p.tps[2]))
+            Print("CT plan stage2 SL->BE FAILED ticket=", p.ticket,
                   " code=", trade.ResultRetcode());
          else
-            Print("CT plan stage2 SL->TP1 ok ticket=", p.ticket);
+            Print("CT plan stage2 SL->BE ok ticket=", p.ticket);
 
          p.stage = 2;
          g_plans[i] = p;
          GlobalVariableSet(PlanKey(p.ticket, "stage"), (double)p.stage);
          double postVol2 = PositionSelectByTicket(p.ticket)
                            ? PositionGetDouble(POSITION_VOLUME) : 0.0;
-         PostPositionUpdate(p.ticket, postVol2, p.tps[0]);
+         PostPositionUpdate(p.ticket, postVol2, p.entry);
       }
    }
 }
