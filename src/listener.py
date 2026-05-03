@@ -152,6 +152,12 @@ async def main() -> None:
 
     last_seen = int(get_setting(conn, "last_seen_tg_msg_id") or "0")
     log.info("listener started; last_seen_tg_msg_id=%s", last_seen)
+    from src.notify import notify_owner  # local import: avoids circulars on test imports
+    notify_owner(
+        f"📡 Listener started — chat={config.TG_WATCHED_CHAT_ID} "
+        f"provider={config.AI_PROVIDER} model={interp_model} "
+        f"last_seen_msg_id={last_seen}"
+    )
 
     ready = asyncio.Event()
 

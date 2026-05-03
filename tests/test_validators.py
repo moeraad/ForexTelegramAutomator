@@ -1,8 +1,11 @@
+import json
 import pytest
 from pydantic import ValidationError
 from src.validators import (
     OpenAction, ModifyAction, CloseAction, CloseAllAction, AlertAction,
     AIResponse, parse_ai_response,
+    MoveSlBeAction, MoveSlAction, ClosePartialAction, CloseFullAction,
+    ReopenLastAction, ReinforceAction, TightenSlAction,
 )
 from src.validators import validate_action, ValidationResult
 from src.db import connect, init_schema
@@ -147,3 +150,138 @@ def test_validate_close_all_unsupported_symbol_fails(db_with_position):
     r = validate_action(CloseAllAction(symbol="EURUSD"), db_with_position)
     assert not r.ok
     assert "unsupported" in r.error.lower()
+
+
+# ---- Phase 2: management action models ----------------------------------
+
+def test_parses_move_sl_be():
+    a = MoveSlBeAction()
+    assert a.type == "MOVE_SL_BE"
+
+
+def test_parses_move_sl():
+    a = MoveSlAction(price=4856.0)
+    assert a.type == "MOVE_SL"
+    assert a.price == 4856.0
+
+
+def test_move_sl_rejects_zero_or_negative():
+    with pytest.raises(ValidationError):
+        MoveSlAction(price=0)
+    with pytest.raises(ValidationError):
+        MoveSlAction(price=-1)
+
+
+def test_parses_close_partial_default_fraction():
+    a = ClosePartialAction()
+    assert a.fraction == 0.5
+
+
+def test_close_partial_rejects_invalid_fraction():
+    with pytest.raises(ValidationError):
+        ClosePartialAction(fraction=0)
+    with pytest.raises(ValidationError):
+        ClosePartialAction(fraction=1)
+    with pytest.raises(ValidationError):
+        ClosePartialAction(fraction=1.5)
+
+
+def test_parses_close_full():
+    a = CloseFullAction()
+    assert a.type == "CLOSE_FULL"
+
+
+def test_parses_reopen_last_default_window():
+    a = ReopenLastAction()
+    assert a.within_hours == 24
+
+
+def test_reopen_last_rejects_zero_or_too_long_window():
+    with pytest.raises(ValidationError):
+        ReopenLastAction(within_hours=0)
+    with pytest.raises(ValidationError):
+        ReopenLastAction(within_hours=200)  # > 168 (1 week cap)
+
+
+def test_parses_reinforce_with_side():
+    a = ReinforceAction(side="BUY")
+    assert a.side == "BUY"
+
+
+def test_reinforce_rejects_invalid_side():
+    with pytest.raises(ValidationError):
+        ReinforceAction(side="LONG")
+
+
+def test_parses_tighten_sl_default():
+    a = TightenSlAction()
+    assert a.by_fraction == 0.5
+
+
+def test_tighten_sl_rejects_invalid_fraction():
+    with pytest.raises(ValidationError):
+        TightenSlAction(by_fraction=0)
+    with pytest.raises(ValidationError):
+        TightenSlAction(by_fraction=1.0)
+
+
+def test_phase2_actions_round_trip_through_parse_ai_response():
+    """All 7 new types parse from raw JSON via the AI's response shape."""
+    raw = json.dumps({
+        "category": "signal",
+        "reasoning": "compound message",
+        "actions": [
+            {"type": "MOVE_SL_BE"},
+            {"type": "MOVE_SL", "price": 4856.0},
+            {"type": "CLOSE_PARTIAL", "fraction": 0.5},
+            {"type": "CLOSE_FULL"},
+            {"type": "REOPEN_LAST", "within_hours": 24},
+            {"type": "REINFORCE", "side": "BUY"},
+            {"type": "TIGHTEN_SL", "by_fraction": 0.5},
+        ],
+    })
+    resp = parse_ai_response(raw)
+    assert [a.type for a in resp.actions] == [
+        "MOVE_SL_BE", "MOVE_SL", "CLOSE_PARTIAL", "CLOSE_FULL",
+        "REOPEN_LAST", "REINFORCE", "TIGHTEN_SL",
+    ]
+
+
+def test_validate_action_passes_through_phase2_types(tmp_path):
+    """validate_action returns ok=True for all new types — state guards
+    are the EA's responsibility, not the validator's."""
+    conn = connect(str(tmp_path / "v.db"))
+    init_schema(conn)
+    for action in [
+        MoveSlBeAction(),
+        MoveSlAction(price=4856.0),
+        ClosePartialAction(),
+        CloseFullAction(),
+        ReopenLastAction(),
+        ReinforceAction(side="BUY"),
+        TightenSlAction(),
+    ]:
+        r = validate_action(action, conn)
+        assert r.ok, f"{action.type} should pass through"
+
+
+def test_db_accepts_phase2_action_types(tmp_path):
+    """The CHECK constraint on actions.action_type allows the new tokens
+    after init_schema runs the Phase-2 migration."""
+    conn = connect(str(tmp_path / "v.db"))
+    init_schema(conn)
+    for atype in (
+        "MOVE_SL_BE", "MOVE_SL", "CLOSE_PARTIAL", "CLOSE_FULL",
+        "REOPEN_LAST", "REINFORCE", "TIGHTEN_SL",
+    ):
+        conn.execute(
+            "INSERT INTO actions(action_type, payload_json) VALUES(?, '{}')",
+            (atype,)
+        )
+    rows = conn.execute(
+        "SELECT action_type FROM actions ORDER BY id"
+    ).fetchall()
+    assert {r["action_type"] for r in rows} == {
+        "MOVE_SL_BE", "MOVE_SL", "CLOSE_PARTIAL", "CLOSE_FULL",
+        "REOPEN_LAST", "REINFORCE", "TIGHTEN_SL",
+    }

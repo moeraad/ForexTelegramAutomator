@@ -66,15 +66,43 @@ def test_process_message_alerts_have_no_execute_after(tmp_path):
     assert row["execute_after"] is None
 
 
-def test_process_message_skips_duplicate_message(tmp_path):
+def test_process_message_skips_duplicate_message_when_action_emitted(tmp_path):
+    """Dedup via messages.UNIQUE only protects messages that produced an
+    action. Under the action-only-persistence policy, an action-emitting
+    message stays in the table, so a redelivered duplicate short-circuits.
+    """
     conn = connect(str(tmp_path / "o.db"))
     init_schema(conn)
-    ai = _make_ai([])
+    ai = _make_ai([OpenAction(symbol="XAUUSD", side="BUY",
+                              entry_low=4864, entry_high=4866,
+                              tps=[4880], sl=4855)])
     process_message(conn, ai, 5, 42, "Y", "hi", tmp_path / "a.jsonl", 30)
     process_message(conn, ai, 5, 42, "Y", "hi", tmp_path / "a.jsonl", 30)
     n = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
     assert n == 1
     assert ai.call.call_count == 1  # second call short-circuited on dedup
+
+
+def test_no_action_message_is_not_persisted(tmp_path):
+    """Per project policy: only action-producing messages stay in the DB."""
+    conn = connect(str(tmp_path / "o.db"))
+    init_schema(conn)
+    ai = _make_ai([])  # AI returns zero actions
+    process_message(conn, ai, 5, 42, "Y", "hi", tmp_path / "a.jsonl", 30)
+    n = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    assert n == 0
+
+
+def test_no_action_message_repeated_re_processes(tmp_path):
+    """Side effect of cleanup: same tg_message_id with no action gets
+    processed each time it arrives. Operator should know this trade-off."""
+    conn = connect(str(tmp_path / "o.db"))
+    init_schema(conn)
+    ai = _make_ai([])
+    process_message(conn, ai, 5, 42, "Y", "hi", tmp_path / "a.jsonl", 30)
+    process_message(conn, ai, 5, 42, "Y", "hi", tmp_path / "a.jsonl", 30)
+    assert ai.call.call_count == 2
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
 
 
 def test_process_message_ai_exception_writes_alert(tmp_path):
@@ -194,8 +222,8 @@ def test_triage_ignore_short_circuits(tmp_path):
     assert ai.call.call_count == 0
     assert conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM signal_memory").fetchone()[0] == 0
-    # message row is still persisted for dedup/audit
-    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+    # Per action-only-persistence policy: triage-ignored messages are not stored.
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
 
 
 def test_triage_keep_proceeds_to_sonnet(tmp_path):

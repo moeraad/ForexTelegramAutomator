@@ -89,6 +89,30 @@ def _open_positions_count(conn: sqlite3.Connection) -> int:
     return int(row[0]) if row else 0
 
 
+def _cleanup_message_if_orphan(conn: sqlite3.Connection, msg_id: int) -> None:
+    """Delete the messages row when no action ended up referencing it.
+
+    Per project policy: the messages table only retains rows that produced
+    at least one action. Triage-ignored, pure-context, or otherwise no-op
+    messages are dropped so the table stays lean.
+
+    signal_memory entries that pointed at the deleted message have their
+    message_id NULLed so the distilled summary survives the cleanup
+    (the summary is what the prompt cares about, not the raw text).
+    """
+    row = conn.execute(
+        "SELECT 1 FROM actions WHERE source_msg_id = ? LIMIT 1",
+        (msg_id,),
+    ).fetchone()
+    if row is not None:
+        return  # at least one action references the message → keep it
+    conn.execute(
+        "UPDATE signal_memory SET message_id = NULL WHERE message_id = ?",
+        (msg_id,),
+    )
+    conn.execute("DELETE FROM messages WHERE id = ?", (msg_id,))
+
+
 def process_message(
     conn: sqlite3.Connection,
     ai: AIClient,
@@ -120,6 +144,7 @@ def process_message(
                 **tri.usage,
             })
             if tri.decision == "ignore":
+                _cleanup_message_if_orphan(conn, msg_id)
                 return []
         except Exception as e:
             # Never drop a message on triage failure — fall through to Sonnet.
@@ -213,4 +238,8 @@ def process_message(
 
     if SIGNAL_MEMORY_ENABLED and open_persisted:
         signal_memory.clear_on_open(conn, chat_id)
+    if not inserted:
+        # No action ended up referencing this message (pure context, all
+        # actions filtered, etc.) — drop the raw row per project policy.
+        _cleanup_message_if_orphan(conn, msg_id)
     return inserted

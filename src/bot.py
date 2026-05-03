@@ -156,35 +156,46 @@ async def _do_execute(conn, aid, reply):
 
 
 async def notification_dispatcher(app: Application):
-    """Polls for unnotified actions and DMs the owner."""
+    """Polls for actions that just reached a terminal state and DMs the owner.
+
+    Per project policy (fully automated, no human approval gate): the bot
+    only DMs about actions that have ACTUALLY HAPPENED — executed, failed,
+    rejected, or watching. The pre-execution approval prompt is gone; the
+    promoter auto-promotes pending → sent without operator interaction.
+    """
+    from src.telegram_format import render_action_terminal
     conn: sqlite3.Connection = app.bot_data["conn"]
+
+    # First-run guard: any terminal action sitting in the DB at startup
+    # was completed before this dispatcher existed (or before the new
+    # behavior shipped). Treat them as already-seen so we don't flood
+    # the operator with backlog DMs every time the bot restarts.
+    conn.execute(
+        "UPDATE actions SET notified_at = CURRENT_TIMESTAMP "
+        "WHERE notified_at IS NULL "
+        "  AND status IN ('executed','failed','rejected','watching')"
+    )
+
     while True:
         try:
             rows = conn.execute(
-                "SELECT id, action_type, payload_json, source_msg_id "
+                "SELECT id, action_type, payload_json, status, ea_response, source_msg_id "
                 "FROM actions WHERE notified_at IS NULL "
-                "AND status IN ('pending','rejected','cancelled') "
+                "AND status IN ('executed','failed','rejected','watching') "
                 "ORDER BY id ASC LIMIT 20"
             ).fetchall()
             for r in rows:
-                payload = json.loads(r["payload_json"])
-                src = ""
-                if r["source_msg_id"]:
-                    m = conn.execute(
-                        "SELECT text FROM messages WHERE id=?", (r["source_msg_id"],)
-                    ).fetchone()
-                    if m:
-                        src = m["text"]
-                delay = int(get_setting(conn, "auto_execute_delay_sec")
-                            or str(config.DEFAULT_AUTO_EXECUTE_DELAY_SEC))
-                text = render_action_notification(
-                    r["id"], r["action_type"], payload, src, delay
+                try:
+                    payload = json.loads(r["payload_json"])
+                except (TypeError, ValueError):
+                    payload = {}
+                text = render_action_terminal(
+                    r["id"], r["action_type"], r["status"],
+                    payload, r["ea_response"] or "",
                 )
-                kb = _kb_for_action(r["id"], r["action_type"])
                 await app.bot.send_message(
                     chat_id=config.TG_BOT_OWNER_USER_ID,
                     text=text,
-                    reply_markup=kb,
                 )
                 conn.execute(
                     "UPDATE actions SET notified_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -192,6 +203,62 @@ async def notification_dispatcher(app: Application):
                 )
         except Exception as e:
             log.exception("notification_dispatcher error: %s", e)
+        await asyncio.sleep(1.0)
+
+
+async def position_close_notifier(app: Application):
+    """Polls for newly-closed positions and DMs the owner.
+
+    Tracks progress via settings.position_close_last_notified_at (ISO-8601
+    UTC string). On each tick, any positions with closed_at > that
+    watermark get a one-line DM and the watermark advances to the most
+    recent closed_at.
+    """
+    from src.telegram_format import render_position_closed
+    conn: sqlite3.Connection = app.bot_data["conn"]
+
+    # First-run guard: if the watermark setting is missing, advance it
+    # past everything currently in the DB so we don't flood the operator
+    # with the historical backlog. Future closes (status flips to
+    # 'closed' AFTER startup) will have closed_at > this watermark and
+    # flow through normally.
+    if get_setting(conn, "position_close_last_notified_at") is None:
+        row = conn.execute(
+            "SELECT MAX(closed_at) AS m FROM positions "
+            "WHERE status='closed' AND closed_at IS NOT NULL"
+        ).fetchone()
+        seed = (row["m"] if row and row["m"]
+                else datetime.now(timezone.utc).isoformat())
+        set_setting(conn, "position_close_last_notified_at", seed)
+
+    while True:
+        try:
+            cursor = (
+                get_setting(conn, "position_close_last_notified_at")
+                or "1970-01-01T00:00:00+00:00"
+            )
+            rows = conn.execute(
+                "SELECT mt5_ticket, side, symbol, volume, original_volume, "
+                "       entry_price, sl, tp, closed_at, close_reason "
+                "FROM positions WHERE status='closed' "
+                "  AND closed_at IS NOT NULL AND closed_at > ? "
+                "ORDER BY closed_at ASC LIMIT 20",
+                (cursor,),
+            ).fetchall()
+            for r in rows:
+                text = render_position_closed(
+                    ticket=r["mt5_ticket"], side=r["side"], symbol=r["symbol"],
+                    volume=r["volume"], original_volume=r["original_volume"],
+                    entry=r["entry_price"], sl=r["sl"], tp=r["tp"],
+                    closed_at=r["closed_at"], reason=r["close_reason"] or "",
+                )
+                await app.bot.send_message(
+                    chat_id=config.TG_BOT_OWNER_USER_ID,
+                    text=text,
+                )
+                set_setting(conn, "position_close_last_notified_at", r["closed_at"])
+        except Exception as e:
+            log.exception("position_close_notifier error: %s", e)
         await asyncio.sleep(1.0)
 
 
@@ -238,7 +305,18 @@ async def watch_sweeper_loop(app: Application):
 
 
 async def post_init(app: Application):
+    # Startup ping — operator wants to know the system is up. Best-effort:
+    # if the owner hasn't /start-ed yet, send_message raises Forbidden which
+    # we log and swallow.
+    try:
+        await app.bot.send_message(
+            chat_id=config.TG_BOT_OWNER_USER_ID,
+            text="🤖 Bot started — promoter + sweepers + notifiers running",
+        )
+    except Exception as e:
+        log.warning("startup ping failed: %s", e)
     asyncio.create_task(notification_dispatcher(app))
+    asyncio.create_task(position_close_notifier(app))
     asyncio.create_task(promotion_loop(app))
     asyncio.create_task(claim_sweeper_loop(app))
     asyncio.create_task(watch_sweeper_loop(app))

@@ -24,6 +24,11 @@ input double ChaseMinRewardRatio     = 0.5;   // require remaining/original >= t
 input bool   ShowDashboard           = true;
 input int    DashboardX              = 20;    // pixels from right edge (CORNER_RIGHT_UPPER)
 input int    DashboardY              = 20;    // pixels from top
+// Market-price heartbeat: every N seconds, POST current bid/ask to the API
+// so the AI prompt has a fresh quote for two-digit SL shorthand decoding
+// (e.g. "ستوبك 56" -> 4856 only when gold is around 4850). Set to 0 to
+// disable. Heartbeat is unconditional (runs even when kill switch is on).
+input int    MarketPriceHeartbeatSec = 15;
 
 CTrade trade;
 
@@ -43,6 +48,7 @@ long       g_last_action_id      = 0;
 string     g_last_action_type    = "";
 string     g_last_action_status  = "";
 datetime   g_last_action_at      = 0;
+datetime   g_last_price_heartbeat = 0;  // throttle for HeartbeatMarketPrice()
 
 // Staged-management plan for a multi-TP position. Strategy:
 //   1 TP  → single position at full lots, TP=tp1 (no staged plan registered).
@@ -113,11 +119,35 @@ void OnTimer() {
       ManageWatches();
       ReconcileClosedPositions();
    }
+   // Heartbeat market price unconditionally (even when halted) — the AI
+   // still needs a fresh quote to decode shorthand SL on incoming messages.
+   HeartbeatMarketPrice();
    if(ShowDashboard) {
       DashboardStats s;
       BuildStats(s);
       g_dashboard.Update(s);
    }
+}
+
+// Throttled POST of current bid/ask to /market/price so the AI prompt has
+// a recent quote for two-digit SL shorthand decoding. Best-effort: failures
+// are silent — a stale or missing quote degrades gracefully (the prompt
+// shows "STALE" or "no recent quote" and the model treats shorthand more
+// conservatively).
+void HeartbeatMarketPrice() {
+   if(MarketPriceHeartbeatSec <= 0) return;
+   datetime now = TimeCurrent();
+   if(now - g_last_price_heartbeat < MarketPriceHeartbeatSec) return;
+   double bid = SymbolInfoDouble(Symbol_Override, SYMBOL_BID);
+   double ask = SymbolInfoDouble(Symbol_Override, SYMBOL_ASK);
+   if(bid <= 0.0 || ask <= 0.0) return;  // symbol not ready
+   string body = StringFormat(
+      "{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f}",
+      Symbol_Override, bid, ask
+   );
+   string resp; int status;
+   HttpPostJsonWithStatus(ApiBaseUrl + "/market/price", body, resp, status);
+   g_last_price_heartbeat = now;
 }
 
 // Day rollover in broker-server time: when the date changes, reset the
@@ -418,10 +448,18 @@ void ExecuteOne(string obj) {
       return;
    }
 
-   if(atype == "OPEN")        DoOpen(id, payload);
-   else if(atype == "MODIFY") DoModify(id, payload);
-   else if(atype == "CLOSE")  DoClose(id, payload);
-   else if(atype == "CLOSE_ALL") DoCloseAll(id, payload);
+   if(atype == "OPEN")              DoOpen(id, payload);
+   else if(atype == "MODIFY")       DoModify(id, payload);
+   else if(atype == "CLOSE")        DoClose(id, payload);
+   else if(atype == "CLOSE_ALL")    DoCloseAll(id, payload);
+   else if(atype == "MOVE_SL_BE")   DoMoveSlBe(id, payload);
+   else if(atype == "MOVE_SL")      DoMoveSl(id, payload);
+   else if(atype == "CLOSE_PARTIAL") DoClosePartial(id, payload);
+   else if(atype == "CLOSE_FULL")   DoCloseFull(id, payload);
+   else if(atype == "REOPEN_LAST")  DoReopenLast(id, payload);
+   else if(atype == "REINFORCE")    DoReinforce(id, payload);
+   else if(atype == "TIGHTEN_SL")   DoTightenSl(id, payload);
+   else PostResult(id, "rejected", 0, "unknown_action_type:" + atype);
 }
 
 // Atomically transition action from 'sent' to 'claimed'. Returns true if we won.
@@ -896,6 +934,227 @@ int CountOurOpenPositions() {
       if(PositionGetInteger(POSITION_MAGIC) == 919191) n++;
    }
    return n;
+}
+
+// ---- Phase 2: management actions for the singleton open position ------
+//
+// Single-position mode: the channel sends instructions like "أمن دخولك"
+// without a ticket, because there's at most one open trade at a time.
+// These helpers + handlers resolve "the open position" implicitly.
+
+// Returns the ticket of our (magic-919191) open position on `symbol`, or 0
+// if none. If multiple are open (shouldn't happen in single-position mode
+// but guard anyway), returns the first encountered.
+long FindSingletonOpenTicket(string symbol) {
+   for(int i = 0; i < PositionsTotal(); i++) {
+      ulong t = PositionGetTicket(i);
+      if(t == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != 919191) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+      return (long)t;
+   }
+   return 0;
+}
+
+// Build an OPEN-action-shaped payload string from a /positions/last_closed
+// response so we can pipe it into DoOpen() and reuse its chase / watch /
+// market logic for REOPEN_LAST and REINFORCE. Returns "" on failure.
+string BuildOpenPayloadFromLastClosed(string lastClosedBody) {
+   string sigBlock = JsonField(lastClosedBody, "signal");
+   if(sigBlock == "" || StringGetCharacter(sigBlock, 0) != '{') return "";
+   string side = JsonField(sigBlock, "side");
+   string entryLow = JsonField(sigBlock, "entry_low");
+   string entryHigh = JsonField(sigBlock, "entry_high");
+   string sl = JsonField(sigBlock, "sl");
+   string tps = JsonField(sigBlock, "tps");      // "[4710,4720,4735]"
+   string sym = JsonField(sigBlock, "symbol");
+   if(sym == "") sym = Symbol_Override;
+   if(side == "" || sl == "" || tps == "") return "";
+   // entry_low/high may be missing on legacy rows — fall back to the closed
+   // position's recorded entry_price so REOPEN_LAST still has a zone.
+   if(entryLow == "" || entryHigh == "") {
+      string ep = JsonField(lastClosedBody, "entry_price");
+      if(ep == "") return "";
+      entryLow = ep;
+      entryHigh = ep;
+   }
+   return StringFormat(
+      "{\"symbol\":\"%s\",\"side\":\"%s\",\"entry_low\":%s,\"entry_high\":%s,"
+      "\"sl\":%s,\"tps\":%s}",
+      sym, side, entryLow, entryHigh, sl, tps
+   );
+}
+
+void DoMoveSlBe(long id, string payload) {
+   long ticket = FindSingletonOpenTicket(Symbol_Override);
+   if(ticket <= 0) { PostResult(id, "rejected", 0, "no_open_position"); return; }
+   if(!PositionSelectByTicket(ticket)) { PostResult(id, "failed", ticket, "no_position"); return; }
+   double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+   double curTp = PositionGetDouble(POSITION_TP);
+   if(trade.PositionModify(ticket, entry, curTp)) {
+      RemovePlanByTicket(ticket);  // operator override
+      PostPositionUpdate(ticket, 0, entry);
+      PostResult(id, "executed", ticket, "");
+   } else {
+      PostResult(id, "failed", ticket,
+                 "modify_failed:" + IntegerToString(trade.ResultRetcode()));
+   }
+}
+
+void DoMoveSl(long id, string payload) {
+   long ticket = FindSingletonOpenTicket(Symbol_Override);
+   if(ticket <= 0) { PostResult(id, "rejected", 0, "no_open_position"); return; }
+   if(!PositionSelectByTicket(ticket)) { PostResult(id, "failed", ticket, "no_position"); return; }
+   double newSl = StringToDouble(JsonField(payload, "price"));
+   if(newSl <= 0) { PostResult(id, "failed", ticket, "invalid_price"); return; }
+   double curTp = PositionGetDouble(POSITION_TP);
+   if(trade.PositionModify(ticket, newSl, curTp)) {
+      RemovePlanByTicket(ticket);
+      PostPositionUpdate(ticket, 0, newSl);
+      PostResult(id, "executed", ticket, "");
+   } else {
+      PostResult(id, "failed", ticket,
+                 "modify_failed:" + IntegerToString(trade.ResultRetcode()));
+   }
+}
+
+void DoClosePartial(long id, string payload) {
+   long ticket = FindSingletonOpenTicket(Symbol_Override);
+   if(ticket <= 0) { PostResult(id, "rejected", 0, "no_open_position"); return; }
+   if(!PositionSelectByTicket(ticket)) { PostResult(id, "failed", ticket, "no_position"); return; }
+   double frac = StringToDouble(JsonField(payload, "fraction"));
+   if(frac <= 0.0 || frac >= 1.0) frac = 0.5;  // sanity fallback
+   // Use plan.origLots when available so partials chain correctly across
+   // multiple manual closes; fall back to current volume otherwise.
+   int planIdx = FindPlanIdx(ticket);
+   double basis = (planIdx >= 0) ? g_plans[planIdx].origLots
+                                 : PositionGetDouble(POSITION_VOLUME);
+   double lotStep = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_STEP);
+   if(lotStep <= 0) lotStep = 0.01;
+   double minLot = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_MIN);
+   double closeLots = MathFloor((basis * frac) / lotStep) * lotStep;
+   closeLots = NormalizeDouble(closeLots, 2);
+   double currentVol = PositionGetDouble(POSITION_VOLUME);
+   double remaining = currentVol - closeLots;
+   if(closeLots < minLot || remaining < minLot) {
+      PostResult(id, "rejected", ticket, StringFormat(
+         "lot_too_small: close=%.2f remain=%.2f", closeLots, remaining));
+      return;
+   }
+   if(trade.PositionClosePartial(ticket, closeLots)) {
+      double postVol = PositionSelectByTicket(ticket)
+                       ? PositionGetDouble(POSITION_VOLUME) : 0.0;
+      PostPositionUpdate(ticket, postVol, 0);
+      PostResult(id, "executed", ticket,
+                 StringFormat("closed=%.2f", closeLots));
+   } else {
+      PostResult(id, "failed", ticket,
+                 "partial_failed:" + IntegerToString(trade.ResultRetcode()));
+   }
+}
+
+void DoCloseFull(long id, string payload) {
+   long ticket = FindSingletonOpenTicket(Symbol_Override);
+   if(ticket <= 0) { PostResult(id, "rejected", 0, "no_open_position"); return; }
+   if(trade.PositionClose(ticket)) {
+      RemovePlanByTicket(ticket);
+      string body;
+      HttpPostJson(ApiBaseUrl + "/positions/" + IntegerToString(ticket) + "/close",
+                   "{\"reason\":\"ai_close_full\"}", body);
+      PostResult(id, "executed", ticket, "");
+   } else {
+      PostResult(id, "failed", ticket,
+                 "close_failed:" + IntegerToString(trade.ResultRetcode()));
+   }
+}
+
+void DoReopenLast(long id, string payload) {
+   if(FindSingletonOpenTicket(Symbol_Override) > 0) {
+      PostResult(id, "rejected", 0, "already_open");
+      return;
+   }
+   string within = JsonField(payload, "within_hours");
+   if(within == "") within = "24";
+   string url = ApiBaseUrl + "/positions/last_closed?symbol=" + Symbol_Override
+              + "&within_hours=" + within;
+   string body;
+   if(!HttpGet(url, body) || body == "" || StringFind(body, "\"ticket\"") < 0) {
+      PostResult(id, "rejected", 0, "no_recent_close");
+      return;
+   }
+   string fakePayload = BuildOpenPayloadFromLastClosed(body);
+   if(fakePayload == "") {
+      PostResult(id, "failed", 0, "last_closed_unparseable");
+      return;
+   }
+   Print("CT REOPEN_LAST id=", id, " payload=", fakePayload);
+   DoOpen(id, fakePayload);  // reuses chase/watch/market flow + PostResult
+}
+
+void DoReinforce(long id, string payload) {
+   long currentTicket = FindSingletonOpenTicket(Symbol_Override);
+   if(currentTicket > 0) {
+      // Per user policy: close regardless of PnL, then reopen.
+      if(trade.PositionClose(currentTicket)) {
+         RemovePlanByTicket(currentTicket);
+         string closeBody;
+         HttpPostJson(
+            ApiBaseUrl + "/positions/" + IntegerToString(currentTicket) + "/close",
+            "{\"reason\":\"reinforce\"}", closeBody);
+      } else {
+         PostResult(id, "failed", currentTicket,
+                    "reinforce_close_failed:" + IntegerToString(trade.ResultRetcode()));
+         return;
+      }
+   }
+   string url = ApiBaseUrl + "/positions/last_closed?symbol=" + Symbol_Override
+              + "&within_hours=24";
+   string body;
+   if(!HttpGet(url, body) || body == "" || StringFind(body, "\"ticket\"") < 0) {
+      PostResult(id, "rejected", 0, "no_recent_close");
+      return;
+   }
+   string fakePayload = BuildOpenPayloadFromLastClosed(body);
+   if(fakePayload == "") {
+      PostResult(id, "failed", 0, "last_closed_unparseable");
+      return;
+   }
+   Print("CT REINFORCE id=", id, " payload=", fakePayload);
+   DoOpen(id, fakePayload);
+}
+
+void DoTightenSl(long id, string payload) {
+   long ticket = FindSingletonOpenTicket(Symbol_Override);
+   if(ticket <= 0) { PostResult(id, "rejected", 0, "no_open_position"); return; }
+   if(!PositionSelectByTicket(ticket)) { PostResult(id, "failed", ticket, "no_position"); return; }
+   double byFrac = StringToDouble(JsonField(payload, "by_fraction"));
+   if(byFrac <= 0.0 || byFrac >= 1.0) byFrac = 0.5;
+   double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+   double curSl = PositionGetDouble(POSITION_SL);
+   double curTp = PositionGetDouble(POSITION_TP);
+   if(curSl <= 0) { PostResult(id, "rejected", ticket, "no_sl_to_tighten"); return; }
+   bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+   double newSl;
+   if(isBuy) {
+      // BUY: current SL below entry. Tighten = move SL toward entry.
+      double dist = entry - curSl;
+      if(dist <= 0) { PostResult(id, "rejected", ticket, "sl_already_above_entry"); return; }
+      newSl = entry - dist * (1.0 - byFrac);
+   } else {
+      // SELL: current SL above entry. Tighten = move SL toward entry.
+      double dist = curSl - entry;
+      if(dist <= 0) { PostResult(id, "rejected", ticket, "sl_already_below_entry"); return; }
+      newSl = entry + dist * (1.0 - byFrac);
+   }
+   if(trade.PositionModify(ticket, newSl, curTp)) {
+      RemovePlanByTicket(ticket);
+      PostPositionUpdate(ticket, 0, newSl);
+      PostResult(id, "executed", ticket,
+                 StringFormat("sl_was=%.2f sl_now=%.2f", curSl, newSl));
+   } else {
+      PostResult(id, "failed", ticket,
+                 "modify_failed:" + IntegerToString(trade.ResultRetcode()));
+   }
 }
 
 void ReconcileClosedPositions() {

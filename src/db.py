@@ -18,6 +18,106 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_actions_add_fingerprint(conn)
     _migrate_signal_memory_add_chat_id(conn)
     _migrate_actions_for_watching(conn)
+    _migrate_positions_state(conn)
+    _migrate_actions_add_phase2_types(conn)
+
+
+def _migrate_actions_add_phase2_types(conn: sqlite3.Connection) -> None:
+    """Expand actions.action_type CHECK to allow Phase-2 management types.
+
+    Why: orchestrator inserts MOVE_SL_BE / MOVE_SL / CLOSE_PARTIAL /
+    CLOSE_FULL / REOPEN_LAST / REINFORCE / TIGHTEN_SL once the AI prompt
+    learns to emit them. Pre-Phase-2 databases reject these via the old
+    CHECK, so we rebuild the table preserving every row when the new
+    types are absent. Same pattern as _migrate_actions_for_watching.
+    """
+    sql_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='actions'"
+    ).fetchone()
+    if not sql_row or "'MOVE_SL_BE'" in sql_row["sql"]:
+        return  # already migrated (or no actions table yet)
+    conn.execute(
+        "UPDATE actions SET source_msg_id = NULL "
+        "WHERE source_msg_id IS NOT NULL "
+        "  AND source_msg_id NOT IN (SELECT id FROM messages)"
+    )
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.executescript(
+            "BEGIN;"
+            "CREATE TABLE actions_new ("
+            "  id              INTEGER PRIMARY KEY,"
+            "  source_msg_id   INTEGER REFERENCES messages(id),"
+            "  action_type     TEXT NOT NULL CHECK(action_type IN ("
+            "                    'OPEN','MODIFY','CLOSE','CLOSE_ALL','ALERT',"
+            "                    'MOVE_SL_BE','MOVE_SL','CLOSE_PARTIAL','CLOSE_FULL',"
+            "                    'REOPEN_LAST','REINFORCE','TIGHTEN_SL'"
+            "                  )),"
+            "  payload_json    TEXT NOT NULL,"
+            "  status          TEXT NOT NULL DEFAULT 'pending'"
+            "                  CHECK(status IN ('pending','cancelled','sent','claimed','watching','executed','failed','rejected')),"
+            "  created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,"
+            "  notified_at     DATETIME,"
+            "  execute_after   DATETIME,"
+            "  claimed_at      DATETIME,"
+            "  executed_at     DATETIME,"
+            "  ea_response     TEXT,"
+            "  fingerprint     TEXT,"
+            "  watch_json      TEXT,"
+            "  expires_at      DATETIME"
+            ");"
+            "INSERT INTO actions_new(id, source_msg_id, action_type, payload_json, status,"
+            "  created_at, notified_at, execute_after, claimed_at, executed_at, ea_response,"
+            "  fingerprint, watch_json, expires_at) "
+            "SELECT id, source_msg_id, action_type, payload_json, status,"
+            "  created_at, notified_at, execute_after, claimed_at, executed_at, ea_response,"
+            "  fingerprint, watch_json, expires_at "
+            "FROM actions;"
+            "DROP TABLE actions;"
+            "ALTER TABLE actions_new RENAME TO actions;"
+            "CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);"
+            "CREATE INDEX IF NOT EXISTS idx_actions_fingerprint ON actions(fingerprint);"
+            "CREATE INDEX IF NOT EXISTS idx_actions_watching_expires "
+            "  ON actions(expires_at) WHERE status='watching';"
+            "COMMIT;"
+        )
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _migrate_positions_state(conn: sqlite3.Connection) -> None:
+    """Add original_volume / partial_close_count / sl_moved_at to positions.
+
+    Why: the AI prompt needs to know what's already been done to the open
+    position so reminder messages (e.g. "متاح حجز الارباح لو ما لحقت") do not
+    re-trigger a partial close that already happened. See state_summary.py
+    for how these fields surface to the model.
+
+    Backfill: existing open rows get original_volume = current volume so the
+    "started at" reading isn't NULL for trades opened before the migration.
+    partial_close_count defaults to 0 (we don't know history). sl_moved_at
+    stays NULL — there's no way to tell after the fact whether SL was moved,
+    and treating "unknown" as "not moved" is safer (the AI will be willing
+    to emit MOVE_SL_BE, which is itself idempotent on current_sl == entry).
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(positions)").fetchall()}
+    if "original_volume" not in cols:
+        conn.execute("ALTER TABLE positions ADD COLUMN original_volume REAL")
+        conn.execute(
+            "UPDATE positions SET original_volume = volume "
+            "WHERE original_volume IS NULL"
+        )
+    if "partial_close_count" not in cols:
+        conn.execute(
+            "ALTER TABLE positions ADD COLUMN "
+            "partial_close_count INTEGER NOT NULL DEFAULT 0"
+        )
+    if "sl_moved_at" not in cols:
+        conn.execute("ALTER TABLE positions ADD COLUMN sl_moved_at DATETIME")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_positions_closed_recent "
+        "ON positions(symbol, status, closed_at)"
+    )
 
 
 def _migrate_actions_for_watching(conn: sqlite3.Connection) -> None:

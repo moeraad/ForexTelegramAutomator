@@ -37,11 +37,18 @@ motivational quotes, channel announcements unrelated to gold trading, pure
 chit-chat with no price/direction/position reference.
 
 KEEP: anything that COULD be a trade signal, a management instruction (move
-SL, close, partial), a market-commentary / bias / zone note, a TP-hit
-confirmation, or anything referencing prices, numbers that look like gold
-levels, buy/sell/long/short words in any language, or an existing position.
-Also KEEP short ambiguous messages when there are open positions (e.g.
-"close", "exit", "out") because they may be management commands.
+SL, close, partial, reopen, reinforce, tighten), a market-commentary / bias
+/ zone note, a TP-hit confirmation, or anything referencing prices, numbers
+that look like gold levels, buy/sell/long/short words in any language, or
+an existing position. Also KEEP short ambiguous messages when there are
+open positions (e.g. "close", "exit", "out") because they may be management
+commands.
+
+ARABIC MANAGEMENT TRIGGERS (always keep these — high-signal phrases from
+the channel; do not let their brevity fool the filter):
+  أمن دخولك | احجز نصف | حجز الارباح | متاح حجز | ستوبك | ارفع ستوبك |
+  خرجنا | متاح للشراء | متاحة للدخول | عزز شراء | عزز بيع | ضيق ستوبك |
+  قرب ستوبك | ثبات للنهاية | كمل | على الدخول من جديد
 
 WHEN IN DOUBT, RETURN "keep". False negatives (losing a real signal) are
 much worse than false positives (letting noise through to the next stage,

@@ -52,7 +52,72 @@ class AlertAction(BaseModel):
     text: str
 
 
-Action = Union[OpenAction, ModifyAction, CloseAction, CloseAllAction, AlertAction]
+# ---- Phase 2: management actions for the singleton open position --------
+#
+# The system runs in single-position mode (one XAUUSD position max). These
+# actions don't carry mt5_ticket — the EA infers it from the singleton.
+# Param ranges are enforced at parse time by Pydantic Field constraints;
+# state guards (is there an open position? is SL already at BE? has the
+# partial already fired?) are the EA's responsibility, not the validator's,
+# because state can change between insert and execution.
+
+class MoveSlBeAction(BaseModel):
+    """Move SL to entry price (Break-Even) on the open position."""
+    type: Literal["MOVE_SL_BE"] = "MOVE_SL_BE"
+
+
+class MoveSlAction(BaseModel):
+    """Move SL to a specific price on the open position."""
+    type: Literal["MOVE_SL"] = "MOVE_SL"
+    price: float = Field(gt=0)
+
+
+class ClosePartialAction(BaseModel):
+    """Close a fraction of the position's ORIGINAL volume (default 50%)."""
+    type: Literal["CLOSE_PARTIAL"] = "CLOSE_PARTIAL"
+    fraction: float = Field(default=0.5, gt=0.0, lt=1.0)
+
+
+class CloseFullAction(BaseModel):
+    """Close the entire open position. EA-side no-op if none open."""
+    type: Literal["CLOSE_FULL"] = "CLOSE_FULL"
+
+
+class ReopenLastAction(BaseModel):
+    """Reopen the last-closed position (within `within_hours`) at market.
+
+    EA fetches the original signal params from /positions/last_closed and
+    runs the regular OPEN flow with them. Skipped if a position is already
+    open or no recent close exists.
+    """
+    type: Literal["REOPEN_LAST"] = "REOPEN_LAST"
+    within_hours: int = Field(default=24, gt=0, le=168)
+
+
+class ReinforceAction(BaseModel):
+    """Close current position (regardless of PnL) and immediately reopen
+    the same direction using the last-closed position's params. The `side`
+    field is informational — the EA uses the prior position's side as the
+    source of truth, but the AI is asked to emit `side` so the operator
+    log shows what the channel intended.
+    """
+    type: Literal["REINFORCE"] = "REINFORCE"
+    side: Literal["BUY", "SELL"]
+
+
+class TightenSlAction(BaseModel):
+    """Reduce SL distance by `by_fraction`. EA computes new_sl as
+    entry +/- (entry - current_sl) * (1 - by_fraction) per side.
+    """
+    type: Literal["TIGHTEN_SL"] = "TIGHTEN_SL"
+    by_fraction: float = Field(default=0.5, gt=0.0, lt=1.0)
+
+
+Action = Union[
+    OpenAction, ModifyAction, CloseAction, CloseAllAction, AlertAction,
+    MoveSlBeAction, MoveSlAction, ClosePartialAction, CloseFullAction,
+    ReopenLastAction, ReinforceAction, TightenSlAction,
+]
 
 _ACTION_BY_TYPE = {
     "OPEN": OpenAction,
@@ -60,6 +125,13 @@ _ACTION_BY_TYPE = {
     "CLOSE": CloseAction,
     "CLOSE_ALL": CloseAllAction,
     "ALERT": AlertAction,
+    "MOVE_SL_BE": MoveSlBeAction,
+    "MOVE_SL": MoveSlAction,
+    "CLOSE_PARTIAL": ClosePartialAction,
+    "CLOSE_FULL": CloseFullAction,
+    "REOPEN_LAST": ReopenLastAction,
+    "REINFORCE": ReinforceAction,
+    "TIGHTEN_SL": TightenSlAction,
 }
 
 
@@ -158,6 +230,15 @@ def validate_action(action: Action, conn: sqlite3.Connection) -> ValidationResul
     if isinstance(action, CloseAllAction):
         if action.symbol not in SUPPORTED_SYMBOLS:
             return ValidationResult(False, f"unsupported symbol {action.symbol}")
+        return ValidationResult(True)
+    # Phase 2 management actions: parse-time Field constraints handle
+    # numeric ranges; state-existence checks (open position present?
+    # last-closed within window?) are deferred to the EA so they aren't
+    # racing with execution. Pass through unconditionally here.
+    if isinstance(action, (
+        MoveSlBeAction, MoveSlAction, ClosePartialAction, CloseFullAction,
+        ReopenLastAction, ReinforceAction, TightenSlAction,
+    )):
         return ValidationResult(True)
     # AlertAction
     return ValidationResult(True)
