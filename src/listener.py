@@ -25,6 +25,16 @@ from src.orchestrator import process_message
 
 log = configure_logging("listener")
 
+# Telethon emits a flurry of WARNING-level "Server sent a very old message"
+# lines on first connect after a gap (the MTProto envelope check fires on
+# getDifference catch-up packets while the time_offset auto-calibration
+# converges). The warnings are benign once the connection settles — see
+# the post-init second-pass catchup below for the actual safety net that
+# prevents lost messages. Demote those two specific loggers to ERROR so
+# the listener log isn't drowned in catch-up chatter.
+logging.getLogger("telethon.network.mtprotostate").setLevel(logging.ERROR)
+logging.getLogger("telethon.network.mtprotosender").setLevel(logging.ERROR)
+
 
 @dataclass(frozen=True)
 class MissedMessage:
@@ -91,6 +101,57 @@ async def _resolve_sender(source) -> str:
         return getattr(sender, "username", None) or getattr(sender, "first_name", "unknown")
     except Exception:
         return "unknown"
+
+
+async def _second_pass_catchup(
+    client,
+    conn: sqlite3.Connection,
+    ai: AIClient,
+    ai_log_path: Path,
+    triage: TriageClient | None,
+    *,
+    delay_sec: float = 6.0,
+) -> None:
+    """Fire-and-forget second backfill pass to catch messages dropped by
+    Telethon's MTProto envelope checks during the first-connect burst.
+
+    Runs `delay_sec` after listener goes live (default 6s — long enough
+    for Telethon's time_offset to calibrate and getDifference cycles to
+    settle, short enough that a recovered message still falls inside
+    BACKFILL_MAX_AGE_MIN). Reuses the same _collect_missed +
+    replay_missed_messages path the supervisor uses on reconnect, so
+    behavior is identical and dedup is automatic.
+    """
+    try:
+        await asyncio.sleep(delay_sec)
+        last_seen = int(get_setting(conn, "last_seen_tg_msg_id") or "0")
+        missed = await _collect_missed(
+            client, config.TG_WATCHED_CHAT_ID, last_seen
+        )
+        if not missed:
+            log.info("second-pass catchup: nothing new beyond last_seen=%s", last_seen)
+            return
+        delay = int(get_setting(conn, "auto_execute_delay_sec")
+                    or str(DEFAULT_AUTO_EXECUTE_DELAY_SEC))
+        now = datetime.now(timezone.utc)
+        processed, skipped = await asyncio.to_thread(
+            lambda: replay_missed_messages(
+                conn, ai, missed,
+                chat_id=config.TG_WATCHED_CHAT_ID,
+                ai_log_path=ai_log_path,
+                auto_execute_delay_sec=delay,
+                cap_minutes=BACKFILL_MAX_AGE_MIN,
+                now=now,
+                triage=triage,
+            )
+        )
+        set_setting(conn, "last_seen_tg_msg_id",
+                    str(max(m.tg_message_id for m in missed)))
+        log.info("second-pass catchup: processed=%s skipped=%s "
+                 "(safety net for dropped MTProto envelopes)",
+                 processed, skipped)
+    except Exception:
+        log.exception("second-pass catchup failed; live handler unaffected")
 
 
 async def _collect_missed(client, chat_id: int, min_id: int) -> list[MissedMessage]:
@@ -243,6 +304,19 @@ async def main() -> None:
 
     ready.set()
     log.info("listener live; awaiting new messages")
+
+    # Second-pass catchup: Telethon's first connect after a gap can drop
+    # MTProto envelopes that fail the "very old message" check, including
+    # ones carrying real new updates. The first message after launch can
+    # be silently lost as a result. Wait a few seconds for Telethon's
+    # time_offset to calibrate and the connection to stabilize, then
+    # re-run the missed-message backfill. Anything dropped during the
+    # initial burst gets picked up here; anything already processed is
+    # deduped by the messages.UNIQUE(chat_id, tg_message_id) constraint
+    # and the orchestrator's fingerprint guard.
+    asyncio.create_task(_second_pass_catchup(
+        client, conn, ai, ai_log_path, triage,
+    ))
 
     # Supervisor: Telethon's connection_retries=-1 should prevent ConnectionError
     # from ever escaping, but wrap run_until_disconnected anyway so a stray

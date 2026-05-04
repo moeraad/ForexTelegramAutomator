@@ -273,7 +273,16 @@ class AIClient:
         cached_prefix = f"RECENT CHAT (last messages, oldest first):\n{recent_chat}"
         volatile_suffix = f"{open_positions_block}\n\nNEW MESSAGE:\n{new_message}"
         level = reasoning_level(self._thinking_enabled, self._thinking_budget)
-        output_budget = 1024
+        # 4096 not 1024: gpt-5 reasoning models count hidden reasoning tokens
+        # against max_completion_tokens. With reasoning_effort="medium" a
+        # full structured BUY block can burn 800-1500 reasoning tokens before
+        # producing JSON output. At 1024 the budget was exhausted before any
+        # visible content, surfacing as "empty OpenAI message content" and
+        # silently dropping legitimate signals (~12% of interpreter calls in
+        # the May-04 logs). 4096 leaves comfortable headroom for both
+        # reasoning and the worst-case compound JSON response.
+        # (Cost: you only pay for tokens actually used, not the cap.)
+        output_budget = 4096
         last_err: Exception | None = None
         for attempt in range(self._max_retries):
             try:

@@ -5,6 +5,7 @@ __pycache__/
 *.session
 *.session-journal
 copytrades.db
+copytrades.db.precleanup-backup
 copytrades.db-wal
 copytrades.db-shm
 logs/*.jsonl

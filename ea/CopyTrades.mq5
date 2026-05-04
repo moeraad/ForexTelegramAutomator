@@ -13,7 +13,17 @@ input int    MaxOpenPositions        = 3;
 input int    EntryZoneMode           = 1;   // 0=midpoint limit, 1=market if in zone
 input int    SlippagePoints          = 50;
 input string Symbol_Override         = "XAUUSD";
-input bool   SyntheticLimitEnabled   = true;  // watch zone + market open on entry; survives restart via DB
+// Effective entry zone is widened by this many price units on EACH side
+// of [entry_low, entry_high] before the in-zone check. Lets a signal that
+// arrived a few ticks late still fill at market instead of being rejected.
+// Set to 0 to require strict in-zone fills.
+input double EntryPriceMargin        = 5.0;
+// LEGACY: synthetic-watch path is OFF by default. Enabling it restores the
+// old behavior where out-of-zone signals POST status='watching' and wait
+// for price to re-enter the zone. See DoOpen for the modern flow:
+// in-zone (incl. margin) -> market; chase-eligible -> market; otherwise
+// rejected with reason 'price_outside_margin'.
+input bool   SyntheticLimitEnabled   = false;
 input int    WatchExpiryHours        = 24;    // drop a watch this many hours after creation if untriggered
 // Chase-price: if price has already moved past the entry zone (BUY above
 // entry_high, SELL below entry_low) but the last TP is still far enough
@@ -487,22 +497,53 @@ string ExtractPayload(string obj) {
    return StringSubstr(obj, start, end - start + 1);
 }
 
+// Broker-authoritative risk sizing.
+//
+// We previously used SYMBOL_TRADE_TICK_VALUE × SYMBOL_TRADE_TICK_SIZE math
+// to convert riskCash → lots. That worked on some brokers and produced 10×
+// the correct lot size on others, because XAUUSD tick values are reported
+// in inconsistent scales (per-oz, per-100-oz, account-currency-converted,
+// etc.) — the same broker quirk that made the dashboard P&L projection
+// 10× too low until it was switched to OrderCalcProfit.
+//
+// OrderCalcProfit returns the broker-authoritative dollar P&L for a given
+// 1.0-lot trade between two prices. We invert it: lots = riskCash / lossPerLot.
+// This produces correct sizing on every broker without needing to know
+// what scale they report tick values in.
 double LotsFromRisk(double slPrice, double entryPrice) {
+   double minLot = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_MIN);
+   double lotStep = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_STEP);
+   if(lotStep <= 0) lotStep = 0.01;
+   if(minLot <= 0) minLot = lotStep;
+
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    double riskCash = equity * (RiskPercentPerTrade / 100.0);
-   double pip = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_SIZE);
-   double tickValue = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_VALUE);
-   if(pip <= 0 || tickValue <= 0) return 0.01;
    double dist = MathAbs(entryPrice - slPrice);
-   double ticks = dist / pip;
-   if(ticks <= 0) return 0.01;
-   double lots = riskCash / (ticks * tickValue);
-   double lotStep = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_STEP);
+   if(dist <= 0 || riskCash <= 0) return minLot;
+
+   ENUM_ORDER_TYPE otype = (entryPrice > slPrice) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double lossPerLot = 0.0;
+   if(!OrderCalcProfit(otype, Symbol_Override, 1.0, entryPrice, slPrice, lossPerLot)) {
+      Print("CT LotsFromRisk: OrderCalcProfit failed; falling back to minLot=",
+            minLot, " err=", GetLastError());
+      return minLot;
+   }
+   lossPerLot = MathAbs(lossPerLot);  // negative for losses; we want magnitude
+   if(lossPerLot <= 0) {
+      Print("CT LotsFromRisk: lossPerLot=0 from OrderCalcProfit; falling back to minLot");
+      return minLot;
+   }
+
+   double lots = riskCash / lossPerLot;
    lots = MathFloor(lots / lotStep) * lotStep;
    if(lots > MaxLotsPerSignal) lots = MaxLotsPerSignal;
-   double minLot = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_MIN);
    if(lots < minLot) lots = minLot;
-   return NormalizeDouble(lots, 2);
+   double result = NormalizeDouble(lots, 2);
+   Print("CT LotsFromRisk: equity=", equity, " risk%=", RiskPercentPerTrade,
+         " riskCash=", riskCash, " entry=", entryPrice, " sl=", slPrice,
+         " dist=", dist, " lossPerLot=", lossPerLot, " -> lots=", result,
+         " (cap=", MaxLotsPerSignal, " step=", lotStep, " min=", minLot, ")");
+   return result;
 }
 
 void DoOpen(long id, string payload) {
@@ -529,8 +570,17 @@ void DoOpen(long id, string payload) {
 
    double entry = (entryLow + entryHigh) / 2.0;
    double price = SymbolInfoDouble(Symbol_Override, side == "BUY" ? SYMBOL_ASK : SYMBOL_BID);
-   bool inZone = (price >= entryLow && price <= entryHigh);
+   // Effective entry zone widens by EntryPriceMargin on each side. A signal
+   // that arrived a few ticks late, or a tight broker spread that puts ASK
+   // outside the strict zone by a small amount, still fills at market.
+   double effectiveLow = entryLow - EntryPriceMargin;
+   double effectiveHigh = entryHigh + EntryPriceMargin;
+   bool inZone = (price >= effectiveLow && price <= effectiveHigh);
    bool useMarket = (EntryZoneMode == 1 && inZone);
+   // When the price is in the EXTENDED zone (i.e., outside the strict
+   // [entry_low, entry_high] but inside the margin band), open at the
+   // current market price rather than the midpoint — same convention as
+   // the chase path uses.
    if(useMarket) entry = price;
 
    bool isBuy = (side == "BUY");
@@ -558,10 +608,25 @@ void DoOpen(long id, string payload) {
       }
    }
 
-   // Out-of-zone + synthetic enabled: POST watching and return. No order placed.
-   // Fills come later via ManageWatches when price enters [entryLow, entryHigh].
+   // LEGACY: opt-in synthetic-watch path. Off by default. Enabling
+   // SyntheticLimitEnabled restores the pre-margin behavior where the EA
+   // POSTs status='watching' and waits for price to re-enter the zone.
+   // Most users want the explicit reject below instead — fewer surprises
+   // when a signal arrives too late.
    if(!useMarket && SyntheticLimitEnabled) {
       StartWatch(id, isBuy, entryLow, entryHigh, sl, tps, tpCount);
+      return;
+   }
+
+   // Out of effective zone, chase didn't fire, watch disabled → reject.
+   // No more pending-limit fallback: the channel's signal has aged past
+   // the margin; firing later would risk filling at a price the analyst
+   // never intended.
+   if(!useMarket) {
+      PostResult(id, "rejected", 0, StringFormat(
+         "price_outside_margin: price=%.2f zone=[%.2f,%.2f] margin=%.2f",
+         price, entryLow, entryHigh, EntryPriceMargin));
+      g_stats_rejected++;
       return;
    }
 
@@ -570,18 +635,9 @@ void DoOpen(long id, string payload) {
    double lotsTotal = LotsFromRisk(sl, entry);
    double tpFinal = tps[tpCount - 1];
 
-   bool ok;
-   if(useMarket) {
-      ok = isBuy
-         ? trade.Buy(lotsTotal, Symbol_Override, 0, sl, tpFinal, "copytrades")
-         : trade.Sell(lotsTotal, Symbol_Override, 0, sl, tpFinal, "copytrades");
-   } else {
-      ok = isBuy
-         ? trade.BuyLimit(lotsTotal, entry, Symbol_Override, sl, tpFinal,
-                          ORDER_TIME_GTC, 0, "copytrades")
-         : trade.SellLimit(lotsTotal, entry, Symbol_Override, sl, tpFinal,
-                           ORDER_TIME_GTC, 0, "copytrades");
-   }
+   bool ok = isBuy
+      ? trade.Buy(lotsTotal, Symbol_Override, 0, sl, tpFinal, "copytrades")
+      : trade.Sell(lotsTotal, Symbol_Override, 0, sl, tpFinal, "copytrades");
    if(!ok) {
       PostResult(id, "failed", 0,
                  "trade.send failed: " + IntegerToString(trade.ResultRetcode()));
@@ -592,17 +648,10 @@ void DoOpen(long id, string payload) {
                  : (long)trade.ResultDeal();
    if(ticket <= 0) { PostResult(id, "failed", 0, "no_ticket_returned"); return; }
 
-   // Only market entries get a staged plan. Pending limits need order→position
-   // ticket mapping on fill, which this MVP doesn't do; the final TP still
-   // protects them, they just skip intermediate partials.
-   if(tpCount >= 2 && useMarket) {
+   // All fills here are market orders (out-of-margin signals rejected
+   // earlier). Multi-TP signals get a staged plan for tp1/tp2 partials.
+   if(tpCount >= 2) {
       RegisterPlan(ticket, isBuy, lotsTotal, entry, sl, tps, tpCount);
-   } else if(tpCount >= 2 && !useMarket) {
-      Alert("CT WARNING: pending limit ticket=", ticket, " with ", tpCount,
-            " TPs will NOT receive staged management (tp1/tp2 partials). "
-            "Final TP (", tpFinal, ") still applies.");
-      Print("CT pending-limit staged mgmt SKIPPED ticket=", ticket,
-            " tpCount=", tpCount, " — no order→position fill mapping");
    }
 
    string legJson = StringFormat(

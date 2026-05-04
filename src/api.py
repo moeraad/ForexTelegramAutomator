@@ -249,17 +249,26 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
 
     @app.post("/positions/{ticket}/close")
     def close_position(ticket: int, body: CloseBody):
+        """Idempotent: re-POSTing close for an already-closed row is a no-op.
+
+        This matters because the EA's ReconcileClosedPositions scans the
+        last 48h of MT5 history every OnTimer tick and POSTs close for
+        every closing deal it finds — including ones already in our DB
+        as 'closed'. Without the status='open' guard below, every tick
+        re-stamped closed_at, which the position_close_notifier then
+        read as a "new" close and DM'd indefinitely.
+        """
         row = conn.execute(
             "SELECT 1 FROM positions WHERE mt5_ticket=?", (ticket,)
         ).fetchone()
         if row is None:
             raise HTTPException(404)
-        conn.execute(
+        cur = conn.execute(
             "UPDATE positions SET status='closed', closed_at=?, close_reason=? "
-            "WHERE mt5_ticket=?",
+            "WHERE mt5_ticket=? AND status='open'",
             (datetime.now(timezone.utc).isoformat(), body.reason, ticket),
         )
-        return {"ok": True}
+        return {"ok": True, "updated": cur.rowcount}
 
     @app.get("/positions/last_closed")
     def last_closed_position(symbol: str = "XAUUSD", within_hours: int = 24):

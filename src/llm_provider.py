@@ -176,12 +176,27 @@ class AnthropicProvider:
 
 def _openai_text(resp: Any) -> str:
     try:
-        msg = resp.choices[0].message
+        choice = resp.choices[0]
+        msg = choice.message
     except (AttributeError, IndexError) as e:
         raise ValueError(f"unexpected OpenAI response shape: {e}")
     content = getattr(msg, "content", None)
     if not isinstance(content, str) or not content:
-        raise ValueError("empty OpenAI message content")
+        # Enrich the error so the diagnosis is obvious in logs/ai_calls.jsonl
+        # without needing to spelunk the SDK response. The two most common
+        # causes are finish_reason="length" (max_completion_tokens exhausted
+        # by reasoning) and finish_reason="content_filter" (safety block).
+        finish_reason = getattr(choice, "finish_reason", "?")
+        usage = getattr(resp, "usage", None)
+        comp_tokens = getattr(usage, "completion_tokens", "?") if usage else "?"
+        details = getattr(usage, "completion_tokens_details", None) if usage else None
+        reasoning_tokens = getattr(details, "reasoning_tokens", "?") if details else "?"
+        raise ValueError(
+            f"empty OpenAI message content "
+            f"(finish_reason={finish_reason!r} "
+            f"completion_tokens={comp_tokens} "
+            f"reasoning_tokens={reasoning_tokens})"
+        )
     return content
 
 
