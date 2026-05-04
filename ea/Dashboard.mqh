@@ -48,7 +48,6 @@ struct DashboardStats {
 
    // Now
    int      open_positions;
-   int      watches;
    long     last_action_id;
    string   last_action_type;
    string   last_action_status;
@@ -72,7 +71,6 @@ struct DashboardStats {
    // Capacity
    double   lots_deployed;
    double   lots_cap;
-   int      max_positions;
 
    string   account_ccy;
 
@@ -207,10 +205,8 @@ void CDashboard::DrawHealth(const DashboardStats &s) {
 void CDashboard::DrawNow(const DashboardStats &s) {
    DrawSection("NOW");
    DrawRow("Open positions",
-      IntegerToString(s.open_positions) + " / " + IntegerToString(s.max_positions),
+      IntegerToString(s.open_positions) + " / 1",
       DSH_TEXT);
-   DrawRow("Watches",
-      IntegerToString(s.watches), DSH_TEXT);
    DrawRow("Lots deployed",
       DoubleToString(s.lots_deployed, 2) + " / " + DoubleToString(s.lots_cap, 2),
       DSH_TEXT);
@@ -354,7 +350,6 @@ ulong CDashboard::HashStats(const DashboardStats &s) {
    h = (h ^ (ulong)(s.algo_allowed ? 1 : 0)) * 1099511628211UL;
    h = (h ^ (ulong)s.uptime_sec) * 1099511628211UL;
    h = (h ^ (ulong)s.open_positions) * 1099511628211UL;
-   h = (h ^ (ulong)s.watches) * 1099511628211UL;
    h = (h ^ (ulong)s.last_action_id) * 1099511628211UL;
    h = (h ^ (ulong)s.last_action_age_sec) * 1099511628211UL;
    h = (h ^ (ulong)s.signals_today) * 1099511628211UL;

@@ -20,6 +20,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_actions_for_watching(conn)
     _migrate_positions_state(conn)
     _migrate_actions_add_phase2_types(conn)
+    _migrate_actions_drop_watch_columns(conn)
 
 
 def _migrate_actions_add_phase2_types(conn: sqlite3.Connection) -> None:
@@ -267,6 +268,42 @@ def _migrate_actions_for_claim(conn: sqlite3.Connection) -> None:
             )
         finally:
             conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _migrate_actions_drop_watch_columns(conn: sqlite3.Connection) -> None:
+    """Drop the synthetic-pending watch infrastructure from existing DBs.
+
+    Why: the watch path (out-of-zone signals POSTed as status='watching' with
+    a watch_json blob and expires_at) was removed in favor of explicit
+    rejection at the EA. This migration converts any leftover 'watching' rows
+    to 'rejected', drops the partial index, and drops the watch_json /
+    expires_at columns. Idempotent: safe to re-run on a fresh DB (no-op).
+
+    Requires SQLite >= 3.35 for ALTER TABLE DROP COLUMN. The Python stdlib
+    sqlite3 in 3.11+ ships with a recent-enough libsqlite; older runtimes
+    will silently keep the columns (the catch below swallows the error).
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(actions)").fetchall()}
+    has_watch_json = "watch_json" in cols
+    has_expires_at = "expires_at" in cols
+    if not (has_watch_json or has_expires_at):
+        return  # already cleaned up
+
+    conn.execute(
+        "UPDATE actions SET status='rejected', ea_response='watch_path_removed' "
+        "WHERE status='watching'"
+    )
+    conn.execute("DROP INDEX IF EXISTS idx_actions_watching_expires")
+    if has_watch_json:
+        try:
+            conn.execute("ALTER TABLE actions DROP COLUMN watch_json")
+        except sqlite3.OperationalError:
+            pass
+    if has_expires_at:
+        try:
+            conn.execute("ALTER TABLE actions DROP COLUMN expires_at")
+        except sqlite3.OperationalError:
+            pass
 
 
 def get_setting(conn: sqlite3.Connection, key: str) -> str | None:

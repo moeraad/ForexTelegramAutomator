@@ -22,22 +22,16 @@ CREATE TABLE IF NOT EXISTS actions (
                   )),
   payload_json    TEXT NOT NULL,
   status          TEXT NOT NULL DEFAULT 'pending'
-                  CHECK(status IN ('pending','cancelled','sent','claimed','watching','executed','failed','rejected')),
+                  CHECK(status IN ('pending','cancelled','sent','claimed','executed','failed','rejected')),
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
   notified_at     DATETIME,
   execute_after   DATETIME,
   claimed_at      DATETIME,
   executed_at     DATETIME,
   ea_response     TEXT,
-  fingerprint     TEXT,
-  watch_json      TEXT,
-  expires_at      DATETIME
+  fingerprint     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);
--- Partial index on expires_at is created by _migrate_actions_for_watching in
--- db.py, not here: on existing pre-watching DBs the column doesn't exist until
--- the migration adds it, so a CREATE INDEX in schema.sql would crash before
--- the migration runs.
 
 CREATE TABLE IF NOT EXISTS positions (
   id                   INTEGER PRIMARY KEY,

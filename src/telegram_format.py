@@ -50,7 +50,6 @@ _STATUS_GLYPH = {
     "executed": "✅",
     "failed":   "❌",
     "rejected": "🚫",
-    "watching": "👀",
 }
 
 
@@ -98,7 +97,6 @@ def render_action_terminal(
     Examples:
       "✅ #42 MOVE_SL_BE executed"
       "🚫 #43 CLOSE_PARTIAL rejected — fraction=0.5 (no_open_position)"
-      "👀 #44 OPEN watching — BUY XAUUSD entry 4700-4702 sl 4690 tps [4710,4720]"
     """
     glyph = _STATUS_GLYPH.get(status, "•")
     body = _payload_summary(action_type, payload)

@@ -20,13 +20,11 @@ class LegResult(BaseModel):
 
 
 class ResultBody(BaseModel):
-    status: str  # "executed" | "failed" | "rejected" | "watching"
+    status: str  # "executed" | "failed" | "rejected"
     mt5_ticket: int | None = None
     error: str | None = None
     snapshot: dict | None = None
     legs: list[LegResult] | None = None
-    watch: dict | None = None          # required when status == "watching"
-    expires_at: str | None = None      # ISO-8601 UTC, required when status == "watching"
 
 
 class CloseBody(BaseModel):
@@ -93,26 +91,22 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
     @app.get("/actions")
     def get_actions(status: str = "sent", limit: int = 50):
         rows = conn.execute(
-            "SELECT id, action_type, payload_json, status, created_at, "
-            "       watch_json, expires_at "
+            "SELECT id, action_type, payload_json, status, created_at "
             "FROM actions WHERE status=? ORDER BY id ASC LIMIT ?",
             (status, limit),
         ).fetchall()
-        out = []
-        for r in rows:
-            item = {
-                "id": r["id"],
-                "action_type": r["action_type"],
-                "payload": json.loads(r["payload_json"]),
-                "status": r["status"],
-                "created_at": r["created_at"],
-            }
-            if r["watch_json"]:
-                item["watch"] = json.loads(r["watch_json"])
-            if r["expires_at"]:
-                item["expires_at"] = r["expires_at"]
-            out.append(item)
-        return {"actions": out}
+        return {
+            "actions": [
+                {
+                    "id": r["id"],
+                    "action_type": r["action_type"],
+                    "payload": json.loads(r["payload_json"]),
+                    "status": r["status"],
+                    "created_at": r["created_at"],
+                }
+                for r in rows
+            ]
+        }
 
     @app.get("/settings/{key}")
     def get_setting(key: str):
@@ -142,17 +136,6 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
         if row is None:
             raise HTTPException(404)
         now = datetime.now(timezone.utc).isoformat()
-        if body.status == "watching":
-            # Synthetic pending: EA is watching the zone, no fill yet.
-            # watch + expires_at are required.
-            if body.watch is None or body.expires_at is None:
-                raise HTTPException(422, "watching requires watch and expires_at")
-            conn.execute(
-                "UPDATE actions SET status='watching', watch_json=?, expires_at=?, "
-                "ea_response=NULL WHERE id=?",
-                (json.dumps(body.watch), body.expires_at, action_id),
-            )
-            return {"ok": True}
         # Terminal states: record executed_at and error string.
         conn.execute(
             "UPDATE actions SET status=?, executed_at=?, ea_response=? WHERE id=?",

@@ -11,7 +11,7 @@ from src import config
 from src.db import connect, init_schema, get_setting, set_setting
 from src.logging_setup import configure_logging
 from src.telegram_format import render_action_notification
-from src.promoter import promote_due_actions, release_stale_claims, expire_stale_watches
+from src.promoter import promote_due_actions, release_stale_claims
 
 log = configure_logging("bot")
 
@@ -160,8 +160,8 @@ async def notification_dispatcher(app: Application):
 
     Per project policy (fully automated, no human approval gate): the bot
     only DMs about actions that have ACTUALLY HAPPENED — executed, failed,
-    rejected, or watching. The pre-execution approval prompt is gone; the
-    promoter auto-promotes pending → sent without operator interaction.
+    or rejected. The pre-execution approval prompt is gone; the promoter
+    auto-promotes pending → sent without operator interaction.
     """
     from src.telegram_format import render_action_terminal
     conn: sqlite3.Connection = app.bot_data["conn"]
@@ -173,7 +173,7 @@ async def notification_dispatcher(app: Application):
     conn.execute(
         "UPDATE actions SET notified_at = CURRENT_TIMESTAMP "
         "WHERE notified_at IS NULL "
-        "  AND status IN ('executed','failed','rejected','watching')"
+        "  AND status IN ('executed','failed','rejected')"
     )
 
     while True:
@@ -181,7 +181,7 @@ async def notification_dispatcher(app: Application):
             rows = conn.execute(
                 "SELECT id, action_type, payload_json, status, ea_response, source_msg_id "
                 "FROM actions WHERE notified_at IS NULL "
-                "AND status IN ('executed','failed','rejected','watching') "
+                "AND status IN ('executed','failed','rejected') "
                 "ORDER BY id ASC LIMIT 20"
             ).fetchall()
             for r in rows:
@@ -287,23 +287,6 @@ async def claim_sweeper_loop(app: Application):
         await asyncio.sleep(15.0)
 
 
-async def watch_sweeper_loop(app: Application):
-    """Reject synthetic-pending watches whose zone expiry has passed.
-
-    Authoritative even when the EA is offline: once expires_at is in the past,
-    the signal is stale regardless of EA state.
-    """
-    conn: sqlite3.Connection = app.bot_data["conn"]
-    while True:
-        try:
-            n = expire_stale_watches(conn)
-            if n:
-                log.info("expired %s stale watch(es)", n)
-        except Exception as e:
-            log.exception("watch_sweeper_loop error: %s", e)
-        await asyncio.sleep(15.0)
-
-
 async def post_init(app: Application):
     # Startup ping — operator wants to know the system is up. Best-effort:
     # if the owner hasn't /start-ed yet, send_message raises Forbidden which
@@ -319,7 +302,6 @@ async def post_init(app: Application):
     asyncio.create_task(position_close_notifier(app))
     asyncio.create_task(promotion_loop(app))
     asyncio.create_task(claim_sweeper_loop(app))
-    asyncio.create_task(watch_sweeper_loop(app))
 
 
 def main() -> None:

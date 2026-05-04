@@ -1,8 +1,6 @@
-import json
 from datetime import datetime, timedelta, timezone
 from src.db import connect, init_schema, set_setting
 from src.promoter import (
-    expire_stale_watches,
     promote_due_actions,
     release_stale_claims,
 )
@@ -86,49 +84,3 @@ def test_release_stale_claims_keeps_fresh(tmp_path):
     assert row["status"] == "claimed"
 
 
-def _insert_watching(conn, expires_at):
-    cur = conn.execute(
-        "INSERT INTO actions(action_type, payload_json, status, watch_json, expires_at) "
-        "VALUES('OPEN', '{}', 'watching', '{\"zone_low\":4864}', ?)",
-        (expires_at.isoformat(),),
-    )
-    return cur.lastrowid
-
-
-def test_expire_stale_watches_rejects_past_due(tmp_path):
-    conn = connect(str(tmp_path / "e.db"))
-    init_schema(conn)
-    past = datetime.now(timezone.utc) - timedelta(minutes=5)
-    aid = _insert_watching(conn, past)
-    n = expire_stale_watches(conn)
-    assert n == 1
-    row = conn.execute(
-        "SELECT status, ea_response, executed_at FROM actions WHERE id=?", (aid,)
-    ).fetchone()
-    assert row["status"] == "rejected"
-    assert row["ea_response"] == "zone_expired"
-    assert row["executed_at"] is not None
-
-
-def test_expire_stale_watches_keeps_future(tmp_path):
-    conn = connect(str(tmp_path / "e.db"))
-    init_schema(conn)
-    future = datetime.now(timezone.utc) + timedelta(hours=1)
-    aid = _insert_watching(conn, future)
-    n = expire_stale_watches(conn)
-    assert n == 0
-    row = conn.execute("SELECT status FROM actions WHERE id=?", (aid,)).fetchone()
-    assert row["status"] == "watching"
-
-
-def test_expire_stale_watches_ignores_non_watching(tmp_path):
-    """A past expires_at on a non-watching row must not trigger rejection."""
-    conn = connect(str(tmp_path / "e.db"))
-    init_schema(conn)
-    past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
-    conn.execute(
-        "INSERT INTO actions(action_type, payload_json, status, expires_at) "
-        "VALUES('OPEN', '{}', 'executed', ?)",
-        (past,),
-    )
-    assert expire_stale_watches(conn) == 0

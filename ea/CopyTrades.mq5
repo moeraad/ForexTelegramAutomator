@@ -7,10 +7,16 @@
 
 input string ApiBaseUrl              = "http://127.0.0.1:8765";
 input int    PollIntervalSec         = 1;
-input double RiskPercentPerTrade     = 1.0;
-input double MaxLotsPerSignal        = 0.50;
-input int    MaxOpenPositions        = 3;
-input int    EntryZoneMode           = 1;   // 0=midpoint limit, 1=market if in zone
+// Position sizing: balance-based. lots = (ACCOUNT_BALANCE / 100) * LotsPer100Balance.
+// Default 0.01 means "0.01 lot per $100 of balance" -> $1000 balance = 0.10 lot,
+// $10000 balance = 1.0 lot. Independent of SL distance, so dollar risk per trade
+// scales with how wide the signal's SL is. Cap with MaxLotsPerSignal below.
+input double LotsPer100Balance       = 0.01;
+// MaxLotsPerSignal is a hard upper cap on the computed lot size. Default
+// 100 is intentionally wide — for retail-sized accounts it never binds, so
+// the formula above is the only sizing constraint. Lower it (e.g., 0.10
+// during validation) if you want a hard ceiling regardless of balance.
+input double MaxLotsPerSignal        = 100.0;
 input int    SlippagePoints          = 50;
 input string Symbol_Override         = "XAUUSD";
 // Effective entry zone is widened by this many price units on EACH side
@@ -18,19 +24,19 @@ input string Symbol_Override         = "XAUUSD";
 // arrived a few ticks late still fill at market instead of being rejected.
 // Set to 0 to require strict in-zone fills.
 input double EntryPriceMargin        = 5.0;
-// LEGACY: synthetic-watch path is OFF by default. Enabling it restores the
-// old behavior where out-of-zone signals POST status='watching' and wait
-// for price to re-enter the zone. See DoOpen for the modern flow:
-// in-zone (incl. margin) -> market; chase-eligible -> market; otherwise
-// rejected with reason 'price_outside_margin'.
-input bool   SyntheticLimitEnabled   = false;
-input int    WatchExpiryHours        = 24;    // drop a watch this many hours after creation if untriggered
 // Chase-price: if price has already moved past the entry zone (BUY above
 // entry_high, SELL below entry_low) but the last TP is still far enough
 // ahead, open at current market instead of waiting for a pullback. Guards
 // against missing fast breakouts while keeping R:R sane.
 input bool   ChasePriceEnabled       = true;
 input double ChaseMinRewardRatio     = 0.5;   // require remaining/original >= this; e.g. 0.5 = >=50% of move still ahead
+// Staged-partial retry cap. CTrade.PositionClosePartial can return false
+// in pre-OrderSend validation (hedging-mode quirks, transient stops-level
+// violations, broker rate-limits) while reporting a stale success retcode
+// from an earlier call. We verify the partial actually executed by reading
+// volume after the attempt; if not, retry on the next ManagePlans tick up
+// to this many times before giving up and advancing the stage anyway.
+input int    PartialMaxRetries       = 10;
 input bool   ShowDashboard           = true;
 input int    DashboardX              = 20;    // pixels from right edge (CORNER_RIGHT_UPPER)
 input int    DashboardY              = 20;    // pixels from top
@@ -77,41 +83,25 @@ struct TradePlan {
    double   slOrig;
    double   tps[3];
    int      tpCount;
-   int      stage;      // 0 initial, 1 after tp1, 2 after tp2
+   int      stage;          // 0 initial, 1 after tp1, 2 after tp2
+   int      stage_attempts; // failed PositionClosePartial attempts on the
+                            // CURRENT stage. Reset on stage advance. If it
+                            // hits PartialMaxRetries we give up and advance
+                            // anyway. Not persisted; reset on EA restart.
 };
 TradePlan g_plans[];
-
-// Synthetic pending limit: when price is outside the entry zone, the EA does
-// NOT place a native BuyLimit/SellLimit. Instead it POSTs status=watching to
-// the API and keeps a local watch. When price enters the zone, the EA opens
-// at market and POSTs executed. The DB is the source of truth: on OnInit we
-// rebuild g_watches from GET /actions?status=watching so restarts don't drop
-// pending zones, and the bot can cancel a watch via its UI.
-struct WatchEntry {
-   long     action_id;
-   bool     isBuy;
-   double   zone_low;
-   double   zone_high;
-   double   sl;
-   double   tps[3];
-   int      tpCount;
-   string   expires_at_iso;  // ISO-8601 UTC; compared as string (lexicographic == chronological)
-};
-WatchEntry g_watches[];
 
 int OnInit() {
    trade.SetExpertMagicNumber(919191);
    trade.SetDeviationInPoints(SlippagePoints);
    EventSetTimer(PollIntervalSec);
    LoadPersistedPlans();
-   LoadPersistedWatches();
    g_ea_start = TimeCurrent();
    g_balance_open_today = AccountInfoDouble(ACCOUNT_BALANCE);
    g_equity_peak_today = AccountInfoDouble(ACCOUNT_EQUITY);
    if(ShowDashboard) g_dashboard.Create(DashboardX, DashboardY);
    Print("CopyTrades EA started. API=", ApiBaseUrl,
-         " restored_plans=", ArraySize(g_plans),
-         " restored_watches=", ArraySize(g_watches));
+         " restored_plans=", ArraySize(g_plans));
    return INIT_SUCCEEDED;
 }
 
@@ -126,7 +116,6 @@ void OnTimer() {
    if(!g_kill_switch_cached) {
       PollAndExecute();
       ManagePlans();  // also driven by OnTick; belt-and-suspenders
-      ManageWatches();
       ReconcileClosedPositions();
    }
    // Heartbeat market price unconditionally (even when halted) — the AI
@@ -218,10 +207,8 @@ void BuildStats(DashboardStats &s) {
    int pos_count; double lots; double open_pnl; double sl_risk;
    AggregateOpenPositions(pos_count, lots, open_pnl, sl_risk);
    s.open_positions = pos_count;
-   s.watches        = ArraySize(g_watches);
    s.lots_deployed  = lots;
-   s.lots_cap       = MaxLotsPerSignal * MaxOpenPositions;
-   s.max_positions  = MaxOpenPositions;
+   s.lots_cap       = MaxLotsPerSignal;
    s.open_pnl       = open_pnl;
 
    s.last_action_id     = g_last_action_id;
@@ -321,7 +308,6 @@ void BuildStats(DashboardStats &s) {
 void OnTick() {
    // Price-driven: reacts faster than the 1s timer to TP crossings.
    ManagePlans();
-   ManageWatches();
 }
 
 bool KillSwitchOn() {
@@ -453,8 +439,10 @@ void ExecuteOne(string obj) {
    g_last_action_status = "claimed";
    g_last_action_at = TimeCurrent();
 
-   if(CountOurOpenPositions() >= MaxOpenPositions && atype == "OPEN") {
-      PostResult(id, "rejected", 0, "max_positions");
+   // Single-position invariant: at most one open trade at a time. New OPEN
+   // signals while a position is already open are rejected here.
+   if(atype == "OPEN" && CountOurOpenPositions() >= 1) {
+      PostResult(id, "rejected", 0, "already_open");
       return;
    }
 
@@ -497,51 +485,33 @@ string ExtractPayload(string obj) {
    return StringSubstr(obj, start, end - start + 1);
 }
 
-// Broker-authoritative risk sizing.
+// Balance-based position sizing.
 //
-// We previously used SYMBOL_TRADE_TICK_VALUE × SYMBOL_TRADE_TICK_SIZE math
-// to convert riskCash → lots. That worked on some brokers and produced 10×
-// the correct lot size on others, because XAUUSD tick values are reported
-// in inconsistent scales (per-oz, per-100-oz, account-currency-converted,
-// etc.) — the same broker quirk that made the dashboard P&L projection
-// 10× too low until it was switched to OrderCalcProfit.
+//   lots = (ACCOUNT_BALANCE / 100) * LotsPer100Balance
 //
-// OrderCalcProfit returns the broker-authoritative dollar P&L for a given
-// 1.0-lot trade between two prices. We invert it: lots = riskCash / lossPerLot.
-// This produces correct sizing on every broker without needing to know
-// what scale they report tick values in.
+// Independent of SL distance, so the dollar risk per trade scales linearly
+// with the signal's SL placement (a wide-SL signal risks more dollars than
+// a tight-SL signal at the same lot size). The MaxLotsPerSignal input is
+// the hard upper cap regardless of balance.
+//
+// `slPrice` and `entryPrice` parameters are kept in the signature for
+// future flexibility but are no longer used by the formula.
 double LotsFromRisk(double slPrice, double entryPrice) {
    double minLot = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_MIN);
    double lotStep = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_STEP);
    if(lotStep <= 0) lotStep = 0.01;
    if(minLot <= 0) minLot = lotStep;
 
-   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   double riskCash = equity * (RiskPercentPerTrade / 100.0);
-   double dist = MathAbs(entryPrice - slPrice);
-   if(dist <= 0 || riskCash <= 0) return minLot;
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(balance <= 0 || LotsPer100Balance <= 0) return minLot;
 
-   ENUM_ORDER_TYPE otype = (entryPrice > slPrice) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   double lossPerLot = 0.0;
-   if(!OrderCalcProfit(otype, Symbol_Override, 1.0, entryPrice, slPrice, lossPerLot)) {
-      Print("CT LotsFromRisk: OrderCalcProfit failed; falling back to minLot=",
-            minLot, " err=", GetLastError());
-      return minLot;
-   }
-   lossPerLot = MathAbs(lossPerLot);  // negative for losses; we want magnitude
-   if(lossPerLot <= 0) {
-      Print("CT LotsFromRisk: lossPerLot=0 from OrderCalcProfit; falling back to minLot");
-      return minLot;
-   }
-
-   double lots = riskCash / lossPerLot;
+   double lots = (balance / 100.0) * LotsPer100Balance;
    lots = MathFloor(lots / lotStep) * lotStep;
    if(lots > MaxLotsPerSignal) lots = MaxLotsPerSignal;
    if(lots < minLot) lots = minLot;
    double result = NormalizeDouble(lots, 2);
-   Print("CT LotsFromRisk: equity=", equity, " risk%=", RiskPercentPerTrade,
-         " riskCash=", riskCash, " entry=", entryPrice, " sl=", slPrice,
-         " dist=", dist, " lossPerLot=", lossPerLot, " -> lots=", result,
+   Print("CT LotsFromRisk(balance): balance=", balance,
+         " ratio=", LotsPer100Balance, " per $100 -> lots=", result,
          " (cap=", MaxLotsPerSignal, " step=", lotStep, " min=", minLot, ")");
    return result;
 }
@@ -576,7 +546,7 @@ void DoOpen(long id, string payload) {
    double effectiveLow = entryLow - EntryPriceMargin;
    double effectiveHigh = entryHigh + EntryPriceMargin;
    bool inZone = (price >= effectiveLow && price <= effectiveHigh);
-   bool useMarket = (EntryZoneMode == 1 && inZone);
+   bool useMarket = inZone;
    // When the price is in the EXTENDED zone (i.e., outside the strict
    // [entry_low, entry_high] but inside the margin band), open at the
    // current market price rather than the midpoint — same convention as
@@ -608,20 +578,9 @@ void DoOpen(long id, string payload) {
       }
    }
 
-   // LEGACY: opt-in synthetic-watch path. Off by default. Enabling
-   // SyntheticLimitEnabled restores the pre-margin behavior where the EA
-   // POSTs status='watching' and waits for price to re-enter the zone.
-   // Most users want the explicit reject below instead — fewer surprises
-   // when a signal arrives too late.
-   if(!useMarket && SyntheticLimitEnabled) {
-      StartWatch(id, isBuy, entryLow, entryHigh, sl, tps, tpCount);
-      return;
-   }
-
-   // Out of effective zone, chase didn't fire, watch disabled → reject.
-   // No more pending-limit fallback: the channel's signal has aged past
-   // the margin; firing later would risk filling at a price the analyst
-   // never intended.
+   // Out of effective zone, chase didn't fire → reject. No pending-limit
+   // fallback: the channel's signal has aged past the margin; firing later
+   // would risk filling at a price the analyst never intended.
    if(!useMarket) {
       PostResult(id, "rejected", 0, StringFormat(
          "price_outside_margin: price=%.2f zone=[%.2f,%.2f] margin=%.2f",
@@ -682,6 +641,7 @@ void RegisterPlan(long ticket, bool isBuy, double origLots, double entry,
    p.slOrig = sl;
    p.tpCount = tpCount;
    p.stage = 0;
+   p.stage_attempts = 0;
    for(int i = 0; i < 3; i++) p.tps[i] = (i < tpCount ? tps[i] : 0.0);
 
    // Dedupe by ticket: two plans for one ticket make ManagePlans fire each
@@ -852,18 +812,50 @@ void ManagePlans() {
          double frac = 1.0 / (double)p.tpCount;
          double closeLots = MathFloor((p.origLots * frac) / lotStep) * lotStep;
          closeLots = NormalizeDouble(closeLots, 2);
-         double currentVol = PositionGetDouble(POSITION_VOLUME);
-         double remaining = currentVol - closeLots;
+         double volBefore = PositionGetDouble(POSITION_VOLUME);
+         double remaining = volBefore - closeLots;
 
-         if(closeLots >= minLot && remaining >= minLot) {
-            if(!trade.PositionClosePartial(p.ticket, closeLots))
-               Print("CT plan stage1 partial FAILED ticket=", p.ticket,
-                     " lots=", closeLots, " code=", trade.ResultRetcode());
-            else
-               Print("CT plan stage1 partial ok ticket=", p.ticket, " lots=", closeLots);
-         } else {
+         bool partialOk = false;
+         bool partialSkipped = false;
+
+         if(closeLots < minLot || remaining < minLot) {
+            // Lot-size sanity prevents the partial. Math won't change on
+            // retry, so skip it and advance the stage immediately.
+            partialSkipped = true;
             Print("CT plan stage1 partial skipped (lot size) ticket=", p.ticket,
                   " want=", closeLots, " remain=", remaining);
+         } else {
+            // Verify-then-advance: CTrade.PositionClosePartial can return
+            // false in pre-OrderSend validation while ResultRetcode is a
+            // stale success code from an earlier call. Trust the volume
+            // diff, not the bool return.
+            bool ctradeOk = trade.PositionClosePartial(p.ticket, closeLots);
+            double volAfter = PositionSelectByTicket(p.ticket)
+                              ? PositionGetDouble(POSITION_VOLUME) : 0.0;
+            partialOk = (volAfter < volBefore - lotStep / 2.0);
+            if(partialOk) {
+               Print("CT plan stage1 partial ok ticket=", p.ticket,
+                     " lots=", closeLots,
+                     " (vol ", DoubleToString(volBefore, 2),
+                     " -> ", DoubleToString(volAfter, 2), ")");
+            } else {
+               p.stage_attempts++;
+               Print("CT plan stage1 partial FAILED ticket=", p.ticket,
+                     " lots=", closeLots,
+                     " ctrade_ok=", ctradeOk,
+                     " retcode=", trade.ResultRetcode(),
+                     " last_err=", GetLastError(),
+                     " vol_unchanged=", DoubleToString(volBefore, 2),
+                     " attempt=", p.stage_attempts, "/", PartialMaxRetries);
+               if(p.stage_attempts < PartialMaxRetries) {
+                  // Persist the bumped attempt count, retry next tick.
+                  g_plans[i] = p;
+                  continue;
+               }
+               Print("CT plan stage1 partial GIVING UP ticket=", p.ticket,
+                     " after ", p.stage_attempts,
+                     " attempts; advancing stage to 1 anyway");
+            }
          }
 
          // SL stays put on TP1. The original SL keeps protecting the
@@ -872,9 +864,8 @@ void ManagePlans() {
          Print("CT plan stage1 SL unchanged ticket=", p.ticket,
                " sl=", DoubleToString(p.slOrig, 5));
 
-         // Advance regardless: partial (if any) is irreversible; retrying
-         // would double-close.
          p.stage = 1;
+         p.stage_attempts = 0;  // reset retry counter for next stage
          g_plans[i] = p;
          GlobalVariableSet(PlanKey(p.ticket, "stage"), (double)p.stage);
          double postVol = PositionSelectByTicket(p.ticket)
@@ -890,28 +881,55 @@ void ManagePlans() {
          // Close another 1/3 of ORIGINAL lots.
          double closeLots = MathFloor((p.origLots / 3.0) / lotStep) * lotStep;
          closeLots = NormalizeDouble(closeLots, 2);
-         double currentVol = PositionGetDouble(POSITION_VOLUME);
-         double remaining = currentVol - closeLots;
+         double volBefore = PositionGetDouble(POSITION_VOLUME);
+         double remaining = volBefore - closeLots;
 
-         if(closeLots >= minLot && remaining >= minLot) {
-            if(!trade.PositionClosePartial(p.ticket, closeLots))
-               Print("CT plan stage2 partial FAILED ticket=", p.ticket,
-                     " lots=", closeLots, " code=", trade.ResultRetcode());
-            else
-               Print("CT plan stage2 partial ok ticket=", p.ticket, " lots=", closeLots);
-         } else {
+         bool partialOk = false;
+         bool partialSkipped = false;
+
+         if(closeLots < minLot || remaining < minLot) {
+            partialSkipped = true;
             Print("CT plan stage2 partial skipped (lot size) ticket=", p.ticket,
                   " want=", closeLots, " remain=", remaining);
+         } else {
+            bool ctradeOk = trade.PositionClosePartial(p.ticket, closeLots);
+            double volAfter = PositionSelectByTicket(p.ticket)
+                              ? PositionGetDouble(POSITION_VOLUME) : 0.0;
+            partialOk = (volAfter < volBefore - lotStep / 2.0);
+            if(partialOk) {
+               Print("CT plan stage2 partial ok ticket=", p.ticket,
+                     " lots=", closeLots,
+                     " (vol ", DoubleToString(volBefore, 2),
+                     " -> ", DoubleToString(volAfter, 2), ")");
+            } else {
+               p.stage_attempts++;
+               Print("CT plan stage2 partial FAILED ticket=", p.ticket,
+                     " lots=", closeLots,
+                     " ctrade_ok=", ctradeOk,
+                     " retcode=", trade.ResultRetcode(),
+                     " last_err=", GetLastError(),
+                     " vol_unchanged=", DoubleToString(volBefore, 2),
+                     " attempt=", p.stage_attempts, "/", PartialMaxRetries);
+               if(p.stage_attempts < PartialMaxRetries) {
+                  g_plans[i] = p;
+                  continue;
+               }
+               Print("CT plan stage2 partial GIVING UP ticket=", p.ticket,
+                     " after ", p.stage_attempts,
+                     " attempts; advancing stage to 2 anyway");
+            }
          }
 
          // Move SL to entry (Break-Even), keep TP at tp3.
          if(!trade.PositionModify(p.ticket, p.entry, p.tps[2]))
             Print("CT plan stage2 SL->BE FAILED ticket=", p.ticket,
-                  " code=", trade.ResultRetcode());
+                  " retcode=", trade.ResultRetcode(),
+                  " last_err=", GetLastError());
          else
             Print("CT plan stage2 SL->BE ok ticket=", p.ticket);
 
          p.stage = 2;
+         p.stage_attempts = 0;
          g_plans[i] = p;
          GlobalVariableSet(PlanKey(p.ticket, "stage"), (double)p.stage);
          double postVol2 = PositionSelectByTicket(p.ticket)
@@ -1006,8 +1024,8 @@ long FindSingletonOpenTicket(string symbol) {
 }
 
 // Build an OPEN-action-shaped payload string from a /positions/last_closed
-// response so we can pipe it into DoOpen() and reuse its chase / watch /
-// market logic for REOPEN_LAST and REINFORCE. Returns "" on failure.
+// response so we can pipe it into DoOpen() and reuse its chase / market
+// logic for REOPEN_LAST and REINFORCE. Returns "" on failure.
 string BuildOpenPayloadFromLastClosed(string lastClosedBody) {
    string sigBlock = JsonField(lastClosedBody, "signal");
    if(sigBlock == "" || StringGetCharacter(sigBlock, 0) != '{') return "";
@@ -1137,7 +1155,7 @@ void DoReopenLast(long id, string payload) {
       return;
    }
    Print("CT REOPEN_LAST id=", id, " payload=", fakePayload);
-   DoOpen(id, fakePayload);  // reuses chase/watch/market flow + PostResult
+   DoOpen(id, fakePayload);  // reuses chase/market flow + PostResult
 }
 
 void DoReinforce(long id, string payload) {
@@ -1254,207 +1272,6 @@ void ReconcileClosedPositions() {
          Print("CT reconcile: ticket=", ticket,
                " absent from MT5 → POSTed close (mt5_not_found)");
       }
-   }
-}
-
-// ---- Synthetic-pending (watching) helpers ----
-
-// Format a UTC epoch as ISO-8601 with explicit +00:00 so the Python side (which
-// also emits +00:00) lines up byte-for-byte and string compares work.
-string IsoUtcFromGmt(datetime t) {
-   MqlDateTime dt;
-   TimeToStruct(t, dt);
-   return StringFormat("%04d-%02d-%02dT%02d:%02d:%02d+00:00",
-      dt.year, dt.mon, dt.day, dt.hour, dt.min, dt.sec);
-}
-
-string TpsToJsonArray(const double &tps[], int tpCount) {
-   string s = "[";
-   for(int i = 0; i < tpCount; i++) {
-      if(i > 0) s += ",";
-      s += DoubleToString(tps[i], 5);
-   }
-   s += "]";
-   return s;
-}
-
-void StartWatch(long id, bool isBuy, double entryLow, double entryHigh,
-                double sl, const double &tps[], int tpCount) {
-   datetime expires = TimeGMT() + (datetime)(WatchExpiryHours * 3600);
-   string expiresIso = IsoUtcFromGmt(expires);
-
-   string watchJson = StringFormat(
-      "{\"symbol\":\"%s\",\"side\":\"%s\",\"zone_low\":%.5f,\"zone_high\":%.5f,"
-      "\"sl\":%.5f,\"tps\":%s}",
-      Symbol_Override, isBuy ? "BUY" : "SELL", entryLow, entryHigh, sl,
-      TpsToJsonArray(tps, tpCount)
-   );
-   string body = "{\"status\":\"watching\",\"watch\":" + watchJson +
-                 ",\"expires_at\":\"" + expiresIso + "\"}";
-   string resp; int status;
-   bool ok = HttpPostJsonWithStatus(
-      ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result",
-      body, resp, status);
-   if(!ok) {
-      Print("Watch POST failed for action ", id, " status=", status,
-            " — claim sweeper will release");
-      return;
-   }
-   // Local bookkeeping mirrors what we just wrote to the DB.
-   WatchEntry w;
-   w.action_id = id;
-   w.isBuy = isBuy;
-   w.zone_low = entryLow;
-   w.zone_high = entryHigh;
-   w.sl = sl;
-   w.tpCount = tpCount;
-   for(int i = 0; i < 3; i++) w.tps[i] = (i < tpCount ? tps[i] : 0.0);
-   w.expires_at_iso = expiresIso;
-   int n = ArraySize(g_watches);
-   ArrayResize(g_watches, n + 1);
-   g_watches[n] = w;
-   Print("CT watch started action=", id, " zone=[", entryLow, ",", entryHigh,
-         "] expires=", expiresIso);
-}
-
-void RemoveWatch(int idx) {
-   int n = ArraySize(g_watches);
-   for(int j = idx; j < n - 1; j++) g_watches[j] = g_watches[j + 1];
-   ArrayResize(g_watches, n - 1);
-}
-
-// Convert a triggered watch into a market open. On success, register a staged
-// plan (if >=2 TPs) and POST executed; on failure, POST failed so the server
-// moves it off 'watching' and doesn't re-surface it.
-void TriggerWatch(int idx) {
-   WatchEntry w = g_watches[idx];
-   double entry = SymbolInfoDouble(Symbol_Override, w.isBuy ? SYMBOL_ASK : SYMBOL_BID);
-   double lotsTotal = LotsFromRisk(w.sl, entry);
-   double tpFinal = w.tps[w.tpCount - 1];
-
-   bool ok = w.isBuy
-      ? trade.Buy(lotsTotal, Symbol_Override, 0, w.sl, tpFinal, "copytrades")
-      : trade.Sell(lotsTotal, Symbol_Override, 0, w.sl, tpFinal, "copytrades");
-   if(!ok) {
-      PostResult(w.action_id, "failed", 0,
-                 "watch_trigger_send_failed:" + IntegerToString(trade.ResultRetcode()));
-      RemoveWatch(idx);
-      return;
-   }
-   long ticket = (long)trade.ResultOrder() != 0
-                 ? (long)trade.ResultOrder()
-                 : (long)trade.ResultDeal();
-   if(ticket <= 0) {
-      PostResult(w.action_id, "failed", 0, "watch_trigger_no_ticket");
-      RemoveWatch(idx);
-      return;
-   }
-
-   // Staged management works now that we fired at market and have a real
-   // position ticket — the gap that made out-of-zone signals skip partials.
-   if(w.tpCount >= 2) {
-      double tpsArr[3];
-      for(int i = 0; i < 3; i++) tpsArr[i] = w.tps[i];
-      RegisterPlan(ticket, w.isBuy, lotsTotal, entry, w.sl, tpsArr, w.tpCount);
-   }
-
-   string legJson = StringFormat(
-      "{\"mt5_ticket\":%I64d,\"snapshot\":{\"symbol\":\"%s\",\"side\":\"%s\","
-      "\"volume\":%.2f,\"entry_price\":%.2f,\"sl\":%.2f,\"tp\":%.2f}}",
-      ticket, Symbol_Override, w.isBuy ? "BUY" : "SELL",
-      lotsTotal, entry, w.sl, tpFinal
-   );
-   string body = "{\"status\":\"executed\",\"legs\":[" + legJson + "]}";
-   string resp; int status;
-   HttpPostJsonWithStatus(
-      ApiBaseUrl + "/actions/" + IntegerToString(w.action_id) + "/result",
-      body, resp, status);
-   Print("CT watch triggered action=", w.action_id, " ticket=", ticket,
-         " entry=", entry);
-   g_stats_executed++;
-   g_last_action_id = w.action_id;
-   g_last_action_type = "OPEN";
-   g_last_action_status = "executed";
-   g_last_action_at = TimeCurrent();
-   RemoveWatch(idx);
-}
-
-void ManageWatches() {
-   if(ArraySize(g_watches) == 0) return;
-   string nowIso = IsoUtcFromGmt(TimeGMT());
-   for(int i = ArraySize(g_watches) - 1; i >= 0; i--) {
-      WatchEntry w = g_watches[i];
-      // Expiry: string compare on fixed-format ISO-8601 gives chronological order.
-      if(StringCompare(nowIso, w.expires_at_iso) > 0) {
-         Print("CT watch expired locally action=", w.action_id,
-               " — server sweeper will mark rejected");
-         RemoveWatch(i);
-         continue;
-      }
-      double price = SymbolInfoDouble(Symbol_Override, w.isBuy ? SYMBOL_ASK : SYMBOL_BID);
-      if(price >= w.zone_low && price <= w.zone_high) {
-         TriggerWatch(i);
-      }
-   }
-}
-
-void LoadPersistedWatches() {
-   // DB is authoritative. On every OnInit rebuild the local watchlist from
-   // the API so restarts don't drop zones mid-flight.
-   string body;
-   if(!HttpGet(ApiBaseUrl + "/actions?status=watching&limit=200", body)) return;
-   int pos = 0;
-   while(true) {
-      int objStart = StringFind(body, "{\"id\":", pos);
-      if(objStart < 0) break;
-      int depth = 0;
-      int objEnd = -1;
-      for(int i = objStart; i < StringLen(body); i++) {
-         ushort c = StringGetCharacter(body, i);
-         if(c == '{') depth++;
-         else if(c == '}') { depth--; if(depth == 0) { objEnd = i; break; } }
-      }
-      if(objEnd < 0) break;
-      string obj = StringSubstr(body, objStart, objEnd - objStart + 1);
-      pos = objEnd + 1;
-
-      long id = StringToInteger(JsonField(obj, "id"));
-      string expiresIso = JsonField(obj, "expires_at");
-      // The watch object itself is nested inside the response — extract by brace match.
-      int wKey = StringFind(obj, "\"watch\":");
-      if(id <= 0 || wKey < 0) continue;
-      int wStart = StringFind(obj, "{", wKey);
-      if(wStart < 0) continue;
-      int wDepth = 0, wEnd = -1;
-      for(int i = wStart; i < StringLen(obj); i++) {
-         ushort c = StringGetCharacter(obj, i);
-         if(c == '{') wDepth++;
-         else if(c == '}') { wDepth--; if(wDepth == 0) { wEnd = i; break; } }
-      }
-      if(wEnd < 0) continue;
-      string watchObj = StringSubstr(obj, wStart, wEnd - wStart + 1);
-
-      WatchEntry w;
-      w.action_id = id;
-      w.isBuy = (JsonField(watchObj, "side") == "BUY");
-      w.zone_low = StringToDouble(JsonField(watchObj, "zone_low"));
-      w.zone_high = StringToDouble(JsonField(watchObj, "zone_high"));
-      w.sl = StringToDouble(JsonField(watchObj, "sl"));
-      double tps[];
-      ParseTps(JsonField(watchObj, "tps"), tps);
-      w.tpCount = ArraySize(tps);
-      if(w.tpCount > 3) w.tpCount = 3;
-      // AI-persisted payload may be in any TP order; normalise so TriggerWatch
-      // sets MT5 TP to the farthest target and staged partials align.
-      SortTpsByDistance(tps, w.tpCount, w.isBuy);
-      for(int i = 0; i < 3; i++) w.tps[i] = (i < w.tpCount ? tps[i] : 0.0);
-      w.expires_at_iso = expiresIso;
-
-      int n = ArraySize(g_watches);
-      ArrayResize(g_watches, n + 1);
-      g_watches[n] = w;
-      Print("CT watch restored action=", id, " zone=[", w.zone_low, ",",
-            w.zone_high, "] expires=", expiresIso);
    }
 }
 
