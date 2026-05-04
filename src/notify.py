@@ -13,13 +13,24 @@ from __future__ import annotations
 
 import json
 import logging
+import ssl
 from urllib import error, request
+
+import certifi
 
 from src import config
 
 log = logging.getLogger(__name__)
 
 _TG_API = "https://api.telegram.org"
+
+# Use certifi's Mozilla CA bundle instead of the OS trust store. Some Windows
+# hosts have antivirus / corporate-proxy software that injects a self-signed
+# root CA and re-signs every HTTPS connection. urllib's default trust path
+# then rejects the chain ("self-signed certificate in certificate chain").
+# Telethon and the OpenAI SDK both already use certifi and work on the same
+# boxes — match their behavior here.
+_SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 
 
 def notify_owner(text: str, *, timeout: float = 5.0) -> bool:
@@ -40,7 +51,7 @@ def notify_owner(text: str, *, timeout: float = 5.0) -> bool:
         headers={"Content-Type": "application/json"},
     )
     try:
-        with request.urlopen(req, timeout=timeout) as resp:
+        with request.urlopen(req, timeout=timeout, context=_SSL_CTX) as resp:
             return 200 <= resp.status < 300
     except (error.URLError, TimeoutError, OSError) as exc:
         log.warning("notify_owner failed: %s", exc)

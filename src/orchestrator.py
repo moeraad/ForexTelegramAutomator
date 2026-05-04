@@ -15,10 +15,12 @@ from src.config import (
     SIGNAL_MEMORY_MAX_ENTRIES,
 )
 from src.fingerprint import signal_fingerprint
+from src.logging_setup import trades_log
 from src.state_summary import render_open_positions
 from src.validators import Action, AlertAction, OpenAction, validate_action
 
 log = logging.getLogger(__name__)
+trades = trades_log()
 
 
 RECENT_CHAT_WINDOW = 20
@@ -181,6 +183,12 @@ def process_message(
         **result.usage,
     })
 
+    types_summary = ",".join(_action_type(a) for a in result.response.actions) or "-"
+    trades.info(
+        "ai_decision msg_id=%s category=%s latency_ms=%s types=[%s]",
+        msg_id, result.response.category or "-", result.latency_ms, types_summary,
+    )
+
     if SIGNAL_MEMORY_ENABLED and result.response.category and result.response.category != "ignore":
         signal_memory.record(
             conn, msg_id, chat_id, result.response.category,
@@ -202,6 +210,10 @@ def process_message(
                     (msg_id, _action_type(action), payload, fp),
                 )
                 inserted.append(cur.lastrowid)
+                trades.info(
+                    "action_inserted msg_id=%s action_id=%s type=%s status=rejected reason=duplicate_signal",
+                    msg_id, cur.lastrowid, _action_type(action),
+                )
                 continue
 
         v = validate_action(action, conn)
@@ -212,6 +224,10 @@ def process_message(
                 (msg_id, _action_type(action), payload, v.error, fp),
             )
             inserted.append(cur.lastrowid)
+            trades.info(
+                "action_inserted msg_id=%s action_id=%s type=%s status=rejected reason=%s",
+                msg_id, cur.lastrowid, _action_type(action), v.error,
+            )
             continue
 
         # ALERTs do not get auto-executed
@@ -222,6 +238,10 @@ def process_message(
                 (msg_id, payload),
             )
             inserted.append(cur.lastrowid)
+            trades.info(
+                "action_inserted msg_id=%s action_id=%s type=ALERT status=pending",
+                msg_id, cur.lastrowid,
+            )
             continue
 
         execute_after = (
@@ -233,6 +253,10 @@ def process_message(
             (msg_id, _action_type(action), payload, execute_after, fp),
         )
         inserted.append(cur.lastrowid)
+        trades.info(
+            "action_inserted msg_id=%s action_id=%s type=%s status=pending",
+            msg_id, cur.lastrowid, _action_type(action),
+        )
         if isinstance(action, OpenAction):
             open_persisted = True
 

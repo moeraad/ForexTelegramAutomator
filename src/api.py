@@ -8,10 +8,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from src.logging_setup import configure_logging, http_logger
+from src.logging_setup import configure_logging, trades_log
 
 log = configure_logging("api")
-_http_log = http_logger()
+trades = trades_log()
 
 
 class LegResult(BaseModel):
@@ -51,9 +51,11 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
     app = FastAPI()
 
     @app.middleware("http")
-    async def http_access_log(request: Request, call_next):
-        # One line per request into logs/api_http.log. Survives console
-        # closure, so a 3 a.m. 422 from the EA still has forensic history.
+    async def http_error_log(request: Request, call_next):
+        # Log only non-2xx responses to system.log. The EA polls /actions and
+        # POSTs /market/price every second — logging every 200 was 90% of the
+        # log volume and zero of the signal. 4xx/5xx still get forensic
+        # history (status, latency, path) so a 3 a.m. 422 is debuggable.
         start = time.perf_counter()
         status = 500
         try:
@@ -61,11 +63,12 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             status = response.status_code
             return response
         finally:
-            ms = int((time.perf_counter() - start) * 1000)
-            _http_log.info(
-                "%s %s -> %s %dms",
-                request.method, request.url.path, status, ms,
-            )
+            if status >= 400:
+                ms = int((time.perf_counter() - start) * 1000)
+                log.warning(
+                    "%s %s -> %s %dms",
+                    request.method, request.url.path, status, ms,
+                )
 
     @app.exception_handler(RequestValidationError)
     async def on_validation_error(request: Request, exc: RequestValidationError):
@@ -128,6 +131,7 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             if row is None:
                 raise HTTPException(404, "action not found")
             raise HTTPException(409, f"action is {row['status']}, not sent")
+        trades.info("action_claimed id=%s", action_id)
         return {"ok": True, "claimed_at": now}
 
     @app.post("/actions/{action_id}/result")
@@ -140,6 +144,10 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
         conn.execute(
             "UPDATE actions SET status=?, executed_at=?, ea_response=? WHERE id=?",
             (body.status, now, body.error, action_id),
+        )
+        trades.info(
+            "action_result id=%s status=%s ticket=%s error=%s",
+            action_id, body.status, body.mt5_ticket or "", body.error or "",
         )
         if body.status == "executed":
             legs = body.legs
@@ -157,6 +165,11 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
                     (action_id, leg.mt5_ticket, s.get("symbol"), s.get("side"),
                      s.get("volume"), s.get("volume"),
                      s.get("entry_price"), s.get("sl"), s.get("tp"), now),
+                )
+                trades.info(
+                    "position_opened ticket=%s side=%s vol=%s entry=%s sl=%s tp=%s",
+                    leg.mt5_ticket, s.get("side"), s.get("volume"),
+                    s.get("entry_price"), s.get("sl"), s.get("tp"),
                 )
         return {"ok": True}
 
@@ -228,6 +241,16 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             f"UPDATE positions SET {', '.join(sets)} WHERE mt5_ticket=?",
             args,
         )
+        if body.volume is not None and row["volume"] is not None and body.volume < row["volume"]:
+            trades.info(
+                "position_partial ticket=%s vol_before=%s vol_after=%s",
+                ticket, row["volume"], body.volume,
+            )
+        if body.sl is not None and row["sl"] != body.sl:
+            trades.info(
+                "position_sl_moved ticket=%s sl_before=%s sl_after=%s",
+                ticket, row["sl"], body.sl,
+            )
         return {"ok": True, "updated": explicit_fields}
 
     @app.post("/positions/{ticket}/close")
@@ -251,6 +274,8 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             "WHERE mt5_ticket=? AND status='open'",
             (datetime.now(timezone.utc).isoformat(), body.reason, ticket),
         )
+        if cur.rowcount > 0:
+            trades.info("position_closed ticket=%s reason=%s", ticket, body.reason or "")
         return {"ok": True, "updated": cur.rowcount}
 
     @app.get("/positions/last_closed")
