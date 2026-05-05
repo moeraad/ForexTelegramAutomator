@@ -142,7 +142,23 @@ def _migrate_actions_for_watching(conn: sqlite3.Connection) -> None:
     sql_row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='actions'"
     ).fetchone()
-    check_has_watching = bool(sql_row) and "'watching'" in sql_row["sql"]
+    sql_text = sql_row["sql"] if sql_row else ""
+    # Phase-2+ DBs may legitimately lack 'watching' in the stored sql:
+    #   - schema.sql ships with the wide action_type CHECK and a status
+    #     CHECK that does NOT include 'watching' (the synthetic-pending
+    #     path was removed; see _migrate_actions_drop_watch_columns).
+    #   - existing prod DBs that went through drop_watch_columns end up
+    #     here too.
+    # The rebuild below would WRONGLY narrow action_type back to the
+    # original 5 values, corrupting any row with MOVE_SL_BE /
+    # CLOSE_PARTIAL / etc. The else-branch ADD COLUMN paths would also
+    # re-add the watch_json/expires_at columns that drop_watch_columns
+    # just removed. Detect the post-Phase-2 state and bail out entirely
+    # — drop_watch_columns is the canonical place to manage watch
+    # infrastructure on those DBs.
+    if "'MOVE_SL_BE'" in sql_text:
+        return
+    check_has_watching = "'watching'" in sql_text
 
     if not check_has_watching:
         # NULL out orphaned source_msg_id before the rebuild so the INSERT
