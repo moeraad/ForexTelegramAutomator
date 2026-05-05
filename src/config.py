@@ -43,6 +43,12 @@ AI_THINKING_BUDGET_TOKENS = int(os.getenv("AI_THINKING_BUDGET_TOKENS", "4000"))
 
 API_HOST = os.getenv("API_HOST", "127.0.0.1")
 API_PORT = int(os.getenv("API_PORT", "8765"))
+# Shared secret for the EA -> API auth header. Blank = unauth (dev mode).
+# When set, the auth_gate middleware in src/api.py requires every request
+# to include `X-EA-Token: <this value>` and the EA's WebRequest helpers
+# must send the matching header (configured via the EA's ApiSharedToken
+# input).
+EA_SHARED_TOKEN = os.getenv("EA_SHARED_TOKEN", "")
 
 DEFAULT_AUTO_EXECUTE_DELAY_SEC = 0  # 0 = promote on next tick; no grace window
 RECENT_CHAT_WINDOW = 20  # messages

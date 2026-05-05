@@ -6,6 +6,11 @@
 #include "Dashboard.mqh"
 
 input string ApiBaseUrl              = "http://127.0.0.1:8765";
+// Shared secret for the API auth_gate middleware. MUST match the
+// EA_SHARED_TOKEN value in the project's .env. Leave blank only when the
+// API is also running with EA_SHARED_TOKEN unset (dev mode); a mismatch
+// results in 401 on every request and the EA effectively goes silent.
+input string ApiSharedToken          = "";
 input int    PollIntervalSec         = 1;
 // Position sizing: balance-based. lots = (ACCOUNT_BALANCE / 100) * LotsPer100Balance.
 // Default 0.01 means "0.01 lot per $100 of balance" -> $1000 balance = 0.10 lot,
@@ -310,10 +315,25 @@ void OnTick() {
    ManagePlans();
 }
 
+// File-scope cache for the kill-switch state. The previous implementation
+// returned `false` on HTTP failure, which meant "off" — i.e. trades fire
+// when the API is unreachable, even when the operator had halted the
+// system. Now we cache the last-known state and default to `true` (halted)
+// until the first successful read so the failure mode is fail-closed.
+static bool g_last_kill_switch = false;
+static bool g_kill_switch_known = false;
+
 bool KillSwitchOn() {
    string body;
-   if(!HttpGet(ApiBaseUrl + "/settings/kill_switch", body)) return false;
-   return StringFind(body, "\"value\":\"on\"") >= 0;
+   if(!HttpGet(ApiBaseUrl + "/settings/kill_switch", body)) {
+      // First-failure: assume halted (safer default than firing trades
+      // blindly during an outage).
+      // Subsequent failures: trust the last successfully-read value.
+      return g_kill_switch_known ? g_last_kill_switch : true;
+   }
+   g_last_kill_switch = (StringFind(body, "\"value\":\"on\"") >= 0);
+   g_kill_switch_known = true;
+   return g_last_kill_switch;
 }
 
 void PollAndExecute() {
@@ -325,9 +345,18 @@ void PollAndExecute() {
 }
 
 // ---- HTTP helpers ----
+
+// Build the X-EA-Token header line for the API auth_gate middleware.
+// Empty when the input is blank (dev mode / matching unconfigured server).
+string AuthHeader() {
+   return StringLen(ApiSharedToken) > 0
+      ? "X-EA-Token: " + ApiSharedToken + "\r\n"
+      : "";
+}
+
 bool HttpGet(string url, string &outBody) {
    char post[]; char result[]; string headers;
-   int res = WebRequest("GET", url, "", "", 5000, post, 0, result, headers);
+   int res = WebRequest("GET", url, AuthHeader(), "", 5000, post, 0, result, headers);
    if(res == -1) {
       Print("WebRequest GET error ", GetLastError(), " url=", url);
       return false;
@@ -343,7 +372,7 @@ bool HttpPostJson(string url, string jsonBody, string &outBody) {
 
 bool HttpPostJsonWithStatus(string url, string jsonBody, string &outBody, int &outStatus) {
    char post[]; char result[];
-   string reqHeaders = "Content-Type: application/json\r\n";
+   string reqHeaders = "Content-Type: application/json\r\n" + AuthHeader();
    string respHeaders;
    StringToCharArray(jsonBody, post, 0, StringLen(jsonBody));
    ArrayResize(post, StringLen(jsonBody));
@@ -990,7 +1019,12 @@ void DoCloseAll(long id, string payload) {
                       "{\"reason\":\"close_all\"}", body);
       } else failed++;
    }
-   PostResult(id, "executed", 0, StringFormat("closed=%d failed=%d", closed, failed));
+   // Status by outcome: a CLOSE_ALL where every PositionClose failed must
+   // not be reported as 'executed' — the operator's DM would show a green
+   // checkmark while positions stay open. Vacuous success (no matching
+   // positions, closed=0 failed=0) stays 'executed'.
+   string status = (failed > 0 && closed == 0) ? "failed" : "executed";
+   PostResult(id, status, 0, StringFormat("closed=%d failed=%d", closed, failed));
 }
 
 int CountOurOpenPositions() {
@@ -1108,15 +1142,25 @@ void DoClosePartial(long id, string payload) {
          "lot_too_small: close=%.2f remain=%.2f", closeLots, remaining));
       return;
    }
-   if(trade.PositionClosePartial(ticket, closeLots)) {
-      double postVol = PositionSelectByTicket(ticket)
-                       ? PositionGetDouble(POSITION_VOLUME) : 0.0;
-      PostPositionUpdate(ticket, postVol, 0);
+   // Verify-then-advance: CTrade::PositionClosePartial can return false in
+   // pre-OrderSend validation (hedging-mode quirks, transient stops-level
+   // violations) while ResultRetcode() reports a stale success code from
+   // an earlier call. Trust the volume diff, not the bool. Same pattern as
+   // ManagePlans stage 0 (see lines ~832-835).
+   double volBefore = PositionGetDouble(POSITION_VOLUME);
+   trade.PositionClosePartial(ticket, closeLots);
+   double volAfter = PositionSelectByTicket(ticket)
+                     ? PositionGetDouble(POSITION_VOLUME) : 0.0;
+   bool partialOk = (volAfter < volBefore - lotStep / 2.0);
+   if(partialOk) {
+      PostPositionUpdate(ticket, volAfter, 0);
       PostResult(id, "executed", ticket,
-                 StringFormat("closed=%.2f", closeLots));
+                 StringFormat("closed=%.2f vol=%.2f->%.2f",
+                              closeLots, volBefore, volAfter));
    } else {
       PostResult(id, "failed", ticket,
-                 "partial_failed:" + IntegerToString(trade.ResultRetcode()));
+                 StringFormat("partial_did_not_execute retcode=%d vol_unchanged=%.2f",
+                              trade.ResultRetcode(), volBefore));
    }
 }
 

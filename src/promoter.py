@@ -29,11 +29,18 @@ def promote_due_actions(conn: sqlite3.Connection) -> int:
     return cur.rowcount
 
 
-def release_stale_claims(conn: sqlite3.Connection, max_age_sec: int = 120) -> int:
+def release_stale_claims(conn: sqlite3.Connection, max_age_sec: int = 300) -> int:
     """Release claimed actions whose claimed_at is older than max_age_sec back to 'sent'.
 
     Why: if the EA crashes between /claim and /result, the action would be stranded
     in 'claimed' forever. This sweeper recovers it after a safe quiet period.
+
+    The window was bumped from 120s to 300s to reduce the race against a slow
+    EA: if the EA's POST /result is just slow (broker latency, large trade),
+    a 120s reset led to the EA re-claiming and re-firing a duplicate broker
+    order. 300s gives plenty of headroom for legitimately slow operations
+    while still recovering reasonably fast from a real crash. EA-side
+    re-check before dispatch is a complementary fix tracked in FIXES_TODO.md.
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_sec)).isoformat()
     cur = conn.execute(

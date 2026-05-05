@@ -279,7 +279,7 @@ async def claim_sweeper_loop(app: Application):
     conn: sqlite3.Connection = app.bot_data["conn"]
     while True:
         try:
-            n = release_stale_claims(conn, max_age_sec=120)
+            n = release_stale_claims(conn)  # default 300s
             if n:
                 log.warning("released %s stale claim(s)", n)
         except Exception as e:

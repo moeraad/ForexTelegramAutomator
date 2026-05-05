@@ -374,6 +374,23 @@ def test_market_price_get_404_when_unset(tmp_path):
     assert r.status_code == 404
 
 
+def test_post_market_price_rejects_unknown_symbol(tmp_path):
+    """Symbol whitelist (config.SUPPORTED_SYMBOLS) keeps the AI's price
+    anchor from being poisoned by stray POSTs (e.g. BTCUSD when the
+    system only trades XAUUSD)."""
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.post("/market/price",
+                    json={"symbol": "BTCUSD", "bid": 1.0, "ask": 1.0})
+    assert r.status_code == 400
+    assert "unsupported symbol" in r.json().get("detail", "")
+    # And the settings table is unchanged.
+    rows = conn.execute(
+        "SELECT key FROM settings WHERE key LIKE 'market_BTCUSD_%'"
+    ).fetchall()
+    assert rows == []
+
+
 def test_update_position_rejects_closed(tmp_path):
     conn = _setup(tmp_path)
     cur = conn.execute(
@@ -418,3 +435,47 @@ def test_post_result_close_marks_position_closed(tmp_path):
     pos = conn.execute("SELECT * FROM positions WHERE mt5_ticket=555").fetchone()
     assert pos["status"] == "closed"
     assert pos["close_reason"] == "tp"
+
+
+# ---- auth_gate middleware (#10) -----------------------------------------
+# When config.EA_SHARED_TOKEN is blank (the default in tests since the
+# tests/conftest.py setup doesn't set it), the middleware is a no-op and
+# every other test in this file passes. These tests temporarily set the
+# token via monkeypatch and assert 401 without header / 200 with.
+
+def test_auth_gate_blocks_missing_header_when_token_set(tmp_path, monkeypatch):
+    from src import config
+    monkeypatch.setattr(config, "EA_SHARED_TOKEN", "test-token-xyz")
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.get("/actions")
+    assert r.status_code == 401
+    assert "X-EA-Token" in r.json()["error"]
+
+
+def test_auth_gate_blocks_wrong_header_when_token_set(tmp_path, monkeypatch):
+    from src import config
+    monkeypatch.setattr(config, "EA_SHARED_TOKEN", "test-token-xyz")
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.get("/actions", headers={"X-EA-Token": "wrong"})
+    assert r.status_code == 401
+
+
+def test_auth_gate_allows_correct_header_when_token_set(tmp_path, monkeypatch):
+    from src import config
+    monkeypatch.setattr(config, "EA_SHARED_TOKEN", "test-token-xyz")
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.get("/actions", headers={"X-EA-Token": "test-token-xyz"})
+    assert r.status_code == 200
+
+
+def test_auth_gate_disabled_when_token_blank(tmp_path, monkeypatch):
+    """Default dev-mode behavior: no token configured, no auth enforced."""
+    from src import config
+    monkeypatch.setattr(config, "EA_SHARED_TOKEN", "")
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.get("/actions")  # no header
+    assert r.status_code == 200

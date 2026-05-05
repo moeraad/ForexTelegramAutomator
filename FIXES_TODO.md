@@ -1,7 +1,8 @@
 # CopyTrades — Pending Fixes
 
-System review completed 2026-05-05. The promoter action-type filter (#1) was
-fixed and is in production. Everything below is still outstanding.
+System review completed 2026-05-05. CRITICAL items #1 (promoter type filter),
+#2 (post_result atomicity) and HIGH items #3, #4, #6, #11 are fixed.
+Everything below is still outstanding.
 
 For each item: file:line references the current code, **Why** explains the
 risk, **Fix** is the recommended change, and **Severity** is the live-money
@@ -10,70 +11,7 @@ or fire wrong-state action; MEDIUM = correctness / UX issues; LOW = cleanup).
 
 ---
 
-## CRITICAL — fix before the next major change session
-
-### 2. `post_result` is non-atomic — UPDATE actions then INSERT positions
-**File:** `src/api.py:140-164` (the `post_result` endpoint)
-**Severity:** CRITICAL
-**Why:** Two separate autocommit statements (driven by `connect()` setting
-`isolation_level=None` in `src/db.py:8`). If the api process crashes or
-the EA retries between the UPDATE and the INSERT, the action reaches
-terminal status `executed` while no position row exists. The AI's OPEN
-POSITIONS block then shows nothing, and the AI may emit another OPEN.
-**Fix:** wrap both statements in an explicit transaction:
-
-```python
-conn.execute("BEGIN")
-try:
-    conn.execute("UPDATE actions SET status=?, executed_at=?, ea_response=? WHERE id=?", ...)
-    if body.status == "executed":
-        for leg in legs or []:
-            conn.execute("INSERT OR IGNORE INTO positions(...) VALUES(...)", ...)
-    conn.execute("COMMIT")
-except Exception:
-    conn.execute("ROLLBACK")
-    raise
-```
-
----
-
 ## HIGH — fix this week
-
-### 3. Kill switch silently disabled during API outages
-**File:** `ea/CopyTrades.mq5` — `KillSwitchOn()` function
-**Severity:** HIGH
-**Why:** On HTTP failure (api.py down or unreachable), returns `false` (=
-"off"). If the API is unreachable when the operator has halted the system,
-the EA continues trading.
-**Fix:** cache the last known state in a global, default to `true` (halted)
-on GET failure:
-
-```mql5
-static bool g_last_kill_switch = false;
-static bool g_kill_switch_known = false;
-bool KillSwitchOn() {
-   string body;
-   if(!HttpGet(ApiBaseUrl + "/settings/kill_switch", body)) {
-      return g_kill_switch_known ? g_last_kill_switch : true;
-   }
-   g_last_kill_switch = (StringFind(body, "\"value\":\"on\"") >= 0);
-   g_kill_switch_known = true;
-   return g_last_kill_switch;
-}
-```
-
-### 4. `DoCloseAll` reports `executed` even when every close failed
-**File:** `ea/CopyTrades.mq5` — `DoCloseAll` handler
-**Severity:** HIGH
-**Why:** `PostResult(id, "executed", 0, "closed=0 failed=N")` always posts
-`executed` regardless of outcome. Operator's DM shows green checkmark while
-positions stay open.
-**Fix:**
-
-```mql5
-string status = (failed > 0 && closed == 0) ? "failed" : "executed";
-PostResult(id, status, 0, StringFormat("closed=%d failed=%d", closed, failed));
-```
 
 ### 5. `DoOpen` POST-result failure strands a live trade
 **File:** `ea/CopyTrades.mq5` (in `DoOpen`, after the trade.Buy/Sell call)
@@ -88,26 +26,6 @@ attempt, but the DB is permanently inconsistent until manual reconcile.
 OnTimer tick until success; only delete the pending entry after a 200
 response. The reconcile loop should also detect open MT5 positions for
 our magic that have no DB row and POST them as a synthetic executed.
-
-### 6. `DoClosePartial` doesn't verify-then-advance like `ManagePlans` does
-**File:** `ea/CopyTrades.mq5` — `DoClosePartial` handler (around line 1111)
-**Severity:** HIGH
-**Why:** Same broker quirk that bit the staged version: `CTrade::PositionClosePartial`
-can return false in pre-OrderSend validation while reporting a stale success
-retcode. `DoClosePartial` blindly trusts the return value and posts
-`executed` with no real close.
-**Fix:** copy the verify-then-advance pattern from `ManagePlans` stage 0:
-
-```mql5
-double volBefore = PositionGetDouble(POSITION_VOLUME);
-trade.PositionClosePartial(ticket, closeLots);
-double volAfter = PositionSelectByTicket(ticket) ? PositionGetDouble(POSITION_VOLUME) : 0.0;
-bool partialOk = (volAfter < volBefore - lotStep / 2.0);
-if(!partialOk) {
-   PostResult(id, "failed", ticket, "partial_did_not_execute");
-   return;
-}
-```
 
 ### 7. `PostPositionUpdate` ignores HTTP failure
 **File:** `ea/CopyTrades.mq5` — `PostPositionUpdate` (called 6 places)
@@ -160,19 +78,6 @@ async def auth(request: Request, call_next):
 ```
 
 EA appends `X-EA-Token: <token>` to every WebRequest header.
-
-### 11. `POST /market/price` has no symbol whitelist
-**File:** `src/api.py:316-347`
-**Severity:** HIGH (chained with #10)
-**Why:** Accepts any symbol string and writes `market_<SYM>_bid`. If #10 is
-exploitable, an attacker can poison the AI's price anchor for shorthand
-SL decoding.
-**Fix:** validate `body.symbol == "XAUUSD"`:
-
-```python
-if body.symbol.upper() != "XAUUSD":
-    raise HTTPException(400, "only XAUUSD is supported")
-```
 
 ---
 
@@ -363,17 +268,12 @@ range scan.
 ## Recommended fix order
 
 **Quick wins (each ~5-15 min, no behavior risk):**
-- #4 DoCloseAll status — 3 lines
-- #11 Symbol whitelist — 2 lines
 - #12 Literal status — 1 import + type change
 - #16 .gitignore — 1 line
 - #21 Callback split — 4 lines
 - #22 Partial fingerprint index — migration
 
 **Reliability fixes (each ~30-60 min):**
-- #2 post_result transaction
-- #3 Kill switch fail-closed
-- #6 DoClosePartial verify-then-advance
 - #19 Bot task done-callback
 - #20 WAL checkpoint pragma
 
@@ -395,7 +295,25 @@ range scan.
 
 ## What's already done
 
-- **#1 Promoter type filter** — fixed in `src/promoter.py`. Removed the
+- **#1 Promoter type filter (CRITICAL)** — `src/promoter.py`. Removed the
   `action_type IN (...)` whitelist; all 7 Phase-2 management types now
   flow through. 11 stranded pre-fix actions were marked `rejected` with
   `ea_response='stranded_pre_promoter_fix'`.
+- **#2 post_result atomicity (CRITICAL)** — `src/api.py`. UPDATE actions
+  + INSERT positions wrapped in explicit BEGIN/COMMIT with ROLLBACK.
+  trades.log emissions moved after the commit so rollbacks don't leave
+  phantom lines.
+- **#3 Kill switch fail-closed (HIGH)** — `ea/CopyTrades.mq5:KillSwitchOn`.
+  Cached last-known state via two file-scope statics; defaults to true
+  (halted) on first failure, returns last-known on subsequent failures.
+  Requires EA recompile.
+- **#4 DoCloseAll status (HIGH)** — `ea/CopyTrades.mq5:DoCloseAll`.
+  Status now picked by outcome: `failed` if every PositionClose failed;
+  `executed` for vacuous success or partial success. Requires EA recompile.
+- **#6 DoClosePartial verify-then-advance (HIGH)** — `ea/CopyTrades.mq5`.
+  Channel-triggered partial now uses volume-diff verification (same
+  pattern as ManagePlans stage 0) instead of trusting CTrade's bool
+  return. Requires EA recompile.
+- **#11 Symbol whitelist on /market/price (HIGH)** — `src/api.py`.
+  Validates `body.symbol.upper() in config.SUPPORTED_SYMBOLS`; 400 on
+  anything other than XAUUSD. Test added.

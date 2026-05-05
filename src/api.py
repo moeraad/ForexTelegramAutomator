@@ -8,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from src import config
 from src.logging_setup import configure_logging, trades_log
 
 log = configure_logging("api")
@@ -49,6 +50,26 @@ class MarketPriceBody(BaseModel):
 
 def build_app(conn: sqlite3.Connection) -> FastAPI:
     app = FastAPI()
+
+    @app.middleware("http")
+    async def auth_gate(request: Request, call_next):
+        # Shared-secret header. When EA_SHARED_TOKEN is blank we run
+        # unauthenticated (dev mode + tests that don't set it). When set,
+        # every request must carry a matching X-EA-Token header — without
+        # it the EA can't reach any endpoint, which is the whole point.
+        # Read config.EA_SHARED_TOKEN per-request rather than capturing at
+        # middleware-build time so test fixtures can flip it via
+        # monkeypatch without rebuilding the app.
+        expected = config.EA_SHARED_TOKEN
+        if expected:
+            if request.headers.get("X-EA-Token") != expected:
+                client_host = request.client.host if request.client else "?"
+                log.warning("auth rejected from %s on %s %s",
+                            client_host, request.method, request.url.path)
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": "missing or invalid X-EA-Token"})
+        return await call_next(request)
 
     @app.middleware("http")
     async def http_error_log(request: Request, call_next):
@@ -140,24 +161,37 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
         if row is None:
             raise HTTPException(404)
         now = datetime.now(timezone.utc).isoformat()
-        # Terminal states: record executed_at and error string.
-        conn.execute(
-            "UPDATE actions SET status=?, executed_at=?, ea_response=? WHERE id=?",
-            (body.status, now, body.error, action_id),
-        )
-        trades.info(
-            "action_result id=%s status=%s ticket=%s error=%s",
-            action_id, body.status, body.mt5_ticket or "", body.error or "",
-        )
+
+        # Resolve legs OUTSIDE the transaction so we don't hold a write lock
+        # while doing trivial dict lookups. Legs are only relevant for the
+        # executed branch; failed/rejected results have no position rows.
+        legs: list[LegResult] = []
         if body.status == "executed":
-            legs = body.legs
-            if legs is None and body.mt5_ticket and body.snapshot:
+            if body.legs:
+                legs = list(body.legs)
+            elif body.mt5_ticket and body.snapshot:
                 legs = [LegResult(mt5_ticket=body.mt5_ticket, snapshot=body.snapshot)]
-            for leg in legs or []:
+
+        # Atomic: the action's terminal-state UPDATE and the position
+        # INSERT(s) must commit together. The connection runs in
+        # isolation_level=None (autocommit) per src/db.py, so without
+        # this explicit BEGIN/COMMIT each statement is its own
+        # transaction. A crash or EA retry between them would leave the
+        # action in `executed` with no position row — the AI's SYSTEM
+        # STATE block would then show no open position and could emit
+        # another OPEN.
+        # OR IGNORE on positions (not OR REPLACE): a re-POST for an
+        # already-inserted ticket must not resurrect a position that has
+        # since been closed (manual MT5 close, reconcile, etc.). First
+        # insert wins.
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "UPDATE actions SET status=?, executed_at=?, ea_response=? WHERE id=?",
+                (body.status, now, body.error, action_id),
+            )
+            for leg in legs:
                 s = leg.snapshot
-                # OR IGNORE (not OR REPLACE): a re-POST for an already-inserted
-                # ticket must not resurrect a position that has since been closed
-                # (manual MT5 close, reconcile, etc.). First insert wins.
                 conn.execute(
                     "INSERT OR IGNORE INTO positions(action_id, mt5_ticket, symbol, side, "
                     "volume, original_volume, entry_price, sl, tp, status, opened_at) "
@@ -166,11 +200,24 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
                      s.get("volume"), s.get("volume"),
                      s.get("entry_price"), s.get("sl"), s.get("tp"), now),
                 )
-                trades.info(
-                    "position_opened ticket=%s side=%s vol=%s entry=%s sl=%s tp=%s",
-                    leg.mt5_ticket, s.get("side"), s.get("volume"),
-                    s.get("entry_price"), s.get("sl"), s.get("tp"),
-                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+        # Trades log AFTER commit so a rolled-back transaction doesn't
+        # leave phantom lifecycle lines in trades.log.
+        trades.info(
+            "action_result id=%s status=%s ticket=%s error=%s",
+            action_id, body.status, body.mt5_ticket or "", body.error or "",
+        )
+        for leg in legs:
+            s = leg.snapshot
+            trades.info(
+                "position_opened ticket=%s side=%s vol=%s entry=%s sl=%s tp=%s",
+                leg.mt5_ticket, s.get("side"), s.get("volume"),
+                s.get("entry_price"), s.get("sl"), s.get("tp"),
+            )
         return {"ok": True}
 
     @app.get("/positions")
@@ -332,6 +379,8 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
         recent price for shorthand SL decoding (e.g. "ستوبك 56" -> 4856).
         Stale (>60s) prices should be ignored by the consumer.
         """
+        if body.symbol.upper() not in config.SUPPORTED_SYMBOLS:
+            raise HTTPException(400, f"unsupported symbol: {body.symbol}")
         now = datetime.now(timezone.utc).isoformat()
         sym = body.symbol.upper()
         for key, val in (
