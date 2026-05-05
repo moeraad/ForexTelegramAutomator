@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS actions (
   action_type     TEXT NOT NULL CHECK(action_type IN (
                     'OPEN','MODIFY','CLOSE','CLOSE_ALL','ALERT',
                     'MOVE_SL_BE','MOVE_SL','CLOSE_PARTIAL','CLOSE_FULL',
-                    'REOPEN_LAST','REINFORCE','TIGHTEN_SL'
+                    'REOPEN_LAST','REINFORCE','TIGHTEN_SL','MODIFY_TPS'
                   )),
   payload_json    TEXT NOT NULL,
   status          TEXT NOT NULL DEFAULT 'pending'
@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS actions (
   fingerprint     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);
+-- Partial composite: most rows have fingerprint=NULL (management types,
+-- ALERTs). Restricting to NOT NULL keeps the index small; adding
+-- created_at lets _has_recent_duplicate_open run as a single range scan.
+CREATE INDEX IF NOT EXISTS idx_actions_fingerprint
+  ON actions(fingerprint, created_at)
+  WHERE fingerprint IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS positions (
   id                   INTEGER PRIMARY KEY,

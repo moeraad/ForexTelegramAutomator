@@ -7,6 +7,7 @@
 //+------------------------------------------------------------------+
 #property strict
 #include <Canvas\Canvas.mqh>
+#include "BrokerCheck.mqh"
 
 // GitHub-dark-ish palette (AARRGGBB).
 #define DSH_BG       0xFF0E1117
@@ -77,6 +78,9 @@ struct DashboardStats {
    // Open trades detail (for OPEN TRADES section).
    DashboardTrade open_trades[DSH_MAX_TRADES];
    int            open_trades_count;  // may exceed DSH_MAX_TRADES (rendered as "+N more")
+
+   // Broker compatibility check result (populated once at OnInit).
+   BrokerCheckResult broker;
 };
 
 class CDashboard {
@@ -96,6 +100,7 @@ private:
    ulong    HashStats(const DashboardStats &s);
    void     DrawHeader(const DashboardStats &s);
    void     DrawHealth(const DashboardStats &s);
+   void     DrawBroker(const DashboardStats &s);
    void     DrawNow(const DashboardStats &s);
    void     DrawOpenTrades(const DashboardStats &s);
    void     DrawToday(const DashboardStats &s);
@@ -108,7 +113,7 @@ private:
    uint     PnlColor(double v);
 
 public:
-   CDashboard() : m_name("CT_Dashboard"), m_width(380), m_height(760),
+   CDashboard() : m_name("CT_Dashboard"), m_width(380), m_height(900),
                   m_x(20), m_y(20), m_font("Consolas"),
                   m_font_size(10), m_font_size_big(12), m_last_hash(0),
                   m_cursor_y(0) {}
@@ -159,6 +164,8 @@ void CDashboard::Update(const DashboardStats &s) {
    DrawDivider();
    DrawHealth(s);
    DrawDivider();
+   DrawBroker(s);
+   DrawDivider();
    DrawNow(s);
    DrawDivider();
    DrawOpenTrades(s);
@@ -200,6 +207,55 @@ void CDashboard::DrawHealth(const DashboardStats &s) {
    DrawRow("Algo trading",
       s.algo_allowed ? "enabled" : "disabled",
       s.algo_allowed ? DSH_OK : DSH_WARN);
+}
+
+void CDashboard::DrawBroker(const DashboardStats &s) {
+   // Static broker-compatibility checks evaluated once at OnInit.
+   // Compact when everything's clean (one green line); expanded list of
+   // FAIL/WARN issues otherwise so the operator sees missing requirements
+   // without opening the journal.
+   if(!s.broker.ran) {
+      DrawSection("BROKER");
+      m_canvas.TextOut(12, m_cursor_y, "checks pending...",
+                       DSH_MUTED, TA_LEFT | TA_TOP);
+      m_cursor_y += 16;
+      return;
+   }
+
+   string title;
+   if(s.broker.count == 0) {
+      title = StringFormat("BROKER  (%d/%d ok)",
+                           s.broker.checks_run, s.broker.checks_run);
+   } else {
+      title = StringFormat("BROKER  (%d/%d ok, %d FAIL, %d WARN)",
+                           s.broker.checks_run - s.broker.count,
+                           s.broker.checks_run,
+                           s.broker.fails, s.broker.warns);
+   }
+   DrawSection(title);
+
+   if(s.broker.count == 0) {
+      m_canvas.TextOut(12, m_cursor_y, "all checks passed",
+                       DSH_OK, TA_LEFT | TA_TOP);
+      m_cursor_y += 16;
+      return;
+   }
+
+   for(int i = 0; i < s.broker.count; i++) {
+      uint   tagColor = (s.broker.issues[i].severity == BC_FAIL)
+                        ? DSH_DANGER : DSH_WARN;
+      string tag      = (s.broker.issues[i].severity == BC_FAIL)
+                        ? "FAIL" : "WARN";
+      // Tag pill on the left, label next to it.
+      m_canvas.TextOut(12, m_cursor_y, tag, tagColor, TA_LEFT | TA_TOP);
+      m_canvas.TextOut(54, m_cursor_y, s.broker.issues[i].label,
+                       DSH_TEXT, TA_LEFT | TA_TOP);
+      m_cursor_y += 14;
+      // Detail wrapped on a second line, slightly muted, indented.
+      m_canvas.TextOut(54, m_cursor_y, s.broker.issues[i].detail,
+                       DSH_MUTED, TA_LEFT | TA_TOP);
+      m_cursor_y += 16;
+   }
 }
 
 void CDashboard::DrawNow(const DashboardStats &s) {
@@ -365,6 +421,10 @@ ulong CDashboard::HashStats(const DashboardStats &s) {
    h = (h ^ (ulong)MathRound(s.risk_if_all_sl_hit_pct * 100)) * 1099511628211UL;
    h = (h ^ (ulong)MathRound(s.lots_deployed * 100)) * 1099511628211UL;
    h = (h ^ (ulong)s.open_trades_count) * 1099511628211UL;
+   h = (h ^ (ulong)(s.broker.ran ? 1 : 0)) * 1099511628211UL;
+   h = (h ^ (ulong)s.broker.count) * 1099511628211UL;
+   h = (h ^ (ulong)s.broker.fails) * 1099511628211UL;
+   h = (h ^ (ulong)s.broker.checks_run) * 1099511628211UL;
    int shown = s.open_trades_count > DSH_MAX_TRADES ? DSH_MAX_TRADES : s.open_trades_count;
    for(int i = 0; i < shown; i++) {
       h = (h ^ (ulong)s.open_trades[i].ticket) * 1099511628211UL;

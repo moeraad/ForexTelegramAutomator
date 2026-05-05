@@ -5,7 +5,7 @@ from src.validators import (
     OpenAction, ModifyAction, CloseAction, CloseAllAction, AlertAction,
     AIResponse, parse_ai_response,
     MoveSlBeAction, MoveSlAction, ClosePartialAction, CloseFullAction,
-    ReopenLastAction, ReinforceAction, TightenSlAction,
+    ReopenLastAction, ReinforceAction, TightenSlAction, ModifyTpsAction,
 )
 from src.validators import validate_action, ValidationResult
 from src.db import connect, init_schema
@@ -102,12 +102,40 @@ def db_with_position(tmp_path):
     return conn
 
 
-def test_validate_open_passes(db_with_position):
+def test_validate_open_passes_when_no_position(tmp_path):
+    """OPEN passes only when no position is currently open on the symbol —
+    single-position invariant, defense-in-depth alongside the EA's
+    CountOurOpenPositions guard."""
+    from src.db import connect, init_schema
+    conn = connect(str(tmp_path / "v.db"))
+    init_schema(conn)
     a = OpenAction(symbol="XAUUSD", side="BUY",
                    entry_low=4870, entry_high=4872,
                    tps=[4900], sl=4860)
-    r = validate_action(a, db_with_position)
+    r = validate_action(a, conn)
     assert r.ok
+
+
+def test_validate_open_blocked_by_existing_position(db_with_position):
+    """Any open position on the symbol blocks a new OPEN, regardless of
+    side or zone overlap. Previously only same-side zone overlap was
+    checked, which gave a false sense of safety."""
+    a = OpenAction(symbol="XAUUSD", side="BUY",
+                   entry_low=4870, entry_high=4872,  # NO overlap with 4865
+                   tps=[4900], sl=4860)
+    r = validate_action(a, db_with_position)
+    assert not r.ok
+    assert "duplicate" in r.error.lower()
+
+
+def test_validate_open_blocked_opposite_side(db_with_position):
+    """A SELL signal is rejected when a BUY is already open (and vice versa).
+    The single-position invariant is symbol-only, not side-aware."""
+    a = OpenAction(symbol="XAUUSD", side="SELL",
+                   entry_low=4870, entry_high=4872,
+                   tps=[4840], sl=4880)
+    r = validate_action(a, db_with_position)
+    assert not r.ok
 
 
 def test_validate_close_unknown_ticket_fails(db_with_position):
@@ -132,13 +160,6 @@ def test_validate_modify_closed_position_fails(db_with_position):
     assert not r.ok
 
 
-def test_validate_open_duplicate_zone_fails(db_with_position):
-    a = OpenAction(symbol="XAUUSD", side="BUY",
-                   entry_low=4864, entry_high=4866,  # overlaps existing 4865
-                   tps=[4900], sl=4855)
-    r = validate_action(a, db_with_position)
-    assert not r.ok
-    assert "duplicate" in r.error.lower()
 
 
 def test_validate_close_all_supported_symbol_passes(db_with_position):
@@ -285,3 +306,112 @@ def test_db_accepts_phase2_action_types(tmp_path):
         "MOVE_SL_BE", "MOVE_SL", "CLOSE_PARTIAL", "CLOSE_FULL",
         "REOPEN_LAST", "REINFORCE", "TIGHTEN_SL",
     }
+
+
+# ---- Phase 3: MODIFY_TPS + compound-aware OPEN validation ---------
+
+
+def test_modify_tps_action_valid():
+    a = ModifyTpsAction(tps=[4570, 4580, 4600], reason="new signal")
+    assert a.type == "MODIFY_TPS"
+    assert a.tps == [4570, 4580, 4600]
+
+
+def test_modify_tps_action_rejects_empty_tps():
+    with pytest.raises(ValidationError):
+        ModifyTpsAction(tps=[])
+
+
+def test_modify_tps_action_rejects_too_many_tps():
+    with pytest.raises(ValidationError):
+        ModifyTpsAction(tps=[4570, 4580, 4590, 4600])
+
+
+def test_modify_tps_action_rejects_non_positive_price():
+    with pytest.raises(ValidationError):
+        ModifyTpsAction(tps=[4570, 0])
+    with pytest.raises(ValidationError):
+        ModifyTpsAction(tps=[-1])
+
+
+def test_parse_ai_response_dispatches_modify_tps():
+    raw = '''{
+      "actions":[
+        {"type":"MOVE_SL","price":4545},
+        {"type":"MODIFY_TPS","tps":[4570,4580],"reason":"new signal arrived"}
+      ],
+      "category":"signal"
+    }'''
+    resp = parse_ai_response(raw)
+    assert len(resp.actions) == 2
+    assert isinstance(resp.actions[1], ModifyTpsAction)
+    assert resp.actions[1].tps == [4570, 4580]
+
+
+def test_validate_modify_tps_passes_through(tmp_path):
+    """Phase-3 management action: state-existence checks deferred to EA."""
+    conn = connect(str(tmp_path / "v.db"))
+    init_schema(conn)
+    a = ModifyTpsAction(tps=[4570, 4580])
+    r = validate_action(a, conn)
+    assert r.ok
+
+
+def test_validate_open_with_close_full_preceding_passes(db_with_position):
+    """Compound emit [CLOSE_FULL, OPEN] must NOT reject the OPEN even when
+    a position is currently open. The EA executes them in insertion order
+    so by the time OPEN claims, the close has run. This is the
+    close+reopen rule from the SYSTEM_PROMPT decision tree (RULE A side
+    flip; RULE B partials+profit reset)."""
+    open_action = OpenAction(
+        symbol="XAUUSD", side="SELL",
+        entry_low=4870, entry_high=4872, tps=[4840], sl=4880,
+    )
+    r = validate_action(
+        open_action, db_with_position,
+        preceding_actions=[CloseFullAction()],
+    )
+    assert r.ok
+
+
+def test_validate_open_with_close_action_preceding_passes(db_with_position):
+    """Legacy CloseAction also unblocks a following OPEN in a compound."""
+    open_action = OpenAction(
+        symbol="XAUUSD", side="SELL",
+        entry_low=4870, entry_high=4872, tps=[4840], sl=4880,
+    )
+    r = validate_action(
+        open_action, db_with_position,
+        preceding_actions=[CloseAction(mt5_ticket=99001)],
+    )
+    assert r.ok
+
+
+def test_validate_open_without_close_preceding_still_blocked(db_with_position):
+    """The compound shortcut requires a CLOSE in `preceding_actions`. A
+    list of unrelated management actions does NOT bypass the guard."""
+    open_action = OpenAction(
+        symbol="XAUUSD", side="BUY",
+        entry_low=4870, entry_high=4872, tps=[4900], sl=4860,
+    )
+    r = validate_action(
+        open_action, db_with_position,
+        preceding_actions=[MoveSlBeAction(), ModifyTpsAction(tps=[4870])],
+    )
+    assert not r.ok
+    assert "duplicate" in r.error.lower()
+
+
+def test_db_accepts_modify_tps_action_type(tmp_path):
+    """Phase-3 migration widens actions.action_type CHECK to allow the
+    new MODIFY_TPS token after init_schema runs."""
+    conn = connect(str(tmp_path / "v.db"))
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO actions(action_type, payload_json) VALUES(?, '{}')",
+        ("MODIFY_TPS",)
+    )
+    row = conn.execute(
+        "SELECT action_type FROM actions WHERE action_type='MODIFY_TPS'"
+    ).fetchone()
+    assert row is not None

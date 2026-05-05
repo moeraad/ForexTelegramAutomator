@@ -122,8 +122,21 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     q = update.callback_query
     await q.answer()
-    op, aid = q.data.split(":")
-    aid = int(aid)
+    # Defensive parse: maxsplit=1 handles future op:arg payloads without
+    # crashing, and the `op` whitelist makes a malformed callback fail
+    # cleanly instead of leaving the button stuck in a spinner.
+    parts = q.data.split(":", 1)
+    if len(parts) != 2 or parts[0] not in ("cancel", "execute"):
+        log.warning("on_button: invalid callback_data=%r", q.data)
+        await q.edit_message_text("Invalid callback.")
+        return
+    op, aid_str = parts
+    try:
+        aid = int(aid_str)
+    except ValueError:
+        log.warning("on_button: non-int aid in callback_data=%r", q.data)
+        await q.edit_message_text("Invalid callback.")
+        return
     conn = ctx.application.bot_data["conn"]
     if op == "cancel":
         await _do_cancel(conn, aid, lambda t: q.edit_message_text(t))
@@ -217,32 +230,31 @@ async def position_close_notifier(app: Application):
     from src.telegram_format import render_position_closed
     conn: sqlite3.Connection = app.bot_data["conn"]
 
-    # First-run guard: if the watermark setting is missing, advance it
-    # past everything currently in the DB so we don't flood the operator
-    # with the historical backlog. Future closes (status flips to
-    # 'closed' AFTER startup) will have closed_at > this watermark and
-    # flow through normally.
-    if get_setting(conn, "position_close_last_notified_at") is None:
+    # Watermark by positions.id, not closed_at. Two closes in the same
+    # second produce identical closed_at strings; with `closed_at > cursor`
+    # the second one was being silently skipped on the next tick. Using
+    # the monotonic primary key removes the tie-break ambiguity entirely.
+    # First-run guard seeds the cursor past the existing backlog so the
+    # operator doesn't get flooded with historical close DMs on first
+    # launch.
+    if get_setting(conn, "position_close_last_notified_id") is None:
         row = conn.execute(
-            "SELECT MAX(closed_at) AS m FROM positions "
-            "WHERE status='closed' AND closed_at IS NOT NULL"
+            "SELECT COALESCE(MAX(id), 0) AS m FROM positions "
+            "WHERE status='closed'"
         ).fetchone()
-        seed = (row["m"] if row and row["m"]
-                else datetime.now(timezone.utc).isoformat())
-        set_setting(conn, "position_close_last_notified_at", seed)
+        set_setting(conn, "position_close_last_notified_id", str(row["m"]))
 
     while True:
         try:
-            cursor = (
-                get_setting(conn, "position_close_last_notified_at")
-                or "1970-01-01T00:00:00+00:00"
+            cursor = int(
+                get_setting(conn, "position_close_last_notified_id") or "0"
             )
             rows = conn.execute(
-                "SELECT mt5_ticket, side, symbol, volume, original_volume, "
+                "SELECT id, mt5_ticket, side, symbol, volume, original_volume, "
                 "       entry_price, sl, tp, closed_at, close_reason "
                 "FROM positions WHERE status='closed' "
-                "  AND closed_at IS NOT NULL AND closed_at > ? "
-                "ORDER BY closed_at ASC LIMIT 20",
+                "  AND closed_at IS NOT NULL AND id > ? "
+                "ORDER BY id ASC LIMIT 20",
                 (cursor,),
             ).fetchall()
             for r in rows:
@@ -256,7 +268,7 @@ async def position_close_notifier(app: Application):
                     chat_id=config.TG_BOT_OWNER_USER_ID,
                     text=text,
                 )
-                set_setting(conn, "position_close_last_notified_at", r["closed_at"])
+                set_setting(conn, "position_close_last_notified_id", str(r["id"]))
         except Exception as e:
             log.exception("position_close_notifier error: %s", e)
         await asyncio.sleep(1.0)
@@ -287,6 +299,33 @@ async def claim_sweeper_loop(app: Application):
         await asyncio.sleep(15.0)
 
 
+def _supervise(task: asyncio.Task, name: str) -> None:
+    """Attach a done-callback that surfaces silent task deaths.
+
+    Each loop body catches Exception and logs at WARNING/ERROR, so per-tick
+    failures recover. But if a BaseException (KeyboardInterrupt, SystemExit,
+    asyncio cancellation) escapes the outer `while True`, or if an exception
+    fires before the try block, the task dies and asyncio logs to its own
+    logger — `bot` doesn't see it. The loop is then silently dead: trades
+    queue but no longer get promoted / DM'd. We force a process exit so
+    launch.bat / a supervisor restarts us.
+    """
+    def _cb(t: asyncio.Task) -> None:
+        if t.cancelled():
+            log.warning("supervised task %s was cancelled", name)
+            return
+        exc = t.exception()
+        if exc is not None:
+            log.exception("supervised task %s died: %r", name, exc,
+                          exc_info=exc)
+            # Forced exit; relies on launch.bat or systemd to restart us.
+            # The trader needs a stopped process they can see, not a
+            # silently-running bot with one dead loop.
+            import os
+            os._exit(2)
+    task.add_done_callback(_cb)
+
+
 async def post_init(app: Application):
     # Startup ping — operator wants to know the system is up. Best-effort:
     # if the owner hasn't /start-ed yet, send_message raises Forbidden which
@@ -298,10 +337,10 @@ async def post_init(app: Application):
         )
     except Exception as e:
         log.warning("startup ping failed: %s", e)
-    asyncio.create_task(notification_dispatcher(app))
-    asyncio.create_task(position_close_notifier(app))
-    asyncio.create_task(promotion_loop(app))
-    asyncio.create_task(claim_sweeper_loop(app))
+    _supervise(asyncio.create_task(notification_dispatcher(app)), "notification_dispatcher")
+    _supervise(asyncio.create_task(position_close_notifier(app)), "position_close_notifier")
+    _supervise(asyncio.create_task(promotion_loop(app)), "promotion_loop")
+    _supervise(asyncio.create_task(claim_sweeper_loop(app)), "claim_sweeper_loop")
 
 
 def main() -> None:

@@ -54,7 +54,61 @@ def _age_seconds(iso_str: str | None) -> int | None:
     return int(delta.total_seconds())
 
 
-def _render_executed_positions(conn: sqlite3.Connection) -> list[str]:
+def _get_market_mid(
+    conn: sqlite3.Connection, *, symbol: str = "XAUUSD", stale_seconds: int = 60
+) -> float | None:
+    """Return MARKET mid price for `symbol` if a fresh quote exists, else None.
+
+    Used by `_render_executed_positions` to compute per-position PnL +
+    `in_profit` flag. The flag drives the AI's "OPEN signal arrives with
+    position open" decision tree (close+reopen vs. modify-in-place rule).
+    Mirrors `_render_market_price`'s freshness threshold so the two blocks
+    stay consistent.
+    """
+    sym = symbol.upper()
+    rows = {
+        r["key"]: r["value"]
+        for r in conn.execute(
+            "SELECT key, value FROM settings WHERE key IN (?,?,?)",
+            (f"market_{sym}_bid", f"market_{sym}_ask", f"market_{sym}_at"),
+        ).fetchall()
+    }
+    bid = rows.get(f"market_{sym}_bid")
+    ask = rows.get(f"market_{sym}_ask")
+    at = rows.get(f"market_{sym}_at")
+    if bid is None or ask is None or at is None:
+        return None
+    try:
+        bid_f = float(bid)
+        ask_f = float(ask)
+    except (TypeError, ValueError):
+        return None
+    age = _age_seconds(at)
+    if age is None or age > stale_seconds:
+        return None
+    return (bid_f + ask_f) / 2.0
+
+
+def _pnl_line(side: str | None, entry: float | None, mid: float | None) -> str:
+    """Format a single 'pnl=…' line. Stable suffix strings — the AI prompt
+    decision tree keys off the literal '(in_profit)' / '(at_be)' /
+    '(in_loss)' / '(market_stale)'."""
+    if mid is None or entry is None or side not in ("BUY", "SELL"):
+        return "      pnl=unknown (market_stale)"
+    delta = (mid - entry) if side == "BUY" else (entry - mid)
+    if delta > 0.005:
+        flag = "in_profit"
+    elif delta < -0.005:
+        flag = "in_loss"
+    else:
+        flag = "at_be"
+    sign = "+" if delta > 0 else ("-" if delta < 0 else "")
+    return f"      pnl={sign}{abs(delta):.2f}/oz ({flag})  mid={mid:.2f}"
+
+
+def _render_executed_positions(
+    conn: sqlite3.Connection, *, mid: float | None = None
+) -> list[str]:
     rows = conn.execute(
         "SELECT action_id, mt5_ticket, symbol, side, volume, original_volume, "
         "       partial_close_count, entry_price, sl, tp, sl_moved_at, opened_at "
@@ -93,6 +147,7 @@ def _render_executed_positions(conn: sqlite3.Connection) -> list[str]:
                 f"      sl={_fmt(r['sl'])}{sl_suffix}  tp={_fmt(r['tp'])}  "
                 f"partials_taken={partials}{age_str}"
             )
+            lines.append(_pnl_line(r["side"], r["entry_price"], mid))
     return lines
 
 
@@ -220,8 +275,9 @@ def render_open_positions(conn: sqlite3.Connection) -> str:
 
     Name kept for caller compatibility (orchestrator.py); now renders four blocks.
     """
+    mid = _get_market_mid(conn)
     parts = (
-        _render_executed_positions(conn)
+        _render_executed_positions(conn, mid=mid)
         + [""]
         + _render_pending_open_signals(conn)
         + [""]

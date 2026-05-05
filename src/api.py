@@ -3,6 +3,8 @@ import logging
 import sqlite3
 import time
 from datetime import datetime, timezone
+from typing import Literal
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -21,7 +23,11 @@ class LegResult(BaseModel):
 
 
 class ResultBody(BaseModel):
-    status: str  # "executed" | "failed" | "rejected"
+    # Pydantic Literal rejects any other status string at parse time
+    # (returns 422). Without this, the schema's CHECK constraint was the
+    # last line of defense against an EA bug or attacker pushing the
+    # action into an unconstrained state.
+    status: Literal["executed", "failed", "rejected"]
     mt5_ticket: int | None = None
     error: str | None = None
     snapshot: dict | None = None
@@ -46,6 +52,16 @@ class MarketPriceBody(BaseModel):
     symbol: str = "XAUUSD"
     bid: float
     ask: float
+
+
+class AlertBody(BaseModel):
+    """Operator-visible alert posted by the EA when something needs human
+    attention (e.g. a staged partial-close gave up after PartialMaxRetries).
+    Inserted into actions as an ALERT row; the bot's notification_dispatcher
+    DMs the owner because it already handles ALERT rows.
+    """
+    level: str = "warning"  # "info" | "warning" | "critical"
+    text: str
 
 
 def build_app(conn: sqlite3.Connection) -> FastAPI:
@@ -372,6 +388,63 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             "signal": signal,
         }
 
+    @app.get("/positions/by_ticket/{ticket}")
+    def position_by_ticket(ticket: int):
+        """Return the open position for `ticket` joined with the originating
+        signal payload — same shape as /positions/last_closed but for the
+        live position. The EA uses this for REINFORCE so it can snapshot
+        the signal params (entry zone, SL, TPs, side) BEFORE closing the
+        position; otherwise the fire-and-forget /positions/{t}/close POST
+        races against the subsequent /positions/last_closed query and may
+        return an older trade's parameters.
+        """
+        row = conn.execute(
+            "SELECT p.mt5_ticket, p.symbol, p.side, p.volume, p.original_volume, "
+            "       p.partial_close_count, p.entry_price, p.sl, p.tp, "
+            "       p.opened_at, p.status, "
+            "       a.payload_json AS signal_payload "
+            "FROM positions p "
+            "LEFT JOIN actions a ON a.id = p.action_id "
+            "WHERE p.mt5_ticket = ? AND p.status = 'open'",
+            (ticket,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "no open position for ticket")
+        try:
+            signal = json.loads(row["signal_payload"]) if row["signal_payload"] else None
+        except (TypeError, ValueError):
+            signal = None
+        return {
+            "ticket": row["mt5_ticket"],
+            "symbol": row["symbol"],
+            "side": row["side"],
+            "volume": row["volume"],
+            "original_volume": row["original_volume"],
+            "partial_close_count": row["partial_close_count"],
+            "entry_price": row["entry_price"],
+            "sl": row["sl"],
+            "tp": row["tp"],
+            "opened_at": row["opened_at"],
+            "status": row["status"],
+            "signal": signal,
+        }
+
+    @app.post("/alerts")
+    def post_alert(body: AlertBody):
+        """EA escape hatch for events that need operator attention but
+        aren't tied to a specific action lifecycle (e.g. ManagePlans gave
+        up on a staged partial after PartialMaxRetries). Inserts an ALERT
+        row that the bot's notification_dispatcher already DMs.
+        """
+        payload = json.dumps({"level": body.level, "text": body.text})
+        cur = conn.execute(
+            "INSERT INTO actions(source_msg_id, action_type, payload_json, status) "
+            "VALUES(NULL, 'ALERT', ?, 'pending')",
+            (payload,),
+        )
+        trades.info("alert_posted id=%s level=%s", cur.lastrowid, body.level)
+        return {"ok": True, "id": cur.lastrowid}
+
     @app.post("/market/price")
     def post_market_price(body: MarketPriceBody):
         """EA heartbeats the live bid/ask here every few seconds. Stored as
@@ -383,16 +456,27 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             raise HTTPException(400, f"unsupported symbol: {body.symbol}")
         now = datetime.now(timezone.utc).isoformat()
         sym = body.symbol.upper()
-        for key, val in (
-            (f"market_{sym}_bid", str(body.bid)),
-            (f"market_{sym}_ask", str(body.ask)),
-            (f"market_{sym}_at", now),
-        ):
-            conn.execute(
-                "INSERT INTO settings(key, value) VALUES(?,?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, val),
-            )
+        # Atomic: a reader between the bid and the at write would otherwise
+        # see a fresh bid paired with a stale 'at' timestamp (or worse, the
+        # new bid with the old ask). The window is microseconds under WAL
+        # but the AI prompt's MARKET block reads all three keys; an
+        # inconsistent snapshot can mis-trigger the STALE marker logic.
+        conn.execute("BEGIN")
+        try:
+            for key, val in (
+                (f"market_{sym}_bid", str(body.bid)),
+                (f"market_{sym}_ask", str(body.ask)),
+                (f"market_{sym}_at", now),
+            ):
+                conn.execute(
+                    "INSERT INTO settings(key, value) VALUES(?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, val),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
         return {"ok": True, "recorded_at": now}
 
     @app.get("/market/price")

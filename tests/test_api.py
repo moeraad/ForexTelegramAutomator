@@ -479,3 +479,94 @@ def test_auth_gate_disabled_when_token_blank(tmp_path, monkeypatch):
     client = TestClient(build_app(conn))
     r = client.get("/actions")  # no header
     assert r.status_code == 200
+
+
+# ---- /alerts endpoint (#8) ---------------------------------------------
+
+def test_post_alert_inserts_alert_row(tmp_path):
+    """POST /alerts inserts an ALERT row that the bot's notification
+    dispatcher will pick up and DM. ALERT rows have no execute_after so
+    the promoter ignores them — they go straight to the operator."""
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.post("/alerts",
+                    json={"level": "warning", "text": "stage1 giveup ticket=999"})
+    assert r.status_code == 200
+    aid = r.json()["id"]
+    row = conn.execute(
+        "SELECT action_type, payload_json, status, source_msg_id, execute_after "
+        "FROM actions WHERE id=?", (aid,)
+    ).fetchone()
+    assert row["action_type"] == "ALERT"
+    assert row["status"] == "pending"
+    assert row["source_msg_id"] is None
+    assert row["execute_after"] is None  # never auto-promoted
+    payload = json.loads(row["payload_json"])
+    assert payload["level"] == "warning"
+    assert "stage1 giveup" in payload["text"]
+
+
+def test_post_alert_default_level(tmp_path):
+    """`level` defaults to 'warning' if the EA doesn't supply one."""
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.post("/alerts", json={"text": "something happened"})
+    assert r.status_code == 200
+    aid = r.json()["id"]
+    row = conn.execute(
+        "SELECT payload_json FROM actions WHERE id=?", (aid,)
+    ).fetchone()
+    payload = json.loads(row["payload_json"])
+    assert payload["level"] == "warning"
+
+
+# ---- /positions/by_ticket/{ticket} (#14 reinforce snapshot) -------------
+
+def test_position_by_ticket_returns_open_with_signal(tmp_path):
+    """REINFORCE snapshots the live position's signal payload BEFORE closing
+    so the reopen uses the right params. This endpoint is what makes that
+    snapshot possible."""
+    conn = _setup(tmp_path)
+    payload = json.dumps({
+        "symbol": "XAUUSD", "side": "BUY",
+        "entry_low": 4860, "entry_high": 4862,
+        "sl": 4850, "tps": [4870, 4880, 4890],
+    })
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'executed')",
+        (payload,),
+    )
+    conn.execute(
+        "INSERT INTO positions(action_id, mt5_ticket, symbol, side, volume, "
+        "original_volume, entry_price, sl, tp, status) "
+        "VALUES(?, 7777, 'XAUUSD', 'BUY', 0.10, 0.10, 4861, 4850, 4890, 'open')",
+        (cur.lastrowid,),
+    )
+    client = TestClient(build_app(conn))
+    r = client.get("/positions/by_ticket/7777")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ticket"] == 7777
+    assert body["status"] == "open"
+    assert body["signal"]["entry_low"] == 4860
+    assert body["signal"]["tps"] == [4870, 4880, 4890]
+
+
+def test_position_by_ticket_404_when_closed(tmp_path):
+    """Closed positions are not returned (use /positions/last_closed for those)."""
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', '{}', 'executed')"
+    )
+    conn.execute(
+        "INSERT INTO positions(action_id, mt5_ticket, symbol, side, volume, "
+        "entry_price, sl, tp, status, closed_at, close_reason) "
+        "VALUES(?, 8888, 'XAUUSD', 'BUY', 0.10, 4861, 4850, 4890, "
+        "'closed', '2026-04-20T00:00:00+00:00', 'tp')",
+        (cur.lastrowid,),
+    )
+    client = TestClient(build_app(conn))
+    r = client.get("/positions/by_ticket/8888")
+    assert r.status_code == 404

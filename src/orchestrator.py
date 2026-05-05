@@ -197,7 +197,7 @@ def process_message(
 
     inserted: list[int] = []
     open_persisted = False
-    for action in result.response.actions:
+    for i, action in enumerate(result.response.actions):
         payload = json.dumps(_payload_for(action))
         fp: str | None = None
         if isinstance(action, OpenAction):
@@ -216,7 +216,13 @@ def process_message(
                 )
                 continue
 
-        v = validate_action(action, conn)
+        # Pass preceding actions so the OPEN-with-position-open guard in
+        # validate_action can recognise compound emits like
+        # [CLOSE_FULL, OPEN] (close+reopen rule for new structured signals
+        # when the existing position should be flushed).
+        v = validate_action(
+            action, conn, preceding_actions=result.response.actions[:i]
+        )
         if not v.ok:
             cur = conn.execute(
                 "INSERT INTO actions(source_msg_id, action_type, payload_json, "

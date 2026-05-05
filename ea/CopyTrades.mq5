@@ -71,6 +71,13 @@ string     g_last_action_status  = "";
 datetime   g_last_action_at      = 0;
 datetime   g_last_price_heartbeat = 0;  // throttle for HeartbeatMarketPrice()
 
+// Broker compatibility check result. Populated once in OnInit by
+// RunBrokerChecks (see BrokerCheck.mqh, transitively included via
+// Dashboard.mqh). Read by BuildStats every tick and rendered in the
+// dashboard's BROKER section so the operator sees missing requirements
+// without opening the journal.
+BrokerCheckResult g_broker_check;
+
 // Staged-management plan for a multi-TP position. Strategy:
 //   1 TP  → single position at full lots, TP=tp1 (no staged plan registered).
 //   2 TPs → open at full lots, TP=tp2, SL=orig. On tp1 cross: close 50%,
@@ -96,6 +103,11 @@ struct TradePlan {
 };
 TradePlan g_plans[];
 
+// Sequence counter for retry-queue file names. Combined with TimeCurrent()
+// to disambiguate multiple EnqueueRetry calls within the same second so
+// each pending retry has a unique filename in MQL5\Files.
+int g_retry_counter = 0;
+
 int OnInit() {
    trade.SetExpertMagicNumber(919191);
    trade.SetDeviationInPoints(SlippagePoints);
@@ -105,6 +117,41 @@ int OnInit() {
    g_balance_open_today = AccountInfoDouble(ACCOUNT_BALANCE);
    g_equity_peak_today = AccountInfoDouble(ACCOUNT_EQUITY);
    if(ShowDashboard) g_dashboard.Create(DashboardX, DashboardY);
+
+   // Run broker-compatibility checks once. Result is cached in
+   // g_broker_check, read by BuildStats every tick, and rendered in
+   // the BROKER section of the dashboard. We do NOT fail INIT on
+   // FAIL severity — the operator sees the missing requirements on
+   // the chart and can decide whether to detach or proceed. The
+   // existing kill-switch + algo-trading guards still gate execution.
+   RunBrokerChecks(Symbol_Override, MaxLotsPerSignal, g_broker_check);
+   Print("CT broker: ", BrokerCheckSummary(g_broker_check));
+   for(int i = 0; i < g_broker_check.count; i++) {
+      Print("CT broker ",
+            (g_broker_check.issues[i].severity == BC_FAIL ? "FAIL" : "WARN"),
+            " ", g_broker_check.issues[i].label,
+            ": ", g_broker_check.issues[i].detail);
+   }
+   // Single-line summary to /alerts so the bot DMs the operator on
+   // every (re)attach. Compose by concatenating each issue label so
+   // the message is grep-able from the bot history.
+   string alertText = BrokerCheckSummary(g_broker_check);
+   for(int i = 0; i < g_broker_check.count; i++) {
+      alertText += " | " + g_broker_check.issues[i].label
+                 + ": " + g_broker_check.issues[i].detail;
+   }
+   // Minimal JSON escape: only " and \ matter for our composed strings;
+   // newlines/tabs aren't produced by RunBrokerChecks. Same lightweight
+   // approach as the post-result error path at ~line 1555.
+   StringReplace(alertText, "\\", "\\\\");
+   StringReplace(alertText, "\"", "\\\"");
+   string alertLevel = (g_broker_check.fails > 0) ? "warning" : "info";
+   string alertJson = StringFormat(
+      "{\"level\":\"%s\",\"text\":\"EA started: %s\"}",
+      alertLevel, alertText);
+   string aresp;
+   HttpPostJson(ApiBaseUrl + "/alerts", alertJson, aresp);
+
    Print("CopyTrades EA started. API=", ApiBaseUrl,
          " restored_plans=", ArraySize(g_plans));
    return INIT_SUCCEEDED;
@@ -122,6 +169,7 @@ void OnTimer() {
       PollAndExecute();
       ManagePlans();  // also driven by OnTick; belt-and-suspenders
       ReconcileClosedPositions();
+      DrainRetryQueue();  // resend any persisted POSTs from a prior outage
    }
    // Heartbeat market price unconditionally (even when halted) — the AI
    // still needs a fresh quote to decode shorthand SL on incoming messages.
@@ -231,6 +279,11 @@ void BuildStats(DashboardStats &s) {
    s.equity         = AccountInfoDouble(ACCOUNT_EQUITY);
    s.free_margin    = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    s.account_ccy    = AccountInfoString(ACCOUNT_CURRENCY);
+
+   // Static broker-check result. Populated once at OnInit; copied each
+   // tick so the dashboard sees it after the first paint. Cheap struct
+   // copy (BC_MAX_ISSUES=24 fixed-size array of {int, string, string}).
+   s.broker = g_broker_check;
 
    // Today's realized = current balance - balance at start of day. Broker
    // deposits/withdrawals distort this; acceptable trade-off for MVP.
@@ -486,6 +539,7 @@ void ExecuteOne(string obj) {
    else if(atype == "REOPEN_LAST")  DoReopenLast(id, payload);
    else if(atype == "REINFORCE")    DoReinforce(id, payload);
    else if(atype == "TIGHTEN_SL")   DoTightenSl(id, payload);
+   else if(atype == "MODIFY_TPS")   DoModifyTps(id, payload);
    else PostResult(id, "rejected", 0, "unknown_action_type:" + atype);
 }
 
@@ -649,11 +703,16 @@ void DoOpen(long id, string payload) {
    );
    string body = "{\"status\":\"executed\",\"legs\":[" + legJson + "]}";
    string resp; int status;
-   bool postOk = HttpPostJsonWithStatus(
-      ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result", body, resp, status);
+   string resultUrl = ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result";
+   bool postOk = HttpPostJsonWithStatus(resultUrl, body, resp, status);
    if(!postOk) {
+      // Order is live at the broker but the API didn't get the result.
+      // Don't drop it — that strands the trade with no DB row and the
+      // sweeper will eventually re-queue the action, which would cause
+      // a second OPEN attempt. Persist for retry instead.
       Print("Result POST failed for action ", id, " status=", status,
-            " — sweeper will release after timeout");
+            " — queued for retry");
+      EnqueueRetry(resultUrl, body);
    }
    g_stats_executed++;
    g_last_action_status = "executed";
@@ -795,9 +854,16 @@ void PostPositionUpdate(long ticket, double newVolume, double newSl) {
    }
    body += "}";
    string resp; int status;
-   HttpPostJsonWithStatus(
-      ApiBaseUrl + "/positions/" + IntegerToString(ticket) + "/update",
-      body, resp, status);
+   string url = ApiBaseUrl + "/positions/" + IntegerToString(ticket) + "/update";
+   if(!HttpPostJsonWithStatus(url, body, resp, status)) {
+      // Without retry, partial_close_count and sl_moved_at would stay
+      // stale in the DB. The AI prompt's SYSTEM STATE block would then
+      // show partials_taken=0 / at_BE=false when those should be true,
+      // causing duplicate management actions on reminder messages.
+      Print("PostPositionUpdate failed ticket=", ticket,
+            " status=", status, " — queued for retry");
+      EnqueueRetry(url, body);
+   }
 }
 
 void ManagePlans() {
@@ -884,6 +950,15 @@ void ManagePlans() {
                Print("CT plan stage1 partial GIVING UP ticket=", p.ticket,
                      " after ", p.stage_attempts,
                      " attempts; advancing stage to 1 anyway");
+               // Operator visibility: position rides full size into TP2.
+               // POST an ALERT so the bot DMs the owner.
+               string giveupBody = StringFormat(
+                  "{\"level\":\"warning\",\"text\":\"stage1 giveup ticket=%I64d "
+                  "after %d attempts; partial abandoned, position rides full "
+                  "size to next TP. Manual review recommended.\"}",
+                  p.ticket, p.stage_attempts);
+               string aresp;
+               HttpPostJson(ApiBaseUrl + "/alerts", giveupBody, aresp);
             }
          }
 
@@ -946,6 +1021,14 @@ void ManagePlans() {
                Print("CT plan stage2 partial GIVING UP ticket=", p.ticket,
                      " after ", p.stage_attempts,
                      " attempts; advancing stage to 2 anyway");
+               string giveupBody = StringFormat(
+                  "{\"level\":\"warning\",\"text\":\"stage2 giveup ticket=%I64d "
+                  "after %d attempts; partial abandoned, SL still moves to BE "
+                  "but position rides full size to TP3. Manual review "
+                  "recommended.\"}",
+                  p.ticket, p.stage_attempts);
+               string aresp;
+               HttpPostJson(ApiBaseUrl + "/alerts", giveupBody, aresp);
             }
          }
 
@@ -1119,6 +1202,55 @@ void DoMoveSl(long id, string payload) {
    }
 }
 
+// MODIFY_TPS — replace the broker TP and re-stage g_plans[] with a fresh
+// ladder. Emitted only by the AI's "new OPEN signal arrives with position
+// open" RULE C path (see ai.py SYSTEM_PROMPT). Caller responsibility:
+//  - tps array is already filtered to values still ahead of current price
+//    (Python prompt does this); we trust the input here.
+//  - SL is updated by an accompanying MOVE_SL action that runs BEFORE this
+//    one (orchestrator inserts in [MOVE_SL, MODIFY_TPS] order; EA claims
+//    in id order). So we read CURRENT SL post-MOVE_SL when modifying TP.
+//
+// Stage handling: we reset stage to 0 and rebase origLots to the CURRENT
+// volume (post any prior partials). ManagePlans treats the new ladder as
+// fresh, sized against what's actually open. RegisterPlan dedupes by
+// ticket so calling it on an existing entry replaces the plan in place.
+void DoModifyTps(long id, string payload) {
+   long ticket = FindSingletonOpenTicket(Symbol_Override);
+   if(ticket <= 0) { PostResult(id, "rejected", 0, "no_open_position"); return; }
+   if(!PositionSelectByTicket(ticket)) { PostResult(id, "failed", ticket, "no_position"); return; }
+
+   string tpsStr = JsonField(payload, "tps");
+   double tps[];
+   ParseTps(tpsStr, tps);
+   int tpCount = ArraySize(tps);
+   if(tpCount == 0) { PostResult(id, "rejected", ticket, "empty_tps"); return; }
+   if(tpCount > 3) tpCount = 3;
+
+   bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+   SortTpsByDistance(tps, tpCount, isBuy);
+
+   double curSl = PositionGetDouble(POSITION_SL);
+   double finalTp = tps[tpCount - 1];
+
+   if(!trade.PositionModify(ticket, curSl, finalTp)) {
+      PostResult(id, "failed", ticket,
+                 "modify_failed:" + IntegerToString(trade.ResultRetcode()));
+      return;
+   }
+
+   double curVol = PositionGetDouble(POSITION_VOLUME);
+   double entry  = PositionGetDouble(POSITION_PRICE_OPEN);
+   // RegisterPlan dedupes by ticket — replaces existing entry in place.
+   // Pass curVol as origLots so future stage closes are sized against
+   // what's actually open (not the pre-partial original).
+   RegisterPlan(ticket, isBuy, curVol, entry, curSl, tps, tpCount);
+
+   PostPositionUpdate(ticket, curVol, 0);    // newSl=0 → leave DB SL as-is (set by preceding MOVE_SL)
+   PostResult(id, "executed", ticket,
+              StringFormat("tps=%d final=%.2f", tpCount, finalTp));
+}
+
 void DoClosePartial(long id, string payload) {
    long ticket = FindSingletonOpenTicket(Symbol_Override);
    if(ticket <= 0) { PostResult(id, "rejected", 0, "no_open_position"); return; }
@@ -1204,8 +1336,21 @@ void DoReopenLast(long id, string payload) {
 
 void DoReinforce(long id, string payload) {
    long currentTicket = FindSingletonOpenTicket(Symbol_Override);
+   string fakePayload = "";
+
    if(currentTicket > 0) {
-      // Per user policy: close regardless of PnL, then reopen.
+      // Snapshot the originating signal BEFORE closing. The previous
+      // implementation closed first, then queried /positions/last_closed
+      // which races the fire-and-forget /positions/{t}/close POST and
+      // could return an older trade's params.
+      string snapUrl = ApiBaseUrl + "/positions/by_ticket/"
+                     + IntegerToString(currentTicket);
+      string snapBody;
+      if(HttpGet(snapUrl, snapBody)
+         && snapBody != "" && StringFind(snapBody, "\"ticket\"") >= 0) {
+         fakePayload = BuildOpenPayloadFromLastClosed(snapBody);
+      }
+      // Close regardless of PnL (channel semantics).
       if(trade.PositionClose(currentTicket)) {
          RemovePlanByTicket(currentTicket);
          string closeBody;
@@ -1218,16 +1363,22 @@ void DoReinforce(long id, string payload) {
          return;
       }
    }
-   string url = ApiBaseUrl + "/positions/last_closed?symbol=" + Symbol_Override
-              + "&within_hours=24";
-   string body;
-   if(!HttpGet(url, body) || body == "" || StringFind(body, "\"ticket\"") < 0) {
-      PostResult(id, "rejected", 0, "no_recent_close");
-      return;
-   }
-   string fakePayload = BuildOpenPayloadFromLastClosed(body);
+
+   // Fallback for the no-open-position case (e.g. closed at SL just
+   // before this REINFORCE message arrived): try /positions/last_closed.
    if(fakePayload == "") {
-      PostResult(id, "failed", 0, "last_closed_unparseable");
+      string url = ApiBaseUrl + "/positions/last_closed?symbol="
+                 + Symbol_Override + "&within_hours=24";
+      string body;
+      if(!HttpGet(url, body) || body == "" || StringFind(body, "\"ticket\"") < 0) {
+         PostResult(id, "rejected", 0, "no_recent_close");
+         return;
+      }
+      fakePayload = BuildOpenPayloadFromLastClosed(body);
+   }
+
+   if(fakePayload == "") {
+      PostResult(id, "failed", 0, "reinforce_payload_unparseable");
       return;
    }
    Print("CT REINFORCE id=", id, " payload=", fakePayload);
@@ -1343,6 +1494,107 @@ void SortTpsByDistance(double &tps[], int n, bool isBuy) {
          if(swap) { double t = tps[a]; tps[a] = tps[b]; tps[b] = t; }
       }
    }
+}
+
+// ---- Persistent retry queue ----
+//
+// When an HTTP POST to the API fails (api.py down, network blip), we don't
+// want to drop the result — that's how trades get stranded in `claimed`
+// (action #5 in FIXES_TODO.md). Instead we persist the request body to
+// MQL5\Files\ct_retry_<seq>.txt and drain the queue every OnTimer tick
+// until the API is back. Files survive EA reload and terminal restart, so
+// even an overnight outage is recoverable.
+//
+// File format (4 lines, ANSI):
+//   line 1: url
+//   line 2: body (JSON, single line)
+//   line 3: first_at (Unix epoch seconds)
+//   line 4: attempts (int)
+//
+// Drop policy: entries older than 24h are purged with a log line. By that
+// point the position has likely closed, the broker view has diverged from
+// the DB, and re-POSTing stale data would do more harm than good.
+string _RetryFilename(long seq) {
+   return "ct_retry_" + IntegerToString(seq) + ".txt";
+}
+
+long _NextRetrySeq() {
+   g_retry_counter++;
+   // High 48 bits: seconds since epoch. Low 16 bits: counter mod 65536.
+   // Multiply chosen so a single second can hold up to 65535 retries.
+   return ((long)TimeCurrent() << 16) | (long)(g_retry_counter & 0xFFFF);
+}
+
+void EnqueueRetry(string url, string body) {
+   long seq = _NextRetrySeq();
+   string fname = _RetryFilename(seq);
+   int fh = FileOpen(fname, FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if(fh == INVALID_HANDLE) {
+      Print("CT retry: FileOpen FAILED for ", fname,
+            " err=", GetLastError(), " — request will be lost");
+      return;
+   }
+   FileWriteString(fh, url + "\n");
+   FileWriteString(fh, body + "\n");
+   FileWriteString(fh, IntegerToString((long)TimeCurrent()) + "\n");
+   FileWriteString(fh, "0\n");
+   FileClose(fh);
+   Print("CT retry: queued ", fname, " url=", url);
+}
+
+void _PurgeRetry(string fname) {
+   if(!FileDelete(fname))
+      Print("CT retry: FileDelete failed for ", fname,
+            " err=", GetLastError());
+}
+
+void DrainRetryQueue() {
+   string fname;
+   long handle = FileFindFirst("ct_retry_*.txt", fname);
+   if(handle == INVALID_HANDLE) return;
+
+   datetime now = TimeCurrent();
+   do {
+      int fh = FileOpen(fname, FILE_READ | FILE_TXT | FILE_ANSI);
+      if(fh == INVALID_HANDLE) {
+         Print("CT retry: read FileOpen failed ", fname,
+               " err=", GetLastError());
+         continue;
+      }
+      string url      = FileReadString(fh);
+      string body     = FileReadString(fh);
+      string firstStr = FileReadString(fh);
+      string attStr   = FileReadString(fh);
+      FileClose(fh);
+
+      datetime first_at = (datetime)StringToInteger(firstStr);
+      int attempts = (int)StringToInteger(attStr);
+
+      // Drop-dead 24h.
+      if(now - first_at > 86400) {
+         Print("CT retry: EXPIRED after 24h, purging ", fname);
+         _PurgeRetry(fname);
+         continue;
+      }
+
+      string resp; int status;
+      if(HttpPostJsonWithStatus(url, body, resp, status)) {
+         Print("CT retry: SUCCESS after ", attempts + 1,
+               " attempt(s), purging ", fname);
+         _PurgeRetry(fname);
+      } else {
+         // Bump attempts and keep the entry for the next tick.
+         int fhw = FileOpen(fname, FILE_WRITE | FILE_TXT | FILE_ANSI);
+         if(fhw != INVALID_HANDLE) {
+            FileWriteString(fhw, url + "\n");
+            FileWriteString(fhw, body + "\n");
+            FileWriteString(fhw, firstStr + "\n");
+            FileWriteString(fhw, IntegerToString(attempts + 1) + "\n");
+            FileClose(fhw);
+         }
+      }
+   } while(FileFindNext(handle, fname));
+   FileFindClose(handle);
 }
 
 void PostResult(long id, string status, long ticket, string err) {

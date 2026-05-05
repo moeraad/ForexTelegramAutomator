@@ -113,10 +113,37 @@ class TightenSlAction(BaseModel):
     by_fraction: float = Field(default=0.5, gt=0.0, lt=1.0)
 
 
+class ModifyTpsAction(BaseModel):
+    """Replace the TP ladder on the open position.
+
+    EA modifies broker TP to the LAST value in `tps` and updates its
+    in-memory g_plans[] entry (replaces tps[], resets stage to 0,
+    rebases origLots to current volume) so future ManagePlans staging
+    uses the new ladder. Singleton — no mt5_ticket; EA infers via
+    FindSingletonOpenTicket.
+
+    Emitted by the AI when a NEW structured OPEN signal arrives while a
+    position is already open AND we keep that position rather than
+    close+reopen (same side, no partials yet OR not in profit). The AI
+    is responsible for filtering `tps` to only those still ahead of
+    current MARKET.mid; an empty list is rejected at parse time.
+    """
+    type: Literal["MODIFY_TPS"] = "MODIFY_TPS"
+    tps: list[float] = Field(min_length=1, max_length=3)
+    reason: str = ""
+
+    @field_validator("tps")
+    @classmethod
+    def all_positive(cls, v: list[float]) -> list[float]:
+        if any(t <= 0 for t in v):
+            raise ValueError("all tps must be positive")
+        return v
+
+
 Action = Union[
     OpenAction, ModifyAction, CloseAction, CloseAllAction, AlertAction,
     MoveSlBeAction, MoveSlAction, ClosePartialAction, CloseFullAction,
-    ReopenLastAction, ReinforceAction, TightenSlAction,
+    ReopenLastAction, ReinforceAction, TightenSlAction, ModifyTpsAction,
 ]
 
 _ACTION_BY_TYPE = {
@@ -132,6 +159,7 @@ _ACTION_BY_TYPE = {
     "REOPEN_LAST": ReopenLastAction,
     "REINFORCE": ReinforceAction,
     "TIGHTEN_SL": TightenSlAction,
+    "MODIFY_TPS": ModifyTpsAction,
 }
 
 
@@ -198,30 +226,49 @@ def _ticket_open(conn: sqlite3.Connection, ticket: int) -> bool:
     return row is not None
 
 
-def _has_overlapping_open_position(
-    conn: sqlite3.Connection, symbol: str, side: str,
-    entry_low: float, entry_high: float,
-) -> bool:
-    rows = conn.execute(
-        "SELECT entry_price FROM positions "
-        "WHERE symbol=? AND side=? AND status='open'",
-        (symbol, side),
-    ).fetchall()
-    for r in rows:
-        ep = r["entry_price"]
-        if ep is None:
-            continue
-        if entry_low <= ep <= entry_high:
-            return True
-    return False
+def _has_open_position(conn: sqlite3.Connection, symbol: str) -> bool:
+    """Single-position invariant: at most one open trade on `symbol` at a time.
+
+    The original `_has_overlapping_open_position` filtered by symbol AND
+    side AND zone overlap, which gave a false sense of safety: a live BUY
+    at 3300 wouldn't block a new BUY signal at 3310-3320 even though the
+    EA's CountOurOpenPositions() guard would reject it. This Python-side
+    check now matches the EA-side enforcement: any open position on the
+    symbol blocks a new OPEN. Defense-in-depth — the EA is still the
+    authoritative single-position guard.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM positions WHERE symbol=? AND status='open' LIMIT 1",
+        (symbol,),
+    ).fetchone()
+    return row is not None
 
 
-def validate_action(action: Action, conn: sqlite3.Connection) -> ValidationResult:
+def validate_action(
+    action: Action,
+    conn: sqlite3.Connection,
+    *,
+    preceding_actions: list[Action] | None = None,
+) -> ValidationResult:
+    """Validate `action` against current DB state.
+
+    `preceding_actions`: when validating a member of a compound AI
+    response (e.g., `[CLOSE_FULL, OPEN]` for the close+reopen rule),
+    pass the actions earlier in the list so the validator can recognise
+    the future state. Specifically: an OPEN preceded by a CLOSE_FULL /
+    CLOSE / CLOSE_ALL / REINFORCE in the same emit list is permitted
+    even when a position is currently open — the EA executes them in
+    insertion order, so by the time OPEN claims, the close has run.
+    """
     if isinstance(action, OpenAction):
-        if _has_overlapping_open_position(
-            conn, action.symbol, action.side, action.entry_low, action.entry_high
-        ):
-            return ValidationResult(False, "duplicate: overlaps existing open position")
+        if _has_open_position(conn, action.symbol):
+            preceding = preceding_actions or []
+            closes_first = any(
+                isinstance(a, (CloseFullAction, CloseAction, CloseAllAction, ReinforceAction))
+                for a in preceding
+            )
+            if not closes_first:
+                return ValidationResult(False, "duplicate: position already open on symbol")
         return ValidationResult(True)
     if isinstance(action, (CloseAction, ModifyAction)):
         if not _ticket_open(conn, action.mt5_ticket):
@@ -231,13 +278,13 @@ def validate_action(action: Action, conn: sqlite3.Connection) -> ValidationResul
         if action.symbol not in SUPPORTED_SYMBOLS:
             return ValidationResult(False, f"unsupported symbol {action.symbol}")
         return ValidationResult(True)
-    # Phase 2 management actions: parse-time Field constraints handle
-    # numeric ranges; state-existence checks (open position present?
+    # Phase 2 / Phase 3 management actions: parse-time Field constraints
+    # handle numeric ranges; state-existence checks (open position present?
     # last-closed within window?) are deferred to the EA so they aren't
     # racing with execution. Pass through unconditionally here.
     if isinstance(action, (
         MoveSlBeAction, MoveSlAction, ClosePartialAction, CloseFullAction,
-        ReopenLastAction, ReinforceAction, TightenSlAction,
+        ReopenLastAction, ReinforceAction, TightenSlAction, ModifyTpsAction,
     )):
         return ValidationResult(True)
     # AlertAction

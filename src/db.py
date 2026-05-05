@@ -9,6 +9,13 @@ def connect(db_path: str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # Pin the auto-checkpoint threshold explicitly. SQLite's default of
+    # 1000 pages happens to be what we want, but the default has changed
+    # in past versions and isn't guaranteed across the SQLite shipped with
+    # different Python installs. Without this, WAL can grow to whatever
+    # the new default is between checkpoints, which on a busy 24h day
+    # with the EA's 15s heartbeat + 1Hz polling adds up.
+    conn.execute("PRAGMA wal_autocheckpoint=1000")
     return conn
 
 
@@ -21,6 +28,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_positions_state(conn)
     _migrate_actions_add_phase2_types(conn)
     _migrate_actions_drop_watch_columns(conn)
+    _migrate_actions_add_modify_tps(conn)
 
 
 def _migrate_actions_add_phase2_types(conn: sqlite3.Connection) -> None:
@@ -209,11 +217,28 @@ def _migrate_signal_memory_add_chat_id(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_actions_add_fingerprint(conn: sqlite3.Connection) -> None:
-    """Add fingerprint column + index to existing databases."""
+    """Add fingerprint column + partial composite index to existing databases.
+
+    The original index was unconstrained — `CREATE INDEX ... ON
+    actions(fingerprint)` — and covered every row including the majority
+    where fingerprint IS NULL (management types, ALERTs). The new partial
+    composite index `(fingerprint, created_at) WHERE fingerprint IS NOT NULL`
+    makes _has_recent_duplicate_open a single range scan instead of a
+    fingerprint-only scan + date filter, and is much smaller on disk.
+
+    DROP+CREATE is safe to re-run (idempotent under IF NOT EXISTS).
+    """
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(actions)").fetchall()}
     if "fingerprint" not in cols:
         conn.execute("ALTER TABLE actions ADD COLUMN fingerprint TEXT")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_actions_fingerprint ON actions(fingerprint)")
+    # Replace any old non-partial index from prior versions of this
+    # migration before recreating with the partial composite shape.
+    conn.execute("DROP INDEX IF EXISTS idx_actions_fingerprint")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_actions_fingerprint "
+        "ON actions(fingerprint, created_at) "
+        "WHERE fingerprint IS NOT NULL"
+    )
 
 
 def _migrate_actions_for_claim(conn: sqlite3.Connection) -> None:
@@ -304,6 +329,68 @@ def _migrate_actions_drop_watch_columns(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE actions DROP COLUMN expires_at")
         except sqlite3.OperationalError:
             pass
+
+
+def _migrate_actions_add_modify_tps(conn: sqlite3.Connection) -> None:
+    """Expand actions.action_type CHECK to allow the Phase-3 MODIFY_TPS type.
+
+    Why: the orchestrator inserts MODIFY_TPS once the AI prompt learns to
+    emit it for the "new OPEN signal arrives while position open" rule
+    (modify SL+TPs in place when not closing+reopening). Pre-Phase-3
+    databases reject MODIFY_TPS via the old CHECK, so we rebuild the
+    table preserving every row when the new type is absent. Same pattern
+    as _migrate_actions_add_phase2_types.
+    """
+    sql_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='actions'"
+    ).fetchone()
+    if not sql_row or "'MODIFY_TPS'" in sql_row["sql"]:
+        return  # already migrated (or no actions table yet)
+    conn.execute(
+        "UPDATE actions SET source_msg_id = NULL "
+        "WHERE source_msg_id IS NOT NULL "
+        "  AND source_msg_id NOT IN (SELECT id FROM messages)"
+    )
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.executescript(
+            "BEGIN;"
+            "CREATE TABLE actions_new ("
+            "  id              INTEGER PRIMARY KEY,"
+            "  source_msg_id   INTEGER REFERENCES messages(id),"
+            "  action_type     TEXT NOT NULL CHECK(action_type IN ("
+            "                    'OPEN','MODIFY','CLOSE','CLOSE_ALL','ALERT',"
+            "                    'MOVE_SL_BE','MOVE_SL','CLOSE_PARTIAL','CLOSE_FULL',"
+            "                    'REOPEN_LAST','REINFORCE','TIGHTEN_SL','MODIFY_TPS'"
+            "                  )),"
+            "  payload_json    TEXT NOT NULL,"
+            "  status          TEXT NOT NULL DEFAULT 'pending'"
+            "                  CHECK(status IN ('pending','cancelled','sent','claimed','executed','failed','rejected')),"
+            "  created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,"
+            "  notified_at     DATETIME,"
+            "  execute_after   DATETIME,"
+            "  claimed_at      DATETIME,"
+            "  executed_at     DATETIME,"
+            "  ea_response     TEXT,"
+            "  fingerprint     TEXT"
+            ");"
+            "INSERT INTO actions_new(id, source_msg_id, action_type, payload_json, status,"
+            "  created_at, notified_at, execute_after, claimed_at, executed_at, ea_response,"
+            "  fingerprint) "
+            "SELECT id, source_msg_id, action_type, payload_json, status,"
+            "  created_at, notified_at, execute_after, claimed_at, executed_at, ea_response,"
+            "  fingerprint "
+            "FROM actions;"
+            "DROP TABLE actions;"
+            "ALTER TABLE actions_new RENAME TO actions;"
+            "CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);"
+            "CREATE INDEX IF NOT EXISTS idx_actions_fingerprint "
+            "  ON actions(fingerprint, created_at) "
+            "  WHERE fingerprint IS NOT NULL;"
+            "COMMIT;"
+        )
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
 
 
 def get_setting(conn: sqlite3.Connection, key: str) -> str | None:
