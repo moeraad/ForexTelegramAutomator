@@ -53,13 +53,27 @@ _STATUS_GLYPH = {
 }
 
 
-def _payload_summary(action_type: str, payload: dict) -> str:
-    """One-line summary of an action's payload for terminal notifications."""
+def _payload_summary(
+    action_type: str, payload: dict, *, actual_entry: float | None = None
+) -> str:
+    """One-line summary of an action's payload for terminal notifications.
+
+    `actual_entry` (optional, OPEN only): the broker-reported fill price
+    for the position created by this action. When supplied, the OPEN
+    summary shows BOTH the channel signal's entry zone (intent) and the
+    actual fill price (reality), so the operator can see at a glance how
+    far the chase landed from the analyst's plan. Format:
+        "BUY XAUUSD signal-entry 4555-4553 actual 4554.20 sl 4540 ..."
+    """
     if action_type == "OPEN":
         tps = ",".join(str(t) for t in payload.get("tps", []))
+        actual_part = (
+            f" actual {actual_entry:.2f}" if actual_entry is not None else ""
+        )
         return (
             f"{payload.get('side','?')} {payload.get('symbol','XAUUSD')} "
-            f"entry {payload.get('entry_low')}-{payload.get('entry_high')} "
+            f"signal-entry {payload.get('entry_low')}-{payload.get('entry_high')}"
+            f"{actual_part} "
             f"sl {payload.get('sl')} tps [{tps}]"
         )
     if action_type == "MOVE_SL":
@@ -90,6 +104,7 @@ def _payload_summary(action_type: str, payload: dict) -> str:
 def render_action_terminal(
     action_id: int, action_type: str, status: str,
     payload: dict, ea_response: str,
+    *, actual_entry: float | None = None,
 ) -> str:
     """One-line DM for an action that just reached a terminal state.
 
@@ -97,9 +112,13 @@ def render_action_terminal(
     Examples:
       "✅ #42 MOVE_SL_BE executed"
       "🚫 #43 CLOSE_PARTIAL rejected — fraction=0.5 (no_open_position)"
+      "✅ #137 OPEN executed — BUY XAUUSD signal-entry 4575-4577 actual 4576.42 sl 4566 tps [4588,4600,4610]"
+
+    `actual_entry`: optional broker fill price; surfaced for OPEN actions
+    so the operator sees signal-vs-reality entry deltas at a glance.
     """
     glyph = _STATUS_GLYPH.get(status, "•")
-    body = _payload_summary(action_type, payload)
+    body = _payload_summary(action_type, payload, actual_entry=actual_entry)
     parts = [f"{glyph} #{action_id} {action_type} {status}"]
     if body:
         parts.append(f"— {body}")

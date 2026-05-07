@@ -22,6 +22,20 @@ input double LotsPer100Balance       = 0.01;
 // the formula above is the only sizing constraint. Lower it (e.g., 0.10
 // during validation) if you want a hard ceiling regardless of balance.
 input double MaxLotsPerSignal        = 100.0;
+// Hard ceiling on per-trade dollar risk as a percentage of account balance.
+// Computed from the signal's SL distance × proposed lot size × tick value.
+// When the balance-based sizing produces a position whose SL hit would
+// exceed this %, the position is capped down to the size that meets this
+// limit. If even minLot exceeds the cap (signal's SL is so wide that even
+// the smallest tradable size loses more than X% of balance), the OPEN is
+// rejected outright with reason "sl_too_wide_for_max_risk_pct".
+//
+// Set to 0 to disable the cap entirely (LotsPer100Balance + MaxLotsPerSignal
+// are then the only sizing constraints — original pre-cap behaviour).
+//
+// Default 2.0%: a $10,000 account risks at most $200 per trade. Two
+// consecutive losers cost ~4% of balance, recoverable in a single winner.
+input double MaxSlLossPercent        = 2.0;
 input int    SlippagePoints          = 50;
 input string Symbol_Override         = "XAUUSD";
 // Effective entry zone is widened by this many price units on EACH side
@@ -50,6 +64,14 @@ input int    DashboardY              = 20;    // pixels from top
 // (e.g. "ستوبك 56" -> 4856 only when gold is around 4850). Set to 0 to
 // disable. Heartbeat is unconditional (runs even when kill switch is on).
 input int    MarketPriceHeartbeatSec = 15;
+// Gate the AI's reactive "احجز نصف أرباحك واحفظ دخولك" flow: when false,
+// both DoMoveSlBe and DoClosePartial reject incoming actions with reason
+// "ai_partial_and_be_disabled". The EA-internal staged plan in
+// ManagePlans (TP1/TP2 partial closes triggered by price crossings) is
+// NOT affected by this — only the AI's ad-hoc reactions to channel
+// messages mid-trade. Default false: most operators prefer the channel
+// signal to ride to its broker-set final TP without mid-flight partials.
+input bool   EnableAiPartialAndBe    = false;
 
 CTrade trade;
 
@@ -741,17 +763,19 @@ string ExtractPayload(string obj) {
    return StringSubstr(obj, start, end - start + 1);
 }
 
-// Balance-based position sizing.
+// Balance-based position sizing with optional risk-percentage cap.
 //
 //   lots = (ACCOUNT_BALANCE / 100) * LotsPer100Balance
 //
-// Independent of SL distance, so the dollar risk per trade scales linearly
-// with the signal's SL placement (a wide-SL signal risks more dollars than
-// a tight-SL signal at the same lot size). The MaxLotsPerSignal input is
-// the hard upper cap regardless of balance.
+// Independent of SL distance — so the dollar risk per trade scales with
+// the signal's SL placement. The MaxSlLossPercent input adds a hard
+// ceiling: if the SL hit on the proposed lot size would lose more than
+// X% of balance, the lot size is capped to whatever keeps the loss at X%.
+// If even minLot exceeds the cap (signal's SL is too wide for the
+// account), this function returns 0.0 and DoOpen rejects the action.
 //
-// `slPrice` and `entryPrice` parameters are kept in the signature for
-// future flexibility but are no longer used by the formula.
+// MaxLotsPerSignal is still applied as the absolute upper bound after
+// the risk cap.
 double LotsFromRisk(double slPrice, double entryPrice) {
    double minLot = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_MIN);
    double lotStep = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_STEP);
@@ -761,14 +785,52 @@ double LotsFromRisk(double slPrice, double entryPrice) {
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    if(balance <= 0 || LotsPer100Balance <= 0) return minLot;
 
+   // Step 1: balance-based proposed size.
    double lots = (balance / 100.0) * LotsPer100Balance;
    lots = MathFloor(lots / lotStep) * lotStep;
+
+   // Step 2: per-trade risk-percentage cap (when enabled, slPrice valid,
+   // and broker tick info available). Computes dollars-at-risk if SL is
+   // hit at the proposed size; if it exceeds balance * MaxSlLossPercent / 100,
+   // shrink the size to the largest that fits the cap.
+   double riskCapMsg = "";
+   if(MaxSlLossPercent > 0 && slPrice > 0 && entryPrice > 0) {
+      double tickSize = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_SIZE);
+      double tickValue = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_VALUE);
+      if(tickSize > 0 && tickValue > 0) {
+         double slDistance = MathAbs(entryPrice - slPrice);
+         double dollarsPerLot = (slDistance / tickSize) * tickValue;
+         double maxLossDollars = balance * MaxSlLossPercent / 100.0;
+         double riskAtLots = dollarsPerLot * lots;
+         if(riskAtLots > maxLossDollars && dollarsPerLot > 0) {
+            double cappedLots = maxLossDollars / dollarsPerLot;
+            cappedLots = MathFloor(cappedLots / lotStep) * lotStep;
+            if(cappedLots < minLot) {
+               // Even minLot would lose more than the configured cap.
+               // Reject the trade — return 0.0 signals DoOpen to abort.
+               Print("CT LotsFromRisk REJECT: even minLot=", minLot,
+                     " loses $", DoubleToString(dollarsPerLot * minLot, 2),
+                     " > max $", DoubleToString(maxLossDollars, 2),
+                     " (", MaxSlLossPercent, "% of balance ", balance,
+                     "). slDistance=", slDistance);
+               return 0.0;
+            }
+            riskCapMsg = StringFormat(
+               " [risk-capped: orig %.2f lots @ $%.2f loss > $%.2f max -> %.2f lots @ $%.2f loss]",
+               lots, riskAtLots, maxLossDollars, cappedLots, dollarsPerLot * cappedLots);
+            lots = cappedLots;
+         }
+      }
+   }
+
+   // Step 3: existing absolute caps + min-lot floor.
    if(lots > MaxLotsPerSignal) lots = MaxLotsPerSignal;
    if(lots < minLot) lots = minLot;
    double result = NormalizeDouble(lots, 2);
    Print("CT LotsFromRisk(balance): balance=", balance,
          " ratio=", LotsPer100Balance, " per $100 -> lots=", result,
-         " (cap=", MaxLotsPerSignal, " step=", lotStep, " min=", minLot, ")");
+         " (cap=", MaxLotsPerSignal, " step=", lotStep, " min=", minLot, ")",
+         riskCapMsg);
    return result;
 }
 
@@ -848,6 +910,13 @@ void DoOpen(long id, string payload) {
    // Single full-lots position. Final TP set on MT5 so the last leg auto-closes
    // without EA involvement; intermediate TPs are handled by ManagePlans().
    double lotsTotal = LotsFromRisk(sl, entry);
+   if(lotsTotal <= 0.0) {
+      // Signal's SL is too wide for the configured per-trade risk cap
+      // (MaxSlLossPercent). LotsFromRisk already logged the details.
+      PostResult(id, "rejected", 0, "sl_too_wide_for_max_risk_pct");
+      g_stats_rejected++;
+      return;
+   }
    double tpFinal = tps[tpCount - 1];
 
    bool ok = isBuy
@@ -862,6 +931,13 @@ void DoOpen(long id, string payload) {
                  ? (long)trade.ResultOrder()
                  : (long)trade.ResultDeal();
    if(ticket <= 0) { PostResult(id, "failed", 0, "no_ticket_returned"); return; }
+
+   // Suppress the reconciler's authoritative pass on this ticket for a
+   // brief grace window. Without this, ReconcileClosedPositions can run
+   // a few ms after the broker fill and PositionSelectByTicket returns
+   // false (cache lag) → false-closes the just-opened position. See
+   // RememberRecentOpen comment for the 2026-05-07 13:03 incident.
+   RememberRecentOpen(ticket);
 
    // All fills here are market orders (out-of-margin signals rejected
    // earlier). Multi-TP signals get a staged plan for tp1/tp2 partials.
@@ -1039,6 +1115,93 @@ void PostPositionUpdate(long ticket, double newVolume, double newSl) {
    }
 }
 
+// After PositionClosePartial sends the deal to the broker, the local
+// MT5 position cache is updated when the fill confirmation arrives.
+// There's a tiny race where reading POSITION_VOLUME immediately after
+// the call returns the OLD volume — observed twice on 2026-05-07
+// (Trade 8526804766 09:26:57 and Trade 8532532660 14:13:05): journal
+// shows the partial deal completed, but the EA's verify-then-advance
+// check read stale 0.88 / 1.05 volume microseconds later. Result: false
+// "partial_did_not_execute retcode=10009 vol_unchanged=X" failures and
+// a DB that thinks no partial happened.
+//
+// Fix: poll POSITION_VOLUME up to 5 times with 100ms gaps before
+// declaring failure. Sleep blocks the OnTimer thread, but the worst
+// case (real failure) is 500ms — well within our 1s timer budget.
+//
+// Returns the post-fill volume. Returns 0.0 if the position is now
+// fully gone (rounding edge cases on very small remainders).
+double WaitForPartialFill(long ticket, double volBefore, double lotStep) {
+   double volAfter = volBefore;
+   double threshold = volBefore - lotStep / 2.0;
+   for(int i = 0; i < 5; i++) {
+      if(i > 0) Sleep(100);
+      if(!PositionSelectByTicket(ticket)) return 0.0;
+      volAfter = PositionGetDouble(POSITION_VOLUME);
+      if(volAfter < threshold) {
+         if(i > 0)
+            Print("CT partial fill confirmed after ", i, " retry(ies) ticket=",
+                  ticket, " vol ", DoubleToString(volBefore, 2),
+                  " -> ", DoubleToString(volAfter, 2));
+         return volAfter;
+      }
+   }
+   return volAfter;  // last read; still equal to volBefore -> real failure
+}
+
+// Recent-open cache: maps ticket -> EA timestamp of the OPEN fill
+// confirmation. Used by ReconcileClosedPositions to suppress the
+// authoritative pass on tickets that were just opened, where there's
+// a millisecond-scale window between the broker confirming the fill
+// and MT5's local position table refreshing.
+//
+// Concrete failure mode observed 2026-05-07 13:03 (ticket 8531279417):
+// position_opened logged at 13:03:08.800, deal completed in journal at
+// 13:03:08.808, ReconcileClosedPositions ran at 13:03:08.815 and
+// PositionSelectByTicket returned false → POSTed close(mt5_not_found)
+// 11ms after open. The position was actually still open in MT5; the
+// authoritative pass just raced the cache refresh.
+//
+// Grace window: 10s. Tickets older than 2× grace are pruned to keep
+// the array bounded.
+struct RecentOpen {
+   long     ticket;
+   datetime opened_at;
+};
+RecentOpen g_recent_opens[];
+const int  RECENT_OPEN_GRACE_SECS = 10;
+
+void PruneRecentOpens() {
+   datetime now = TimeCurrent();
+   for(int i = ArraySize(g_recent_opens) - 1; i >= 0; i--) {
+      if((now - g_recent_opens[i].opened_at) >= RECENT_OPEN_GRACE_SECS * 2) {
+         for(int j = i; j < ArraySize(g_recent_opens) - 1; j++) {
+            g_recent_opens[j] = g_recent_opens[j + 1];
+         }
+         ArrayResize(g_recent_opens, ArraySize(g_recent_opens) - 1);
+      }
+   }
+}
+
+void RememberRecentOpen(long ticket) {
+   PruneRecentOpens();
+   int n = ArraySize(g_recent_opens);
+   ArrayResize(g_recent_opens, n + 1);
+   g_recent_opens[n].ticket = ticket;
+   g_recent_opens[n].opened_at = TimeCurrent();
+}
+
+bool IsRecentlyOpened(long ticket) {
+   datetime now = TimeCurrent();
+   for(int i = 0; i < ArraySize(g_recent_opens); i++) {
+      if(g_recent_opens[i].ticket == ticket
+         && (now - g_recent_opens[i].opened_at) < RECENT_OPEN_GRACE_SECS) {
+         return true;
+      }
+   }
+   return false;
+}
+
 void ManagePlans() {
    if(ArraySize(g_plans) == 0) return;
    double minLot = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_MIN);
@@ -1093,13 +1256,13 @@ void ManagePlans() {
             Print("CT plan stage1 partial skipped (lot size) ticket=", p.ticket,
                   " want=", closeLots, " remain=", remaining);
          } else {
-            // Verify-then-advance: CTrade.PositionClosePartial can return
-            // false in pre-OrderSend validation while ResultRetcode is a
-            // stale success code from an earlier call. Trust the volume
-            // diff, not the bool return.
+            // Verify-then-advance with retry: CTrade.PositionClosePartial
+            // can return false on pre-OrderSend validation, AND the local
+            // POSITION_VOLUME read can lag the broker fill by ms. Trust
+            // the volume diff and poll briefly so the cache catches up
+            // before declaring failure. See WaitForPartialFill above.
             bool ctradeOk = trade.PositionClosePartial(p.ticket, closeLots);
-            double volAfter = PositionSelectByTicket(p.ticket)
-                              ? PositionGetDouble(POSITION_VOLUME) : 0.0;
+            double volAfter = WaitForPartialFill(p.ticket, volBefore, lotStep);
             partialOk = (volAfter < volBefore - lotStep / 2.0);
             if(partialOk) {
                Print("CT plan stage1 partial ok ticket=", p.ticket,
@@ -1169,9 +1332,9 @@ void ManagePlans() {
             Print("CT plan stage2 partial skipped (lot size) ticket=", p.ticket,
                   " want=", closeLots, " remain=", remaining);
          } else {
+            // Same race protection as stage 1 — see WaitForPartialFill comment.
             bool ctradeOk = trade.PositionClosePartial(p.ticket, closeLots);
-            double volAfter = PositionSelectByTicket(p.ticket)
-                              ? PositionGetDouble(POSITION_VOLUME) : 0.0;
+            double volAfter = WaitForPartialFill(p.ticket, volBefore, lotStep);
             partialOk = (volAfter < volBefore - lotStep / 2.0);
             if(partialOk) {
                Print("CT plan stage2 partial ok ticket=", p.ticket,
@@ -1446,6 +1609,10 @@ string BuildOpenPayloadFromLastClosed(string lastClosedBody) {
 }
 
 void DoMoveSlBe(long id, string payload) {
+   if(!EnableAiPartialAndBe) {
+      PostResult(id, "rejected", 0, "ai_partial_and_be_disabled");
+      return;
+   }
    long ticket = FindSingletonOpenTicket(Symbol_Override);
    if(ticket <= 0) { PostResult(id, "rejected", 0, "no_open_position"); return; }
    if(!PositionSelectByTicket(ticket)) { PostResult(id, "failed", ticket, "no_position"); return; }
@@ -1546,6 +1713,10 @@ void DoModifyTps(long id, string payload) {
 }
 
 void DoClosePartial(long id, string payload) {
+   if(!EnableAiPartialAndBe) {
+      PostResult(id, "rejected", 0, "ai_partial_and_be_disabled");
+      return;
+   }
    long ticket = FindSingletonOpenTicket(Symbol_Override);
    if(ticket <= 0) { PostResult(id, "rejected", 0, "no_open_position"); return; }
    if(!PositionSelectByTicket(ticket)) { PostResult(id, "failed", ticket, "no_position"); return; }
@@ -1568,15 +1739,15 @@ void DoClosePartial(long id, string payload) {
          "lot_too_small: close=%.2f remain=%.2f", closeLots, remaining));
       return;
    }
-   // Verify-then-advance: CTrade::PositionClosePartial can return false in
-   // pre-OrderSend validation (hedging-mode quirks, transient stops-level
-   // violations) while ResultRetcode() reports a stale success code from
-   // an earlier call. Trust the volume diff, not the bool. Same pattern as
-   // ManagePlans stage 0 (see lines ~832-835).
+   // Verify-then-advance with retry: CTrade::PositionClosePartial can return
+   // false in pre-OrderSend validation while ResultRetcode is a stale
+   // success code from a previous call, AND the local POSITION_VOLUME read
+   // can lag the deal confirmation by milliseconds. Trust the volume diff,
+   // and poll briefly so the cache catches up before declaring failure.
+   // See WaitForPartialFill comment for the 2026-05-07 incident details.
    double volBefore = PositionGetDouble(POSITION_VOLUME);
    trade.PositionClosePartial(ticket, closeLots);
-   double volAfter = PositionSelectByTicket(ticket)
-                     ? PositionGetDouble(POSITION_VOLUME) : 0.0;
+   double volAfter = WaitForPartialFill(ticket, volBefore, lotStep);
    bool partialOk = (volAfter < volBefore - lotStep / 2.0);
    if(partialOk) {
       PostPositionUpdate(ticket, volAfter, 0);
@@ -1762,13 +1933,76 @@ void ReconcileClosedPositions() {
       pos = end;
       long ticket = StringToInteger(StringSubstr(openBody, p, end - p));
       if(ticket <= 0) continue;
+      // Skip tickets we just opened — there's a brief window after the
+      // broker fill where MT5's local position cache hasn't refreshed
+      // and PositionSelectByTicket returns false even though the
+      // position is genuinely open. See RememberRecentOpen comment for
+      // the 2026-05-07 13:03 incident this prevents.
+      if(IsRecentlyOpened(ticket)) continue;
       if(!PositionSelectByTicket(ticket)) {
+         // Query MT5 history for the position's most recent closing
+         // deal and surface its DEAL_REASON to the API so close_reason
+         // distinguishes TP / SL / manual / expert closes instead of
+         // the generic 'mt5_not_found'. Phase-3 fix for the May-7
+         // observation that all 5 closes that day surfaced as
+         // 'mt5_not_found', losing all forensic information.
+         string reason = ResolveCloseReason(ticket);
          string url = ApiBaseUrl + "/positions/" + IntegerToString(ticket) + "/close";
          string resp;
-         HttpPostJson(url, "{\"reason\":\"mt5_not_found\"}", resp);
+         string body = "{\"reason\":\"" + reason + "\"}";
+         HttpPostJson(url, body, resp);
          Print("CT reconcile: ticket=", ticket,
-               " absent from MT5 → POSTed close (mt5_not_found)");
+               " absent from MT5 → POSTed close (", reason, ")");
       }
+   }
+}
+
+// Map MT5's DEAL_REASON enum to a stable string the API/DB can store.
+// Returns 'mt5_close_unknown' when history lookup fails or no closing
+// deal is found for the ticket. Mirrors enum names from MQL5 docs:
+//   DEAL_REASON_CLIENT  = 0  (operator click in terminal)
+//   DEAL_REASON_MOBILE  = 1
+//   DEAL_REASON_WEB     = 2
+//   DEAL_REASON_EXPERT  = 3  (programmatic — could be us or another EA)
+//   DEAL_REASON_SL      = 4  (broker SL hit)
+//   DEAL_REASON_TP      = 5  (broker TP hit)
+//   DEAL_REASON_SO      = 6  (stop-out)
+//   DEAL_REASON_ROLLOVER= 7
+//   DEAL_REASON_VMARGIN = 8
+//   DEAL_REASON_SPLIT   = 9
+string ResolveCloseReason(long ticket) {
+   datetime now = TimeCurrent();
+   datetime since = now - 7 * 24 * 3600;  // 7 days back; closes outside
+                                          // this window are extremely rare
+                                          // and not worth a wider scan.
+   if(!HistorySelect(since, now)) return "mt5_close_unknown";
+   int total = HistoryDealsTotal();
+   long bestReason = -1;
+   datetime bestTime = 0;
+   for(int i = 0; i < total; i++) {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket == 0) continue;
+      if((long)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID) != ticket) continue;
+      if(HistoryDealGetInteger(dealTicket, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+      datetime dt = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+      if(dt > bestTime) {
+         bestTime = dt;
+         bestReason = HistoryDealGetInteger(dealTicket, DEAL_REASON);
+      }
+   }
+   if(bestReason < 0) return "mt5_not_found";  // ticket truly absent
+   switch((int)bestReason) {
+      case 0: return "mt5_manual";        // DEAL_REASON_CLIENT
+      case 1: return "mt5_manual_mobile"; // DEAL_REASON_MOBILE
+      case 2: return "mt5_manual_web";    // DEAL_REASON_WEB
+      case 3: return "mt5_expert";        // DEAL_REASON_EXPERT
+      case 4: return "mt5_sl";            // DEAL_REASON_SL
+      case 5: return "mt5_tp";            // DEAL_REASON_TP
+      case 6: return "mt5_so";            // DEAL_REASON_SO
+      case 7: return "mt5_rollover";      // DEAL_REASON_ROLLOVER
+      case 8: return "mt5_vmargin";       // DEAL_REASON_VMARGIN
+      case 9: return "mt5_split";         // DEAL_REASON_SPLIT
+      default: return StringFormat("mt5_reason_%d", (int)bestReason);
    }
 }
 

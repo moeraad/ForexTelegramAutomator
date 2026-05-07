@@ -162,18 +162,34 @@ NEW OPEN SIGNAL WITH POSITION OPEN — apply this decision tree EXACTLY when a s
     → emit [{"type":"CLOSE_FULL"}, {"type":"OPEN", ...new signal full params}]. The existing position has banked some profit and is currently winning; close it to realize, then reopen at full size on the new ladder.
 
   RULE C — IN-PLACE UPDATE. If signal.side == cur_side AND (partials_taken == 0 OR not in_profit):
+    Read `current_sl` from the OPEN POSITIONS block (sl=… field).
+
+    Compute the RATCHETED SL — never loosen existing protection:
+      BUY:  ratchet_sl = max(current_sl, signal.sl)   (only emit MOVE_SL if it tightens)
+      SELL: ratchet_sl = min(current_sl, signal.sl)
+
     Filter signal.tps to those still ahead of MARKET.mid:
       BUY:  valid = [t for t in signal.tps if t > mid]
       SELL: valid = [t for t in signal.tps if t < mid]
-    If valid is non-empty:
-      → emit [{"type":"MOVE_SL","price":signal.sl}, {"type":"MODIFY_TPS","tps":valid,"reason":"<short>"}]
-    Else (every signal TP is already past current price):
-      → emit [{"type":"MOVE_SL","price":signal.sl}]   (keep current broker TP; signal TPs are stale)
+
+    Build the action list element by element:
+      sl_changed  = (ratchet_sl differs from current_sl by more than $0.05)
+      tps_changed = (valid is non-empty)
+
+      If sl_changed AND tps_changed:
+        → emit [{"type":"MOVE_SL","price":ratchet_sl}, {"type":"MODIFY_TPS","tps":valid,"reason":"<short>"}]
+      Elif sl_changed AND NOT tps_changed:
+        → emit [{"type":"MOVE_SL","price":ratchet_sl}]   (keep current broker TP; signal TPs are stale)
+      Elif tps_changed AND NOT sl_changed:
+        → emit [{"type":"MODIFY_TPS","tps":valid,"reason":"<short>"}]   (signal SL would loosen or matches current; only refresh TPs)
+      Else (signal SL would loosen AND all TPs are stale):
+        → emit [{"type":"ALERT","level":"info","text":"[context] new signal SL would loosen current; all TPs past mid; no action"}], category="context"
 
   Notes:
     - The "in_profit" flag in pnl=… text is authoritative — do NOT recompute from raw bid/ask.
-    - In RULE C the new signal.sl is applied unconditionally even if it's worse than current SL — the operator wants the EA to mirror the channel's latest plan.
-    - NEVER emit MODIFY_TPS without an accompanying MOVE_SL or in any context other than RULE C above.
+    - The SL ratchet is ONE-WAY: tighten only. RULE C must NEVER loosen the protective SL on an existing position. Concrete cost on 2026-05-07 Trade 5: AI emitted MOVE_SL price=4732 when current_sl was 4736 (looser by $4); price subsequently hit 4731.91, costing $414 vs the original SL exit at 4736.
+    - Channel-direct MOVE_SL (e.g., "ستوبك 26" / "ستوبك ثابت 4806" / "أمن دخولك") is NOT a RULE C emit — it's a direct management instruction and follows the channel literally regardless of direction. Only the IMPLICIT SL adjustment from a new structured OPEN signal is ratcheted.
+    - NEVER emit MODIFY_TPS in any context other than RULE C above.
     - The compound [CLOSE_FULL, OPEN] in RULES A and B is executed by the EA in insertion order; by the time OPEN claims, the position is gone.
 
 DECISION RULES:
@@ -240,11 +256,11 @@ Ex14: "طلعنا تأمين دخول مع حجز ارباح ❤️🤗"
 Ex15: same message, STATE: sl_at_be=true, partials_taken=1
   → [], category="context", reasoning "both already applied"
 
-Ex16 (RULE C — in-place update):
+Ex16 (RULE C — in-place update, signal SL tightens):
   Msg: "GOLD ❇️BUY❇️@ 📝 4555-4553 / TP1 🔼 4570 / TP2 🔼 4580 / TP3 🔼 4600 / SL 👀 4545"
-  STATE: open BUY position entry=4548 partials_taken=0 pnl=+5.00/oz (in_profit) mid=4553
+  STATE: open BUY position entry=4548 sl=4540 partials_taken=0 pnl=+5.00/oz (in_profit) mid=4553
   → [{"type":"MOVE_SL","price":4545},{"type":"MODIFY_TPS","tps":[4570,4580,4600],"reason":"new signal SL+TPs, pos same side no partials"}], category="signal"
-  (mid=4553 < 4570 so all three TPs valid; partials_taken=0 → keep position, don't close+reopen)
+  (ratchet_sl = max(4540, 4545) = 4545 → tightens by $5, emit MOVE_SL. mid=4553 < 4570 so all three TPs valid.)
 
 Ex17 (RULE B — profit-lock reset):
   Msg: "GOLD ❇️BUY❇️@ 📝 4555-4553 / TP1 🔼 4570 / TP2 🔼 4580 / TP3 🔼 4600 / SL 👀 4545"
@@ -256,16 +272,28 @@ Ex18 (RULE A — side flip):
   STATE: open BUY position entry=4548 partials_taken=0 pnl=+5.00/oz (in_profit) mid=4553
   → [{"type":"CLOSE_FULL"},{"type":"OPEN","symbol":"XAUUSD","side":"SELL","entry_low":4560,"entry_high":4562,"tps":[4545,4530],"sl":4570,"comment":"side flip BUY→SELL"}], category="signal"
 
-Ex19 (RULE C with stale TPs — SL only):
+Ex19 (RULE C with stale TPs — SL only, signal SL tightens):
   Msg: "GOLD ❇️BUY❇️@ 📝 4555-4553 / TP1 🔼 4570 / TP2 🔼 4580 / SL 👀 4545"
-  STATE: open BUY position entry=4548 partials_taken=0 pnl=+35/oz (in_profit) mid=4583
+  STATE: open BUY position entry=4548 sl=4540 partials_taken=0 pnl=+35/oz (in_profit) mid=4583
   → [{"type":"MOVE_SL","price":4545}], category="signal"
-  (mid=4583 already past TP1=4570 and TP2=4580; no valid TPs to set, keep current broker TP)
+  (ratchet_sl = max(4540, 4545) = 4545 → tightens. mid=4583 already past TP1=4570 and TP2=4580; no valid TPs to set, keep current broker TP.)
 
 Ex20 (market_stale halts the rule):
   Msg: "GOLD ❇️BUY❇️@ 📝 4555-4553 / TP1 🔼 4570 / SL 👀 4545"
   STATE: open BUY position, pnl=unknown (market_stale)
   → [{"type":"ALERT","level":"warning","text":"[partial] new signal arrived with position open but MARKET is stale; cannot decide"}], category="partial_signal"
+
+Ex21 (RULE C — signal SL would LOOSEN current SL; ratchet drops MOVE_SL):
+  Msg: "GOLD ❇️BUY❇️@ 📝 4745-4747 / TP1 🔼 4760 / TP2 🔼 4770 / TP3 🔼 4780 / SL 👀 4732"
+  STATE: open BUY position entry=4745.86 sl=4736 partials_taken=0 pnl=+0.10/oz (in_profit) mid=4745.96
+  → [{"type":"MODIFY_TPS","tps":[4760,4770,4780],"reason":"new signal TPs only; signal SL=4732 looser than current 4736 — ratchet drops MOVE_SL"}], category="signal"
+  (ratchet_sl = max(4736, 4732) = 4736 → unchanged from current_sl, omit MOVE_SL. TPs all ahead of mid → emit MODIFY_TPS only. This is the 2026-05-07 Trade 5 fix: previously the AI emitted MOVE_SL=4732 unconditionally, loosening protection by $4; price then hit 4731.91 for −$1,451 vs the original SL exit at 4736.)
+
+Ex22 (RULE C — signal SL would loosen AND all TPs stale → context-only):
+  Msg: "GOLD ❇️BUY❇️@ 📝 4745-4747 / TP1 🔼 4760 / TP2 🔼 4770 / SL 👀 4732"
+  STATE: open BUY position entry=4745.86 sl=4736 partials_taken=0 pnl=+25/oz (in_profit) mid=4771
+  → [{"type":"ALERT","level":"info","text":"[context] new signal SL would loosen current; all TPs past mid; no action"}], category="context"
+  (ratchet_sl unchanged, no valid TPs ahead of mid=4771 → emit a context ALERT, no broker actions.)
 
 Be precise. Output JSON ONLY."""
 
