@@ -70,6 +70,21 @@ string     g_last_action_type    = "";
 string     g_last_action_status  = "";
 datetime   g_last_action_at      = 0;
 datetime   g_last_price_heartbeat = 0;  // throttle for HeartbeatMarketPrice()
+datetime   g_last_snapshot       = 0;  // throttle for PostMarketSnapshot()
+datetime   g_last_evaluation_fetch = 0; // throttle for FetchLatestEvaluation()
+
+// ---- Cached signal-quality evaluation (read by BuildStats each tick) ----
+// Populated by FetchLatestEvaluation from GET /actions/latest_open_evaluation.
+// 404 from the API is normal (no OPEN yet, or eval not yet attached) and
+// keeps g_eval_available=false so the dashboard shows the empty-state.
+bool       g_eval_available    = false;
+long       g_eval_action_id    = 0;
+int        g_eval_score        = 0;
+string     g_eval_verdict      = "";
+string     g_eval_key_factor   = "";
+string     g_eval_data_quality = "";
+int        g_eval_age_sec      = 0;
+datetime   g_eval_evaluated_at = 0;  // for computing eval_age_sec
 
 // Broker compatibility check result. Populated once in OnInit by
 // RunBrokerChecks (see BrokerCheck.mqh, transitively included via
@@ -168,12 +183,17 @@ void OnTimer() {
    if(!g_kill_switch_cached) {
       PollAndExecute();
       ManagePlans();  // also driven by OnTick; belt-and-suspenders
+      TrailStage2Sls();  // post-TP2 trailing SL on 3-TP plans (Flavour A)
       ReconcileClosedPositions();
       DrainRetryQueue();  // resend any persisted POSTs from a prior outage
    }
    // Heartbeat market price unconditionally (even when halted) — the AI
    // still needs a fresh quote to decode shorthand SL on incoming messages.
    HeartbeatMarketPrice();
+   // Push multi-timeframe OHLC snapshot for the signal-quality evaluator
+   // (src/ai_evaluator.py). Throttled to ~once per minute. Best-effort —
+   // failures degrade evaluator to reduced-context mode but never block.
+   PostMarketSnapshot();
    if(ShowDashboard) {
       DashboardStats s;
       BuildStats(s);
@@ -200,6 +220,147 @@ void HeartbeatMarketPrice() {
    string resp; int status;
    HttpPostJsonWithStatus(ApiBaseUrl + "/market/price", body, resp, status);
    g_last_price_heartbeat = now;
+}
+
+// Push M15/H1/H4 OHLC + ATR(14) to /market/snapshot. Consumed by the
+// signal-quality evaluator (src/ai_evaluator.py) when a new OPEN action
+// is inserted. Without this push the evaluator runs in reduced-context
+// mode and caps scores at 70.
+//
+// Throttle: 60s. ATR indicator handles are created lazily on first call
+// and cached in static state — IndicatorRelease isn't called in OnDeinit
+// because EA reattaches re-create them.
+void PostMarketSnapshot() {
+   datetime now = TimeCurrent();
+   if(now - g_last_snapshot < 60) return;
+
+   static int hAtrM15 = INVALID_HANDLE;
+   static int hAtrH1  = INVALID_HANDLE;
+   static int hAtrH4  = INVALID_HANDLE;
+   if(hAtrM15 == INVALID_HANDLE) hAtrM15 = iATR(Symbol_Override, PERIOD_M15, 14);
+   if(hAtrH1  == INVALID_HANDLE) hAtrH1  = iATR(Symbol_Override, PERIOD_H1,  14);
+   if(hAtrH4  == INVALID_HANDLE) hAtrH4  = iATR(Symbol_Override, PERIOD_H4,  14);
+   if(hAtrM15 == INVALID_HANDLE || hAtrH1 == INVALID_HANDLE || hAtrH4 == INVALID_HANDLE) {
+      Print("PostMarketSnapshot: ATR handle creation failed, last_err=",
+            GetLastError(), " — will retry next cycle");
+      return;
+   }
+
+   // Read most-recent ATR value. shift=0 is the current (forming) bar's
+   // ATR; shift=1 would be the last closed bar. Either is fine for a
+   // volatility sanity check; using the live bar gives the freshest read.
+   double atrM15[]; double atrH1[]; double atrH4[];
+   if(CopyBuffer(hAtrM15, 0, 0, 1, atrM15) <= 0
+      || CopyBuffer(hAtrH1, 0, 0, 1, atrH1) <= 0
+      || CopyBuffer(hAtrH4, 0, 0, 1, atrH4) <= 0) {
+      // Indicator data not yet ready (just-after-attach race). Try again
+      // next minute; the evaluator just runs reduced-context until then.
+      return;
+   }
+
+   // OHLC for the live bar. iOpen/iHigh/iLow/iClose with shift=0 reflect
+   // the current incomplete bar — appropriate for "current snapshot" use.
+   double mO = iOpen(Symbol_Override, PERIOD_M15, 0);
+   double mH = iHigh(Symbol_Override, PERIOD_M15, 0);
+   double mL = iLow(Symbol_Override, PERIOD_M15, 0);
+   double mC = iClose(Symbol_Override, PERIOD_M15, 0);
+   double h1O = iOpen(Symbol_Override, PERIOD_H1, 0);
+   double h1H = iHigh(Symbol_Override, PERIOD_H1, 0);
+   double h1L = iLow(Symbol_Override, PERIOD_H1, 0);
+   double h1C = iClose(Symbol_Override, PERIOD_H1, 0);
+   double h4O = iOpen(Symbol_Override, PERIOD_H4, 0);
+   double h4H = iHigh(Symbol_Override, PERIOD_H4, 0);
+   double h4L = iLow(Symbol_Override, PERIOD_H4, 0);
+   double h4C = iClose(Symbol_Override, PERIOD_H4, 0);
+
+   // All series-data calls return 0.0 until the symbol has streamed bars.
+   // If anything is zero we treat the snapshot as not-ready and skip.
+   if(mO <= 0 || mC <= 0 || h1O <= 0 || h1C <= 0 || h4O <= 0 || h4C <= 0) return;
+
+   string body = StringFormat(
+      "{\"symbol\":\"%s\","
+      "\"m15\":{\"open\":%.2f,\"high\":%.2f,\"low\":%.2f,\"close\":%.2f,\"atr14\":%.4f},"
+      "\"h1\":{\"open\":%.2f,\"high\":%.2f,\"low\":%.2f,\"close\":%.2f,\"atr14\":%.4f},"
+      "\"h4\":{\"open\":%.2f,\"high\":%.2f,\"low\":%.2f,\"close\":%.2f,\"atr14\":%.4f}}",
+      Symbol_Override,
+      mO, mH, mL, mC, atrM15[0],
+      h1O, h1H, h1L, h1C, atrH1[0],
+      h4O, h4H, h4L, h4C, atrH4[0]
+   );
+   string resp; int status;
+   if(HttpPostJsonWithStatus(ApiBaseUrl + "/market/snapshot", body, resp, status)) {
+      g_last_snapshot = now;
+   }
+}
+
+// Fetch the latest OPEN action's signal-quality evaluation from the API
+// and refresh the g_eval_* cache used by BuildStats / the dashboard.
+// Throttled to once per 5s — the score doesn't change between OPEN
+// signals, so polling faster wastes HTTP. 404 is the no-eval-yet case
+// and clears the cache; any other failure leaves the cache untouched
+// so the dashboard keeps showing the last good score.
+void FetchLatestEvaluation() {
+   datetime now = TimeCurrent();
+   if(now - g_last_evaluation_fetch < 5) {
+      // Refresh age each tick from the cached evaluated_at so the "X sec
+      // ago" label updates smoothly even between fetches.
+      if(g_eval_available && g_eval_evaluated_at > 0)
+         g_eval_age_sec = (int)(now - g_eval_evaluated_at);
+      return;
+   }
+   g_last_evaluation_fetch = now;
+
+   string body;
+   if(!HttpGet(ApiBaseUrl + "/actions/latest_open_evaluation", body)) {
+      // Network/API down — leave cache as-is, age will keep ticking.
+      return;
+   }
+   if(StringFind(body, "\"evaluation\"") < 0) {
+      // 404 / no evaluation yet. Clear the cache so the dashboard
+      // shows the empty-state line.
+      g_eval_available = false;
+      g_eval_action_id = 0;
+      g_eval_score = 0;
+      g_eval_verdict = "";
+      g_eval_key_factor = "";
+      g_eval_data_quality = "";
+      g_eval_age_sec = 0;
+      g_eval_evaluated_at = 0;
+      return;
+   }
+
+   long actionId = (long)StringToInteger(JsonField(body, "action_id"));
+   string scoreStr = JsonField(body, "score");
+   string verdict = JsonField(body, "verdict");
+   string keyFactor = JsonField(body, "key_factor");
+   string dataQuality = JsonField(body, "data_quality");
+   string evaluatedAt = JsonField(body, "evaluated_at");
+
+   g_eval_available = true;
+   g_eval_action_id = actionId;
+   g_eval_score = (int)StringToInteger(scoreStr);
+   g_eval_verdict = verdict;
+   g_eval_key_factor = keyFactor;
+   g_eval_data_quality = dataQuality;
+
+   // evaluated_at is ISO-8601 like "2026-05-07T14:30:00.123456+00:00".
+   // MQL5's StringToTime parses "YYYY.MM.DD HH:MM:SS" so reformat first.
+   datetime evalTs = 0;
+   if(StringLen(evaluatedAt) >= 19) {
+      string dt = evaluatedAt;
+      StringReplace(dt, "-", ".");
+      StringReplace(dt, "T", " ");
+      // Drop fractional seconds + timezone suffix.
+      int dotPos = StringFind(dt, ".", 11);  // skip date dots
+      if(dotPos > 0) dt = StringSubstr(dt, 0, dotPos);
+      int plusPos = StringFind(dt, "+");
+      if(plusPos > 0) dt = StringSubstr(dt, 0, plusPos);
+      int zPos = StringFind(dt, "Z");
+      if(zPos > 0) dt = StringSubstr(dt, 0, zPos);
+      evalTs = StringToTime(dt);
+   }
+   g_eval_evaluated_at = evalTs;
+   g_eval_age_sec = (evalTs > 0) ? (int)(now - evalTs) : 0;
 }
 
 // Day rollover in broker-server time: when the date changes, reset the
@@ -284,6 +445,18 @@ void BuildStats(DashboardStats &s) {
    // tick so the dashboard sees it after the first paint. Cheap struct
    // copy (BC_MAX_ISSUES=24 fixed-size array of {int, string, string}).
    s.broker = g_broker_check;
+
+   // Latest signal-quality evaluation (cached in module statics; refreshed
+   // on a 5s throttle by FetchLatestEvaluation). Populated by the Python
+   // orchestrator after each OPEN action (see src/ai_evaluator.py).
+   FetchLatestEvaluation();
+   s.eval_available    = g_eval_available;
+   s.eval_action_id    = g_eval_action_id;
+   s.eval_score        = g_eval_score;
+   s.eval_verdict      = g_eval_verdict;
+   s.eval_key_factor   = g_eval_key_factor;
+   s.eval_data_quality = g_eval_data_quality;
+   s.eval_age_sec      = g_eval_age_sec;
 
    // Today's realized = current balance - balance at start of day. Broker
    // deposits/withdrawals distort this; acceptable trade-off for MVP.
@@ -1032,13 +1205,31 @@ void ManagePlans() {
             }
          }
 
-         // Move SL to entry (Break-Even), keep TP at tp3.
-         if(!trade.PositionModify(p.ticket, p.entry, p.tps[2]))
-            Print("CT plan stage2 SL->BE FAILED ticket=", p.ticket,
+         // At stage 2 transition: SL -> entry (BE) AND broker TP removed.
+         // Removing the TP uncaps upside; TrailStage2Sls() ratchets SL up
+         // as price advances, so the trail catches a reversal whenever it
+         // comes — even past the original TP3. Trade-off vs keeping TP3
+         // as a safety ceiling: gives up the worst-case-EA-dies fallback
+         // exit at TP3 in exchange for unlimited upside on the rare
+         // extended runs gold sometimes posts past the channel's TP3.
+         double curSl = PositionSelectByTicket(p.ticket)
+                        ? PositionGetDouble(POSITION_SL) : 0.0;
+         double curTp = PositionSelectByTicket(p.ticket)
+                        ? PositionGetDouble(POSITION_TP) : 0.0;
+         double pointSize = SymbolInfoDouble(Symbol_Override, SYMBOL_POINT);
+         double tol = (pointSize > 0 ? pointSize : 0.01) * 5.0;
+         bool slNeedsMove = (MathAbs(curSl - p.entry) > tol);
+         bool tpNeedsRemoval = (curTp != 0.0);
+         if(!slNeedsMove && !tpNeedsRemoval) {
+            Print("CT plan stage2 SL/TP already correct ticket=", p.ticket);
+         } else if(!trade.PositionModify(p.ticket, p.entry, 0.0)) {
+            Print("CT plan stage2 SL->BE+removeTp FAILED ticket=", p.ticket,
                   " retcode=", trade.ResultRetcode(),
                   " last_err=", GetLastError());
-         else
-            Print("CT plan stage2 SL->BE ok ticket=", p.ticket);
+         } else {
+            Print("CT plan stage2 SL->BE+removeTp ok ticket=", p.ticket,
+                  " (broker TP removed; trailing SL now active)");
+         }
 
          p.stage = 2;
          p.stage_attempts = 0;
@@ -1047,6 +1238,91 @@ void ManagePlans() {
          double postVol2 = PositionSelectByTicket(p.ticket)
                            ? PositionGetDouble(POSITION_VOLUME) : 0.0;
          PostPositionUpdate(p.ticket, postVol2, p.entry);
+      }
+   }
+}
+
+// Trailing SL for stage-2 (post-TP2) 3-TP plans, Flavour A: broker TP
+// was removed at stage 2 transition (see ManagePlans), so the position
+// has no upper bound. We ratchet SL up (BUY) or down (SELL) so the
+// remaining ~17% rides the trend and exits on a reversal instead of
+// stopping at a fixed level.
+//
+// Trail gap: |tp3 - entry| / 3. On a typical gold setup with entry
+// 4673.71 and TP3 4720, gap = $15.43/oz — the same metric we use
+// elsewhere ("1/3 of the entry-to-final-TP distance").
+//
+// Step threshold: 5 * SYMBOL_POINT. Filters tick-noise micro-updates
+// without missing meaningful trail steps. On gold (point=$0.01) that's
+// $0.05/oz; updating SL on each $0.05 advance keeps broker traffic
+// reasonable (~10 modifies per dollar of trend, not 100).
+//
+// Stops level: respect SYMBOL_TRADE_STOPS_LEVEL — if the broker's
+// minimum SL distance is greater than the trail-gap-derived SL would
+// allow, clamp to broker minimum so the modify isn't rejected.
+//
+// Direction: SL only ratchets toward the favourable side (up for BUY,
+// down for SELL). Never loosens.
+void TrailStage2Sls() {
+   if(ArraySize(g_plans) == 0) return;
+
+   double pointSize = SymbolInfoDouble(Symbol_Override, SYMBOL_POINT);
+   if(pointSize <= 0) pointSize = 0.01;
+   double stepThreshold = pointSize * 5.0;
+   long stopsLevel = SymbolInfoInteger(Symbol_Override, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDist = (double)stopsLevel * pointSize;
+   int digits = (int)SymbolInfoInteger(Symbol_Override, SYMBOL_DIGITS);
+
+   for(int i = 0; i < ArraySize(g_plans); i++) {
+      TradePlan p = g_plans[i];
+      if(p.stage != 2) continue;
+      if(p.tpCount != 3) continue;
+      if(!PositionSelectByTicket(p.ticket)) continue;
+
+      double trailGap = MathAbs(p.tps[2] - p.entry) / 3.0;
+      if(trailGap <= 0.0) continue;
+
+      double bid = SymbolInfoDouble(Symbol_Override, SYMBOL_BID);
+      double ask = SymbolInfoDouble(Symbol_Override, SYMBOL_ASK);
+      if(bid <= 0.0 || ask <= 0.0) continue;
+
+      double curSl = PositionGetDouble(POSITION_SL);
+      double newSl = 0.0;
+
+      if(p.isBuy) {
+         double exitPrice = bid;  // BUY closes at bid
+         double slFloor = exitPrice - trailGap;
+         // Stops-level clamp: SL must be at least minDist below current price.
+         if(exitPrice - slFloor < minDist) slFloor = exitPrice - minDist;
+         // Ratchet up only.
+         if(slFloor <= curSl + stepThreshold) continue;
+         newSl = NormalizeDouble(slFloor, digits);
+      } else {
+         double exitPrice = ask;  // SELL closes at ask
+         double slCeil = exitPrice + trailGap;
+         if(slCeil - exitPrice < minDist) slCeil = exitPrice + minDist;
+         // Ratchet down only.
+         if(slCeil >= curSl - stepThreshold) continue;
+         newSl = NormalizeDouble(slCeil, digits);
+      }
+
+      // TP stays at 0 (removed at stage 2 transition). Pass 0.0 to keep
+      // it that way. Some brokers reject identical TP=0 modifies; the
+      // trade.PositionModify wrapper handles that uniformly.
+      if(trade.PositionModify(p.ticket, newSl, 0.0)) {
+         PostPositionUpdate(p.ticket, 0, newSl);
+         Print("CT plan stage2 trail SL ok ticket=", p.ticket,
+               " ", DoubleToString(curSl, digits),
+               " -> ", DoubleToString(newSl, digits),
+               " (gap=", DoubleToString(trailGap, digits), ")");
+      } else {
+         // Don't spam — only log when retcode changes from prior tick
+         // would be ideal, but for now log every failure so issues are
+         // visible in the journal.
+         Print("CT plan stage2 trail SL FAILED ticket=", p.ticket,
+               " want=", DoubleToString(newSl, digits),
+               " retcode=", trade.ResultRetcode(),
+               " last_err=", GetLastError());
       }
    }
 }
@@ -1176,7 +1452,25 @@ void DoMoveSlBe(long id, string payload) {
    double entry = PositionGetDouble(POSITION_PRICE_OPEN);
    double curTp = PositionGetDouble(POSITION_TP);
    if(trade.PositionModify(ticket, entry, curTp)) {
-      RemovePlanByTicket(ticket);  // operator override
+      // For 3-TP plans still in stage 0: keep the plan armed and advance
+      // stage 0 -> 1 instead of dropping it. This lets ManagePlans fire
+      // the natural stage-1 partial close at TP2 even after the AI's
+      // half-and-BE override, producing a clean three-stage exit
+      // (50% at AI signal, ~33% at TP2, ~17% at TP3 or BE). For 2-TP
+      // plans, plans already past stage 0, and 1-TP signals (which
+      // never had a plan registered), fall back to the original
+      // operator-override behaviour and drop the plan entirely.
+      int planIdx = FindPlanIdx(ticket);
+      if(planIdx >= 0
+         && g_plans[planIdx].tpCount == 3
+         && g_plans[planIdx].stage == 0) {
+         g_plans[planIdx].stage = 1;
+         GlobalVariableSet(PlanKey(ticket, "stage"), 1.0);
+         Print("CT plan stage advanced 0->1 on AI MOVE_SL_BE ticket=", ticket,
+               " — TP2 partial close still armed");
+      } else {
+         RemovePlanByTicket(ticket);
+      }
       PostPositionUpdate(ticket, 0, entry);
       PostResult(id, "executed", ticket, "");
    } else {
@@ -1420,30 +1714,38 @@ void DoTightenSl(long id, string payload) {
 }
 
 void ReconcileClosedPositions() {
-   // Runs every OnTimer tick (PollIntervalSec, default 1s). Two passes:
-   //  1) Scan recent MT5 history (48h) for closing deals on our magic and
-   //     POST close. 48h covers overnight closes + typical EA downtime.
-   //  2) Ask the API which tickets it still thinks are open; for any the
-   //     EA can't select as a live position, POST close(mt5_not_found).
-   datetime now = TimeCurrent();
-   datetime since = now - 48 * 3600;
-   HistorySelect(since, now);
-   int total = HistoryDealsTotal();
-   for(int i = 0; i < total; i++) {
-      ulong dealTicket = HistoryDealGetTicket(i);
-      if(dealTicket == 0) continue;
-      if(HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != 919191) continue;
-      if(HistoryDealGetInteger(dealTicket, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
-      ulong posId = HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
-      string url = ApiBaseUrl + "/positions/" + IntegerToString(posId) + "/close";
-      string resp;
-      HttpPostJson(url, "{\"reason\":\"mt5_close\"}", resp);
-   }
-
+   // Runs every OnTimer tick (PollIntervalSec, default 1s).
+   //
+   // Authoritative pass: ask the API which tickets it still thinks are
+   // open, then for any ticket MT5 cannot select as a live position,
+   // POST /positions/{t}/close with reason=mt5_not_found. This single
+   // pass catches every close case:
+   //   - closes inside any time window
+   //   - closes outside the previous 48h history window
+   //   - manual closes the EA missed during downtime
+   //   - anything stuck from past bugs
+   //
+   // The previous implementation also had a 48h history-deal scan that
+   // POSTed close(mt5_close) for every DEAL_ENTRY_OUT it found. That
+   // path was buggy: in hedging mode partial closes ALSO carry
+   // DEAL_ENTRY=DEAL_ENTRY_OUT, so the scan treated each partial as a
+   // full close and prematurely flipped the DB row to status='closed'
+   // while the position was still riding open in MT5.
+   //
+   // Concrete impact observed on 2026-05-06: tickets 8506648007 (08:48:55)
+   // and 8511718622 (12:24:50) were marked closed by the API immediately
+   // after their partial fills, causing the listener's state_summary to
+   // render "no open position" for the rest of those positions' lifetime.
+   // New OPEN signals arriving in that window were inserted by the
+   // orchestrator (Python validator passed because DB lied) then rejected
+   // by the EA's CountOurOpenPositions() guard — bypassing the entire
+   // MOVE_SL+MODIFY_TPS decision tree. The history scan was strictly
+   // redundant with the authoritative pass below (every case it caught
+   // is also caught here), so it has been removed.
+   //
    // --- Authoritative pass: ask the API which tickets it still thinks are
    // open. Any ticket MT5 can't select as an open position gets closed with
-   // mt5_not_found. Catches positions that closed outside the 48h window,
-   // manual closes the EA missed, and anything stuck from past bugs. ---
+   // mt5_not_found. ---
    string openBody;
    if(!HttpGet(ApiBaseUrl + "/positions?status=open&limit=500", openBody)) return;
    int pos = 0;

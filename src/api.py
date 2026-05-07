@@ -54,6 +54,28 @@ class MarketPriceBody(BaseModel):
     ask: float
 
 
+class TimeframeOhlcBody(BaseModel):
+    """OHLC + ATR for one timeframe in the market snapshot."""
+    open: float
+    high: float
+    low: float
+    close: float
+    atr14: float
+
+
+class MarketSnapshotBody(BaseModel):
+    """Multi-timeframe OHLC snapshot pushed by the EA roughly every minute.
+    Consumed by the signal-quality evaluator (see src/ai_evaluator.py) to
+    judge whether the channel's signal aligns with current price action,
+    whether the SL distance is sane vs current volatility, and whether the
+    entry zone is near recent swing levels.
+    """
+    symbol: str = "XAUUSD"
+    m15: TimeframeOhlcBody
+    h1: TimeframeOhlcBody
+    h4: TimeframeOhlcBody
+
+
 class AlertBody(BaseModel):
     """Operator-visible alert posted by the EA when something needs human
     attention (e.g. a staged partial-close gave up after PartialMaxRetries).
@@ -320,18 +342,57 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
     def close_position(ticket: int, body: CloseBody):
         """Idempotent: re-POSTing close for an already-closed row is a no-op.
 
-        This matters because the EA's ReconcileClosedPositions scans the
-        last 48h of MT5 history every OnTimer tick and POSTs close for
-        every closing deal it finds — including ones already in our DB
-        as 'closed'. Without the status='open' guard below, every tick
-        re-stamped closed_at, which the position_close_notifier then
+        Historical context: the EA's ReconcileClosedPositions used to scan
+        48h of MT5 history every OnTimer tick and POST close for every
+        DEAL_ENTRY_OUT it found, including ones already in our DB as
+        'closed'. Without the status='open' guard below, every tick
+        re-stamped closed_at — which the position_close_notifier then
         read as a "new" close and DM'd indefinitely.
+
+        Defense-in-depth (Phase 3): that same history-deal scan also
+        mistakenly POSTed close for partial-close deals (in hedging mode
+        every partial is also DEAL_ENTRY_OUT). The scan has been removed
+        in the EA, but as a backstop we refuse any reason='mt5_close'
+        that arrives while the position is in mid-partial state
+        (partial_close_count > 0 AND volume < original_volume). The
+        legitimate full-close path goes through the EA's authoritative
+        pass with reason='mt5_not_found', which is unambiguous.
+        AI-driven and operator-driven closes use their own explicit
+        reasons (ai_close_full, etc.) and pass through.
         """
         row = conn.execute(
-            "SELECT 1 FROM positions WHERE mt5_ticket=?", (ticket,)
+            "SELECT status, volume, original_volume, partial_close_count "
+            "FROM positions WHERE mt5_ticket=?",
+            (ticket,),
         ).fetchone()
         if row is None:
             raise HTTPException(404)
+
+        # Backstop against the false-close failure mode (see docstring).
+        # Only fires for reason='mt5_close' on an open, mid-partial position.
+        if (
+            body.reason == "mt5_close"
+            and row["status"] == "open"
+            and (row["partial_close_count"] or 0) > 0
+            and row["original_volume"] is not None
+            and row["volume"] is not None
+            and row["volume"] < row["original_volume"]
+        ):
+            log.warning(
+                "/close skipped: ticket=%s reason=mt5_close in partial state "
+                "(vol=%s of %s, partial_close_count=%s) — likely stale "
+                "DEAL_ENTRY_OUT scan",
+                ticket, row["volume"], row["original_volume"],
+                row["partial_close_count"],
+            )
+            trades.info(
+                "position_close_skipped ticket=%s reason=mt5_close_in_partial_state "
+                "vol=%s orig=%s partials=%s",
+                ticket, row["volume"], row["original_volume"],
+                row["partial_close_count"],
+            )
+            return {"ok": True, "updated": 0, "skipped": "partial_state_mt5_close"}
+
         cur = conn.execute(
             "UPDATE positions SET status='closed', closed_at=?, close_reason=? "
             "WHERE mt5_ticket=? AND status='open'",
@@ -429,6 +490,39 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             "signal": signal,
         }
 
+    @app.get("/actions/latest_open_evaluation")
+    def latest_open_evaluation():
+        """Return the most recent OPEN action's signal-quality evaluation
+        (set by src/ai_evaluator.py inside the action's payload_json
+        under the 'evaluation' key). Used by the EA dashboard to render
+        the SIGNAL QUALITY widget.
+
+        Shape of returned evaluation field is whatever the evaluator
+        wrote (typically `{score:int, verdict:str, key_factor:str,
+        summary:str, factors:dict, data_quality:str}`). 404 when no
+        OPEN action exists or none has been evaluated yet.
+        """
+        row = conn.execute(
+            "SELECT id, source_msg_id, payload_json, created_at "
+            "FROM actions WHERE action_type='OPEN' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "no OPEN action yet")
+        try:
+            payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+        except (TypeError, ValueError):
+            payload = {}
+        evaluation = payload.get("evaluation")
+        if evaluation is None:
+            raise HTTPException(404, "latest OPEN has no evaluation")
+        return {
+            "action_id": row["id"],
+            "source_msg_id": row["source_msg_id"],
+            "created_at": row["created_at"],
+            "evaluation": evaluation,
+        }
+
     @app.post("/alerts")
     def post_alert(body: AlertBody):
         """EA escape hatch for events that need operator attention but
@@ -444,6 +538,43 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
         )
         trades.info("alert_posted id=%s level=%s", cur.lastrowid, body.level)
         return {"ok": True, "id": cur.lastrowid}
+
+    @app.post("/market/snapshot")
+    def post_market_snapshot(body: MarketSnapshotBody):
+        """Multi-timeframe OHLC + ATR snapshot pushed by the EA every minute.
+        Consumed by the signal-quality evaluator (src/ai_evaluator.py) which
+        runs async after the orchestrator emits an OPEN action. Stored as
+        JSON in the existing settings table to avoid a schema change.
+
+        Stale (>120s) snapshots should be ignored by the consumer; the
+        evaluator falls back to a reduced-context score with an explicit
+        "data_quality: stale" flag rather than blocking on missing data.
+        """
+        if body.symbol.upper() not in config.SUPPORTED_SYMBOLS:
+            raise HTTPException(400, f"unsupported symbol: {body.symbol}")
+        sym = body.symbol.upper()
+        now = datetime.now(timezone.utc).isoformat()
+        snapshot_json = json.dumps({
+            "m15": body.m15.model_dump(),
+            "h1": body.h1.model_dump(),
+            "h4": body.h4.model_dump(),
+        })
+        conn.execute("BEGIN")
+        try:
+            for key, val in (
+                (f"market_snapshot_{sym}", snapshot_json),
+                (f"market_snapshot_{sym}_at", now),
+            ):
+                conn.execute(
+                    "INSERT INTO settings(key, value) VALUES(?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, val),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        return {"ok": True, "recorded_at": now}
 
     @app.post("/market/price")
     def post_market_price(body: MarketPriceBody):

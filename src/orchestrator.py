@@ -1,6 +1,7 @@
 import json
 import logging
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from src import signal_memory
@@ -8,6 +9,7 @@ from src.ai import AIClient
 from src.ai_logger import log_call
 from src.ai_triage import TriageClient
 from src.config import (
+    DB_PATH,
     FINGERPRINT_BAND_PRICE,
     FINGERPRINT_WINDOW_HOURS,
     SIGNAL_MEMORY_ENABLED,
@@ -265,6 +267,13 @@ def process_message(
         )
         if isinstance(action, OpenAction):
             open_persisted = True
+            # Async signal-quality evaluation. Doesn't block this function;
+            # the action is already 'pending' and will be promoted on the
+            # bot's next sweep regardless of the evaluator outcome. The
+            # worker writes its result back into actions.payload_json under
+            # the 'evaluation' key, which the EA dashboard reads via
+            # GET /actions/latest_open_evaluation. See src/ai_evaluator.py.
+            _kick_evaluator_for_open(cur.lastrowid, _payload_for(action))
 
     if SIGNAL_MEMORY_ENABLED and open_persisted:
         signal_memory.clear_on_open(conn, chat_id)
@@ -273,3 +282,130 @@ def process_message(
         # actions filtered, etc.) — drop the raw row per project policy.
         _cleanup_message_if_orphan(conn, msg_id)
     return inserted
+
+
+# ---- Async signal-quality evaluator hook --------------------------------
+#
+# Fire-and-forget thread that runs after every OPEN action insert. The
+# evaluator (src/ai_evaluator.py) calls the LLM with the signal payload
+# plus current market context (price, OHLC snapshot, channel history) and
+# writes a 0-100 conviction score into actions.payload_json under the
+# 'evaluation' key. The EA dashboard reads the latest one via
+# GET /actions/latest_open_evaluation.
+#
+# Tests (and any caller passing an explicit `auto_execute_delay_sec`)
+# don't kick the evaluator — the existing in-memory test DB is fine but
+# spawning a thread that opens a separate connection to a tmp_path
+# ephemeral DB during pytest creates flakiness. The
+# COPYTRADES_DISABLE_EVALUATOR env var (or the absence of a real
+# DB_PATH file) disables the kick.
+
+def _kick_evaluator_for_open(action_id: int, signal_dict: dict) -> None:
+    """Spawn a daemon thread that runs evaluate_signal and writes the
+    result back into actions.payload_json. Returns immediately. Failures
+    in the worker are caught and logged; they never bubble up to the
+    orchestrator's caller (the listener) and never affect the trade flow.
+    """
+    import os
+    if os.environ.get("COPYTRADES_DISABLE_EVALUATOR") == "1":
+        return
+    db_path = DB_PATH
+    if not db_path or not Path(db_path).exists():
+        # Fresh-install path or test path with no DB — skip silently.
+        return
+    t = threading.Thread(
+        target=_evaluator_worker,
+        args=(action_id, signal_dict, db_path),
+        name=f"evaluator-action-{action_id}",
+        daemon=True,
+    )
+    t.start()
+
+
+def _evaluator_worker(action_id: int, signal_dict: dict, db_path: str) -> None:
+    """Body of the evaluator thread. Opens its own SQLite connection,
+    runs the LLM evaluation, and merges the result into the action's
+    payload_json. All exceptions are caught and logged; this thread MUST
+    NOT raise into the daemon-thread default handler.
+    """
+    try:
+        from src.ai_evaluator import evaluate_signal
+        from src.db import connect
+    except Exception:
+        log.exception("evaluator worker: import failed; skipping action_id=%s", action_id)
+        return
+    conn = None
+    try:
+        conn = connect(db_path)
+        ai_client = _build_evaluator_ai_client()
+        if ai_client is None:
+            log.warning("evaluator worker: no AI client available; skipping action_id=%s", action_id)
+            return
+        evaluation = evaluate_signal(signal_dict, conn, ai_client)
+        # Merge evaluation into the action's existing payload_json. Re-read
+        # in case another writer touched it (rare but defensive).
+        row = conn.execute(
+            "SELECT payload_json FROM actions WHERE id=?", (action_id,)
+        ).fetchone()
+        if row is None:
+            return
+        try:
+            payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+        except (TypeError, ValueError):
+            payload = {}
+        payload["evaluation"] = evaluation
+        conn.execute(
+            "UPDATE actions SET payload_json=? WHERE id=?",
+            (json.dumps(payload), action_id),
+        )
+        log.info(
+            "evaluator: action_id=%s score=%s verdict=%s data_quality=%s",
+            action_id, evaluation.get("score"), evaluation.get("verdict"),
+            evaluation.get("data_quality"),
+        )
+    except Exception:
+        log.exception("evaluator worker: failed for action_id=%s", action_id)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _build_evaluator_ai_client():
+    """Construct a minimal `chat(system, user) -> str` adapter on top of
+    the project's existing LLMProvider abstraction. Lives here (not in
+    ai_evaluator.py) so the evaluator module stays independent of the
+    interpreter's provider-construction machinery and can be tested with
+    a plain MagicMock.
+    """
+    try:
+        from src.llm_provider import build_interpreter_provider, reasoning_level
+        from src import config as _cfg
+    except Exception:
+        log.exception("evaluator: provider import failed")
+        return None
+
+    class _ChatAdapter:
+        def __init__(self) -> None:
+            self._provider = build_interpreter_provider(model="")
+            self._level = reasoning_level(
+                _cfg.AI_THINKING_ENABLED, _cfg.AI_THINKING_BUDGET_TOKENS
+            )
+
+        def chat(self, system_prompt: str, user_text: str) -> str:
+            result = self._provider.interpret(
+                system_prompt=system_prompt,
+                cached_prefix="",
+                volatile_suffix=user_text,
+                max_output_tokens=2048,
+                reasoning_level=self._level,
+            )
+            return result.raw_text
+
+    try:
+        return _ChatAdapter()
+    except Exception:
+        log.exception("evaluator: ChatAdapter init failed")
+        return None

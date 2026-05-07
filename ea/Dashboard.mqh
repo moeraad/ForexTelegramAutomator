@@ -81,6 +81,17 @@ struct DashboardStats {
 
    // Broker compatibility check result (populated once at OnInit).
    BrokerCheckResult broker;
+
+   // Signal-quality evaluation for the latest OPEN action (populated by
+   // BuildStats from GET /actions/latest_open_evaluation). When
+   // eval_available is false, the widget shows a "no signal yet" message.
+   bool     eval_available;
+   long     eval_action_id;
+   int      eval_score;             // 0-100
+   string   eval_verdict;           // strong | moderate | weak | avoid | unavailable
+   string   eval_key_factor;        // 1-line dominant reason
+   string   eval_data_quality;      // full | reduced
+   int      eval_age_sec;           // seconds since evaluation produced
 };
 
 class CDashboard {
@@ -103,6 +114,7 @@ private:
    void     DrawBroker(const DashboardStats &s);
    void     DrawNow(const DashboardStats &s);
    void     DrawOpenTrades(const DashboardStats &s);
+   void     DrawSignalQuality(const DashboardStats &s);
    void     DrawToday(const DashboardStats &s);
    void     DrawSection(string title);
    void     DrawRow(string label, string value, uint value_color);
@@ -169,6 +181,8 @@ void CDashboard::Update(const DashboardStats &s) {
    DrawNow(s);
    DrawDivider();
    DrawOpenTrades(s);
+   DrawDivider();
+   DrawSignalQuality(s);
    DrawDivider();
    DrawToday(s);
 
@@ -347,6 +361,68 @@ void CDashboard::DrawOpenTrades(const DashboardStats &s) {
    }
 }
 
+void CDashboard::DrawSignalQuality(const DashboardStats &s) {
+   // Latest OPEN action's AI-driven conviction score. Fetched per-tick
+   // from GET /actions/latest_open_evaluation. Color band:
+   //   80-100 strong   (green)
+   //   60-79  moderate (amber)
+   //   40-59  weak     (orange)
+   //    0-39  avoid    (red)
+   // 'unavailable' (evaluator failed) shows muted with the reason.
+   DrawSection("SIGNAL QUALITY");
+   if(!s.eval_available) {
+      m_canvas.TextOut(12, m_cursor_y, "no OPEN signal evaluated yet",
+                       DSH_MUTED, TA_LEFT | TA_TOP);
+      m_cursor_y += 16;
+      return;
+   }
+   uint scoreColor;
+   if(s.eval_verdict == "strong")        scoreColor = DSH_OK;
+   else if(s.eval_verdict == "moderate") scoreColor = DSH_WARN;
+   else if(s.eval_verdict == "weak")     scoreColor = 0xFFD27922;  // muted orange
+   else if(s.eval_verdict == "avoid")    scoreColor = DSH_DANGER;
+   else                                  scoreColor = DSH_MUTED;   // unavailable
+
+   // Header line: action id + age + score pill
+   string head = StringFormat("Latest #%I64d  %s ago",
+      s.eval_action_id, FmtDuration(s.eval_age_sec));
+   m_canvas.TextOut(12, m_cursor_y, head, DSH_MUTED, TA_LEFT | TA_TOP);
+   string scoreText = IntegerToString(s.eval_score) + " / 100";
+   m_canvas.TextOut(m_width - 12, m_cursor_y, scoreText, scoreColor,
+                    TA_RIGHT | TA_TOP);
+   m_cursor_y += 16;
+
+   // 10-segment ascii-bar gauge for at-a-glance reading.
+   int filled = (int)((s.eval_score + 5) / 10);   // round to nearest tenth
+   if(filled < 0) filled = 0;
+   if(filled > 10) filled = 10;
+   string bar = "";
+   for(int i = 0; i < 10; i++) bar += (i < filled) ? "▰" : "▱";
+   m_canvas.TextOut(12, m_cursor_y, bar, scoreColor, TA_LEFT | TA_TOP);
+   string verdict_up = s.eval_verdict;
+   StringToUpper(verdict_up);
+   m_canvas.TextOut(m_width - 12, m_cursor_y, verdict_up, scoreColor,
+                    TA_RIGHT | TA_TOP);
+   m_cursor_y += 18;
+
+   // Key factor (1 line, muted; the operator can read full reasoning
+   // in the action's payload via the bot or DB if they need depth).
+   if(StringLen(s.eval_key_factor) > 0) {
+      string kf = s.eval_key_factor;
+      // Soft-truncate at ~50 chars so it fits the 380px panel width.
+      if(StringLen(kf) > 50) kf = StringSubstr(kf, 0, 47) + "...";
+      m_canvas.TextOut(12, m_cursor_y, kf, DSH_TEXT, TA_LEFT | TA_TOP);
+      m_cursor_y += 16;
+   }
+
+   if(s.eval_data_quality == "reduced") {
+      m_canvas.TextOut(12, m_cursor_y,
+                       "(reduced context — score capped at 70)",
+                       DSH_MUTED, TA_LEFT | TA_TOP);
+      m_cursor_y += 16;
+   }
+}
+
 void CDashboard::DrawToday(const DashboardStats &s) {
    DrawSection("TODAY");
    DrawRow("Signals",
@@ -425,6 +501,12 @@ ulong CDashboard::HashStats(const DashboardStats &s) {
    h = (h ^ (ulong)s.broker.count) * 1099511628211UL;
    h = (h ^ (ulong)s.broker.fails) * 1099511628211UL;
    h = (h ^ (ulong)s.broker.checks_run) * 1099511628211UL;
+   h = (h ^ (ulong)(s.eval_available ? 1 : 0)) * 1099511628211UL;
+   h = (h ^ (ulong)s.eval_action_id) * 1099511628211UL;
+   h = (h ^ (ulong)s.eval_score) * 1099511628211UL;
+   // Repaint at most once per minute on age changes (otherwise the
+   // duration string flips every second on a stale eval).
+   h = (h ^ (ulong)(s.eval_age_sec / 60)) * 1099511628211UL;
    int shown = s.open_trades_count > DSH_MAX_TRADES ? DSH_MAX_TRADES : s.open_trades_count;
    for(int i = 0; i < shown; i++) {
       h = (h ^ (ulong)s.open_trades[i].ticket) * 1099511628211UL;

@@ -437,6 +437,102 @@ def test_post_result_close_marks_position_closed(tmp_path):
     assert pos["close_reason"] == "tp"
 
 
+# ---- Phase-3 backstop: refuse mt5_close in partial state -----------------
+
+
+def _setup_partial_position(tmp_path):
+    """Set up a position that has been partially closed: original_volume=1.18,
+    volume=0.60 (after a partial), partial_close_count=1, status=open. Mirrors
+    the failure mode observed on 2026-05-06 ticket 8506648007."""
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', '{}', 'executed')"
+    )
+    conn.execute(
+        "INSERT INTO positions(action_id, mt5_ticket, symbol, side, "
+        "volume, original_volume, partial_close_count, "
+        "entry_price, sl, tp, status) VALUES(?, 777, 'XAUUSD', 'BUY', "
+        "0.60, 1.18, 1, 4673.71, 4673.71, 4720, 'open')",
+        (cur.lastrowid,),
+    )
+    return conn
+
+
+def test_close_skipped_when_mt5_close_in_partial_state(tmp_path):
+    """The buggy EA history scan POSTed mt5_close on every DEAL_ENTRY_OUT --
+    including partial closes -- and prematurely flipped the DB row. The
+    backstop refuses mt5_close while the position is mid-partial."""
+    conn = _setup_partial_position(tmp_path)
+    client = TestClient(build_app(conn))
+
+    r = client.post("/positions/777/close", json={"reason": "mt5_close"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["updated"] == 0
+    assert body.get("skipped") == "partial_state_mt5_close"
+
+    pos = conn.execute("SELECT * FROM positions WHERE mt5_ticket=777").fetchone()
+    assert pos["status"] == "open"
+    assert pos["closed_at"] is None
+
+
+def test_close_passes_through_mt5_not_found_in_partial_state(tmp_path):
+    """The authoritative pass POSTs mt5_not_found after verifying the ticket
+    is gone from MT5. That's unambiguous -- pass through even if the row was
+    in partial state."""
+    conn = _setup_partial_position(tmp_path)
+    client = TestClient(build_app(conn))
+
+    r = client.post("/positions/777/close", json={"reason": "mt5_not_found"})
+    assert r.status_code == 200
+    assert r.json()["updated"] == 1
+
+    pos = conn.execute("SELECT * FROM positions WHERE mt5_ticket=777").fetchone()
+    assert pos["status"] == "closed"
+    assert pos["close_reason"] == "mt5_not_found"
+
+
+def test_close_passes_through_ai_close_full_in_partial_state(tmp_path):
+    """AI-driven CLOSE_FULL on a partially-closed position is the operator's
+    explicit intent -- pass through."""
+    conn = _setup_partial_position(tmp_path)
+    client = TestClient(build_app(conn))
+
+    r = client.post("/positions/777/close", json={"reason": "ai_close_full"})
+    assert r.status_code == 200
+    assert r.json()["updated"] == 1
+
+    pos = conn.execute("SELECT * FROM positions WHERE mt5_ticket=777").fetchone()
+    assert pos["status"] == "closed"
+
+
+def test_close_passes_through_mt5_close_when_no_partials_taken(tmp_path):
+    """A position with partial_close_count=0 has volume == original_volume,
+    so the suspicious-state guard does not trip. Legacy mt5_close paths on
+    untouched positions still work."""
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', '{}', 'executed')"
+    )
+    conn.execute(
+        "INSERT INTO positions(action_id, mt5_ticket, symbol, side, "
+        "volume, original_volume, partial_close_count, "
+        "entry_price, sl, tp, status) VALUES(?, 888, 'XAUUSD', 'BUY', "
+        "1.00, 1.00, 0, 4673.71, 4660, 4720, 'open')",
+        (cur.lastrowid,),
+    )
+    client = TestClient(build_app(conn))
+
+    r = client.post("/positions/888/close", json={"reason": "mt5_close"})
+    assert r.status_code == 200
+    assert r.json()["updated"] == 1
+
+    pos = conn.execute("SELECT * FROM positions WHERE mt5_ticket=888").fetchone()
+    assert pos["status"] == "closed"
+
+
 # ---- auth_gate middleware (#10) -----------------------------------------
 # When config.EA_SHARED_TOKEN is blank (the default in tests since the
 # tests/conftest.py setup doesn't set it), the middleware is a no-op and
