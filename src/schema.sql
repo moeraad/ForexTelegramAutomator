@@ -60,6 +60,14 @@ CREATE TABLE IF NOT EXISTS positions (
   entry_price          REAL,
   sl                   REAL,
   tp                   REAL,
+  -- exit_price / realized_pnl: populated by the EA at close (or via
+  -- /positions/{ticket}/update for partial-close deltas) so the
+  -- score-vs-outcome calibration script can compute realized R-multiples
+  -- per evaluator score band. Both nullable; NULL == not yet known
+  -- (pre-migration trades stay NULL forever, which is acceptable —
+  -- calibration looks forward).
+  exit_price           REAL,
+  realized_pnl         REAL,
   status               TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
   opened_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
   closed_at            DATETIME,

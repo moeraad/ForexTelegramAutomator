@@ -666,3 +666,147 @@ def test_position_by_ticket_404_when_closed(tmp_path):
     client = TestClient(build_app(conn))
     r = client.get("/positions/by_ticket/8888")
     assert r.status_code == 404
+
+
+def test_events_recent_returns_actions_newest_first(tmp_path):
+    """LogPanel feed: GET /events/recent returns the last N actions
+    newest-first with shape {id,type,status,summary,ea_response,created_at}.
+    `summary` comes from telegram_format._payload_summary so the panel and
+    bot DMs stay in sync wording-wise.
+    """
+    conn = _setup(tmp_path)
+    conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'executed')",
+        (json.dumps({"symbol": "XAUUSD", "side": "BUY",
+                     "entry_low": 4710, "entry_high": 4712,
+                     "tps": [4730, 4750, 4760], "sl": 4704}),),
+    )
+    conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status, ea_response) "
+        "VALUES('CLOSE_PARTIAL', ?, 'executed', 'noop_partial_and_be_disabled')",
+        (json.dumps({"fraction": 0.5}),),
+    )
+    conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('ALERT', ?, 'pending')",
+        (json.dumps({"level": "warning", "text": "stage1 giveup"}),),
+    )
+    client = TestClient(build_app(conn))
+    r = client.get("/events/recent?limit=10")
+    assert r.status_code == 200
+    body = r.json()
+    events = body["events"]
+    assert len(events) == 3
+    # Newest-first: ALERT (id=3) then CLOSE_PARTIAL (id=2) then OPEN (id=1).
+    assert [e["id"] for e in events] == [3, 2, 1]
+    assert events[0]["type"] == "ALERT"
+    assert "stage1 giveup" in events[0]["summary"]
+    assert events[1]["type"] == "CLOSE_PARTIAL"
+    assert events[1]["status"] == "executed"
+    assert events[1]["ea_response"] == "noop_partial_and_be_disabled"
+    assert events[2]["type"] == "OPEN"
+    assert "BUY" in events[2]["summary"]
+
+
+def test_events_recent_clamps_limit(tmp_path):
+    """`limit` is clamped to [1, 200] so a junk value can't return zero
+    rows or sweep the whole table."""
+    conn = _setup(tmp_path)
+    conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('ALERT', '{}', 'pending')"
+    )
+    client = TestClient(build_app(conn))
+    assert client.get("/events/recent?limit=0").json()["events"] != []
+    assert len(client.get("/events/recent?limit=10000").json()["events"]) == 1
+
+
+# ---- realized P&L extension (Step 3 of AI_EVALUATOR_ROADMAP) ----------
+
+
+def _seed_open_position(conn, ticket: int):
+    """Helper: insert one OPEN action + one open position for it."""
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', '{}', 'executed')"
+    )
+    conn.execute(
+        "INSERT INTO positions(action_id, mt5_ticket, symbol, side, volume, "
+        "original_volume, entry_price, sl, tp, status) "
+        "VALUES(?, ?, 'XAUUSD', 'BUY', 1.0, 1.0, 4700.0, 4690.0, 4720.0, 'open')",
+        (cur.lastrowid, ticket),
+    )
+
+
+def test_post_close_records_exit_price_and_pnl(tmp_path):
+    """v2 EA POSTs exit_price + realized_pnl alongside reason. The columns
+    are persisted for the calibration script."""
+    conn = _setup(tmp_path)
+    _seed_open_position(conn, ticket=5001)
+    client = TestClient(build_app(conn))
+    r = client.post("/positions/5001/close", json={
+        "reason": "mt5_tp",
+        "exit_price": 4720.0,
+        "realized_pnl": 1850.0,
+    })
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "updated": 1}
+    row = conn.execute(
+        "SELECT status, close_reason, exit_price, realized_pnl "
+        "FROM positions WHERE mt5_ticket=?", (5001,),
+    ).fetchone()
+    assert row["status"] == "closed"
+    assert row["close_reason"] == "mt5_tp"
+    assert row["exit_price"] == 4720.0
+    assert row["realized_pnl"] == 1850.0
+
+
+def test_post_close_legacy_body_still_works(tmp_path):
+    """Old EA builds POST just `reason` — exit_price/realized_pnl stay NULL."""
+    conn = _setup(tmp_path)
+    _seed_open_position(conn, ticket=5002)
+    client = TestClient(build_app(conn))
+    r = client.post("/positions/5002/close", json={"reason": "mt5_sl"})
+    assert r.status_code == 200
+    row = conn.execute(
+        "SELECT exit_price, realized_pnl FROM positions WHERE mt5_ticket=?",
+        (5002,),
+    ).fetchone()
+    assert row["exit_price"] is None
+    assert row["realized_pnl"] is None
+
+
+def test_post_position_update_increments_pnl_delta(tmp_path):
+    """Each partial close adds its delta to the running realized_pnl.
+    Two partials of +$300 and +$150 should leave realized_pnl == $450."""
+    conn = _setup(tmp_path)
+    _seed_open_position(conn, ticket=5003)
+    client = TestClient(build_app(conn))
+
+    r = client.post("/positions/5003/update",
+                    json={"volume": 0.6, "realized_pnl_delta": 300.0})
+    assert r.status_code == 200
+    r = client.post("/positions/5003/update",
+                    json={"volume": 0.3, "realized_pnl_delta": 150.0})
+    assert r.status_code == 200
+
+    row = conn.execute(
+        "SELECT realized_pnl, partial_close_count FROM positions WHERE mt5_ticket=?",
+        (5003,),
+    ).fetchone()
+    assert row["realized_pnl"] == 450.0
+    assert row["partial_close_count"] == 2  # both volume drops counted
+
+
+def test_post_position_update_no_delta_leaves_pnl_null(tmp_path):
+    """SL move only — no realized_pnl_delta — leaves realized_pnl NULL."""
+    conn = _setup(tmp_path)
+    _seed_open_position(conn, ticket=5004)
+    client = TestClient(build_app(conn))
+    r = client.post("/positions/5004/update", json={"sl": 4695.0})
+    assert r.status_code == 200
+    row = conn.execute(
+        "SELECT realized_pnl FROM positions WHERE mt5_ticket=?", (5004,),
+    ).fetchone()
+    assert row["realized_pnl"] is None

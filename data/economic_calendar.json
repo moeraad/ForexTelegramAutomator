@@ -1,0 +1,4 @@
+{
+  "_doc": "Economic calendar consumed by src/news_calendar.py for the AI evaluator's C1 axis (news-window proximity). Manually maintained - refresh weekly. Each row: {event, ts (ISO-8601 UTC), impact}. Impact: 'high' (FOMC/NFP/CPI = caps eval score at 50 within 30 min), 'medium' (informational only). Drop past rows opportunistically; the reader filters by ts vs now() so leaving a few weeks of history doesn't hurt. Edit and the evaluator picks up the change on the next OPEN signal - file mtime triggers cache invalidation.",
+  "events": []
+}

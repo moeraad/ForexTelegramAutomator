@@ -29,6 +29,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_actions_add_phase2_types(conn)
     _migrate_actions_drop_watch_columns(conn)
     _migrate_actions_add_modify_tps(conn)
+    _migrate_positions_add_pnl(conn)
 
 
 def _migrate_actions_add_phase2_types(conn: sqlite3.Connection) -> None:
@@ -127,6 +128,21 @@ def _migrate_positions_state(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_positions_closed_recent "
         "ON positions(symbol, status, closed_at)"
     )
+
+
+def _migrate_positions_add_pnl(conn: sqlite3.Connection) -> None:
+    """Add exit_price + realized_pnl to positions for the score calibration
+    script (Step 3 of AI_EVALUATOR_ROADMAP). Both nullable; pre-migration
+    closed rows stay NULL because we don't have the deal history needed
+    to backfill them. The calibration script ignores NULL rows — it only
+    buckets trades closed AFTER the EA upgrade that started populating
+    these columns.
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(positions)").fetchall()}
+    if "exit_price" not in cols:
+        conn.execute("ALTER TABLE positions ADD COLUMN exit_price REAL")
+    if "realized_pnl" not in cols:
+        conn.execute("ALTER TABLE positions ADD COLUMN realized_pnl REAL")
 
 
 def _migrate_actions_for_watching(conn: sqlite3.Connection) -> None:

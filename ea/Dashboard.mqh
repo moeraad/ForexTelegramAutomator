@@ -9,16 +9,21 @@
 #include <Canvas\Canvas.mqh>
 #include "BrokerCheck.mqh"
 
-// GitHub-dark-ish palette (AARRGGBB).
-#define DSH_BG       0xFF0E1117
-#define DSH_PANEL    0xFF161B22
-#define DSH_BORDER   0xFF30363D
-#define DSH_TEXT     0xFFC9D1D9
-#define DSH_MUTED    0xFF8B949E
-#define DSH_ACCENT   0xFF58A6FF
-#define DSH_OK       0xFF3FB950
-#define DSH_WARN     0xFFD29922
-#define DSH_DANGER   0xFFF85149
+// Dark Luxury palette (AARRGGBB) — black + gold for XAUUSD. Replaces the
+// prior GitHub-dark cool palette. Semantic uses unchanged: ACCENT gilds
+// the brand title + section headers + the "next TP" glyph; OK is the
+// "operational good" signal (LIVE pill, executed counter, TP hit);
+// WARN is amber-gold for transitional states (ALGO OFF, moderate verdict);
+// DANGER is deep burgundy — visible without the alarm-red "fire" feel.
+#define DSH_BG       0xFF0A0A0A   // near-black with a hint of warmth
+#define DSH_PANEL    0xFF141210   // one step up from BG, very subtle
+#define DSH_BORDER   0xFF3D2F18   // bronze-tinted border
+#define DSH_TEXT     0xFFE8E2D4   // warm cream off-white
+#define DSH_MUTED    0xFF8C7E66   // warm bronze-grey for de-emphasized text
+#define DSH_ACCENT   0xFFD4AF37   // classic gold (#D4AF37)
+#define DSH_OK       0xFF7BB369   // refined desaturated green (plays nicely beside gold)
+#define DSH_WARN     0xFFE0A040   // amber-gold (close to ACCENT, distinct)
+#define DSH_DANGER   0xFFB23B3B   // deep burgundy (not alarm red)
 
 #define DSH_MAX_TRADES 4
 
@@ -90,6 +95,7 @@ struct DashboardStats {
    int      eval_score;             // 0-100
    string   eval_verdict;           // strong | moderate | weak | avoid | unavailable
    string   eval_key_factor;        // 1-line dominant reason
+   string   eval_summary;           // 1-3 sentence rationale (full text, wrapped)
    string   eval_data_quality;      // full | reduced
    int      eval_age_sec;           // seconds since evaluation produced
 };
@@ -119,6 +125,7 @@ private:
    void     DrawSection(string title);
    void     DrawRow(string label, string value, uint value_color);
    void     DrawDivider();
+   void     DrawWrappedText(string text, int max_chars, uint color);
    void     Pill(int x, int y, string text, uint bg, uint fg);
    string   FmtDuration(int sec);
    string   FmtSigned(double v, int decimals);
@@ -379,7 +386,7 @@ void CDashboard::DrawSignalQuality(const DashboardStats &s) {
    uint scoreColor;
    if(s.eval_verdict == "strong")        scoreColor = DSH_OK;
    else if(s.eval_verdict == "moderate") scoreColor = DSH_WARN;
-   else if(s.eval_verdict == "weak")     scoreColor = 0xFFD27922;  // muted orange
+   else if(s.eval_verdict == "weak")     scoreColor = 0xFFA67338;  // deep bronze (between WARN amber and DANGER burgundy)
    else if(s.eval_verdict == "avoid")    scoreColor = DSH_DANGER;
    else                                  scoreColor = DSH_MUTED;   // unavailable
 
@@ -405,14 +412,15 @@ void CDashboard::DrawSignalQuality(const DashboardStats &s) {
                     TA_RIGHT | TA_TOP);
    m_cursor_y += 18;
 
-   // Key factor (1 line, muted; the operator can read full reasoning
-   // in the action's payload via the bot or DB if they need depth).
+   // Key factor (dominant 1-line reason) and full summary (1-3 sentences).
+   // Both wrapped to fit the 380px panel — operator no longer needs to
+   // open the DB / bot to read the AI's reasoning.
    if(StringLen(s.eval_key_factor) > 0) {
-      string kf = s.eval_key_factor;
-      // Soft-truncate at ~50 chars so it fits the 380px panel width.
-      if(StringLen(kf) > 50) kf = StringSubstr(kf, 0, 47) + "...";
-      m_canvas.TextOut(12, m_cursor_y, kf, DSH_TEXT, TA_LEFT | TA_TOP);
-      m_cursor_y += 16;
+      DrawWrappedText(s.eval_key_factor, 52, DSH_TEXT);
+   }
+   if(StringLen(s.eval_summary) > 0) {
+      m_cursor_y += 4;
+      DrawWrappedText(s.eval_summary, 52, DSH_MUTED);
    }
 
    if(s.eval_data_quality == "reduced") {
@@ -523,6 +531,36 @@ ulong CDashboard::HashStats(const DashboardStats &s) {
       }
    }
    return h;
+}
+
+// Word-wrap `text` into lines of up to ~max_chars characters and draw each
+// line at the current cursor. Splits on spaces; falls back to hard-cut for
+// any single word longer than max_chars (long URLs etc). Used by the
+// SIGNAL QUALITY panel to render the AI evaluator's full reasoning instead
+// of a 50-char-truncated one-liner.
+void CDashboard::DrawWrappedText(string text, int max_chars, uint color) {
+   int n = StringLen(text);
+   int i = 0;
+   while(i < n) {
+      // Skip leading spaces on a fresh line.
+      while(i < n && StringGetCharacter(text, i) == ' ') i++;
+      if(i >= n) break;
+      int remaining = n - i;
+      int take = (remaining <= max_chars) ? remaining : max_chars;
+      // If we're not at the end, prefer to break on the last space within
+      // the window so we don't split mid-word.
+      if(remaining > max_chars) {
+         int last_space = -1;
+         for(int k = 0; k < take; k++) {
+            if(StringGetCharacter(text, i + k) == ' ') last_space = k;
+         }
+         if(last_space > 0) take = last_space;
+      }
+      string line = StringSubstr(text, i, take);
+      m_canvas.TextOut(12, m_cursor_y, line, color, TA_LEFT | TA_TOP);
+      m_cursor_y += 14;
+      i += take;
+   }
 }
 
 string CDashboard::FmtDuration(int sec) {

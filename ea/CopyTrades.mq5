@@ -4,6 +4,7 @@
 #property strict
 #include <Trade\Trade.mqh>
 #include "Dashboard.mqh"
+#include "LogPanel.mqh"
 
 input string ApiBaseUrl              = "http://127.0.0.1:8765";
 // Shared secret for the API auth_gate middleware. MUST match the
@@ -59,14 +60,22 @@ input int    PartialMaxRetries       = 10;
 input bool   ShowDashboard           = true;
 input int    DashboardX              = 20;    // pixels from right edge (CORNER_RIGHT_UPPER)
 input int    DashboardY              = 20;    // pixels from top
+// Side-panel "ACTION LOG" widget — renders the last ~20 actions with
+// status glyphs. Polls GET /events/recent every LogPanelPollSec seconds.
+// Hash-gated repaint: zero canvas work when the head rows haven't moved.
+input bool   ShowLogPanel            = true;
+input int    LogPanelX               = 0;     // 0 = auto (right of dashboard); else absolute X
+input int    LogPanelPollSec         = 3;
 // Market-price heartbeat: every N seconds, POST current bid/ask to the API
 // so the AI prompt has a fresh quote for two-digit SL shorthand decoding
 // (e.g. "ستوبك 56" -> 4856 only when gold is around 4850). Set to 0 to
 // disable. Heartbeat is unconditional (runs even when kill switch is on).
 input int    MarketPriceHeartbeatSec = 15;
 // Gate the AI's reactive "احجز نصف أرباحك واحفظ دخولك" flow: when false,
-// both DoMoveSlBe and DoClosePartial reject incoming actions with reason
-// "ai_partial_and_be_disabled". The EA-internal staged plan in
+// both DoMoveSlBe and DoClosePartial silently no-op the incoming action
+// (status=executed, ea_response="noop_partial_and_be_disabled") so they
+// don't pollute the rejected/failed counters or DM the operator. The
+// EA-internal staged plan in
 // ManagePlans (TP1/TP2 partial closes triggered by price crossings) is
 // NOT affected by this — only the AI's ad-hoc reactions to channel
 // messages mid-trade. Default false: most operators prefer the channel
@@ -77,6 +86,10 @@ CTrade trade;
 
 // ---- Dashboard state (read by g_dashboard.Update each second) ----
 CDashboard g_dashboard;
+// ---- LogPanel state (right-of-dashboard action stream widget) ----
+CLogPanel  g_log_panel;
+LogEvent   g_log_events[];        // populated by FetchRecentEvents
+datetime   g_last_log_fetch = 0;  // throttle for FetchRecentEvents
 datetime   g_ea_start            = 0;
 datetime   g_last_api_ok         = 0;
 bool       g_kill_switch_cached  = false;
@@ -104,6 +117,7 @@ long       g_eval_action_id    = 0;
 int        g_eval_score        = 0;
 string     g_eval_verdict      = "";
 string     g_eval_key_factor   = "";
+string     g_eval_summary      = "";
 string     g_eval_data_quality = "";
 int        g_eval_age_sec      = 0;
 datetime   g_eval_evaluated_at = 0;  // for computing eval_age_sec
@@ -130,6 +144,8 @@ struct TradePlan {
    double   origLots;
    double   entry;
    double   slOrig;
+   double   entryLow;       // signal-zone lower bound (for SignalAnchorSl)
+   double   entryHigh;      // signal-zone upper bound (for SignalAnchorSl)
    double   tps[3];
    int      tpCount;
    int      stage;          // 0 initial, 1 after tp1, 2 after tp2
@@ -154,6 +170,12 @@ int OnInit() {
    g_balance_open_today = AccountInfoDouble(ACCOUNT_BALANCE);
    g_equity_peak_today = AccountInfoDouble(ACCOUNT_EQUITY);
    if(ShowDashboard) g_dashboard.Create(DashboardX, DashboardY);
+   if(ShowLogPanel) {
+      // Default X = right edge of dashboard + 8 px gap (388 = 380 width + 8).
+      // Override via LogPanelX input if the operator wants a custom layout.
+      int lx = (LogPanelX > 0) ? LogPanelX : (DashboardX + 388);
+      g_log_panel.Create(lx, DashboardY);
+   }
 
    // Run broker-compatibility checks once. Result is cached in
    // g_broker_check, read by BuildStats every tick, and rendered in
@@ -197,6 +219,7 @@ int OnInit() {
 void OnDeinit(const int reason) {
    EventKillTimer();
    if(ShowDashboard) g_dashboard.Destroy();
+   if(ShowLogPanel)  g_log_panel.Destroy();
 }
 
 void OnTimer() {
@@ -220,6 +243,10 @@ void OnTimer() {
       DashboardStats s;
       BuildStats(s);
       g_dashboard.Update(s);
+   }
+   if(ShowLogPanel) {
+      FetchRecentEvents();   // self-throttled to LogPanelPollSec
+      g_log_panel.Update(g_log_events, ArraySize(g_log_events));
    }
 }
 
@@ -256,12 +283,24 @@ void PostMarketSnapshot() {
    datetime now = TimeCurrent();
    if(now - g_last_snapshot < 60) return;
 
+   // ATR(14) handles for the three short timeframes (existing).
    static int hAtrM15 = INVALID_HANDLE;
    static int hAtrH1  = INVALID_HANDLE;
    static int hAtrH4  = INVALID_HANDLE;
    if(hAtrM15 == INVALID_HANDLE) hAtrM15 = iATR(Symbol_Override, PERIOD_M15, 14);
    if(hAtrH1  == INVALID_HANDLE) hAtrH1  = iATR(Symbol_Override, PERIOD_H1,  14);
    if(hAtrH4  == INVALID_HANDLE) hAtrH4  = iATR(Symbol_Override, PERIOD_H4,  14);
+   // Directional-rubric extensions (added 2026-05-09): D1 ATR + 50/200 SMAs
+   // + ADX on H1. The evaluator uses these for trend / volatility / range
+   // exhaustion factors. Handles are static so we only create them once.
+   static int hAtrD1     = INVALID_HANDLE;
+   static int hSma50D1   = INVALID_HANDLE;
+   static int hSma200D1  = INVALID_HANDLE;
+   static int hAdxH1     = INVALID_HANDLE;
+   if(hAtrD1    == INVALID_HANDLE) hAtrD1    = iATR(Symbol_Override, PERIOD_D1, 14);
+   if(hSma50D1  == INVALID_HANDLE) hSma50D1  = iMA(Symbol_Override, PERIOD_D1, 50,  0, MODE_SMA, PRICE_CLOSE);
+   if(hSma200D1 == INVALID_HANDLE) hSma200D1 = iMA(Symbol_Override, PERIOD_D1, 200, 0, MODE_SMA, PRICE_CLOSE);
+   if(hAdxH1    == INVALID_HANDLE) hAdxH1    = iADX(Symbol_Override, PERIOD_H1, 14);
    if(hAtrM15 == INVALID_HANDLE || hAtrH1 == INVALID_HANDLE || hAtrH4 == INVALID_HANDLE) {
       Print("PostMarketSnapshot: ATR handle creation failed, last_err=",
             GetLastError(), " — will retry next cycle");
@@ -299,15 +338,90 @@ void PostMarketSnapshot() {
    // If anything is zero we treat the snapshot as not-ready and skip.
    if(mO <= 0 || mC <= 0 || h1O <= 0 || h1C <= 0 || h4O <= 0 || h4C <= 0) return;
 
+   // ---- Directional-rubric extensions ------------------------------------
+   // Best-effort: any of these can fail (handle not yet ready, history not
+   // loaded). The body is composed dynamically so missing pieces just get
+   // omitted from the JSON — the API + evaluator handle the missing case.
+   string ext = "";
+
+   double d1O = iOpen(Symbol_Override, PERIOD_D1, 0);
+   double d1H = iHigh(Symbol_Override, PERIOD_D1, 0);
+   double d1L = iLow(Symbol_Override, PERIOD_D1, 0);
+   double d1C = iClose(Symbol_Override, PERIOD_D1, 0);
+   double atrD1Buf[]; double sma50Buf[]; double sma200Buf[];
+   bool d1Ok = (d1O > 0 && d1C > 0
+                && hAtrD1 != INVALID_HANDLE && hSma50D1 != INVALID_HANDLE && hSma200D1 != INVALID_HANDLE
+                && CopyBuffer(hAtrD1, 0, 0, 1, atrD1Buf) > 0
+                && CopyBuffer(hSma50D1, 0, 0, 1, sma50Buf) > 0
+                && CopyBuffer(hSma200D1, 0, 0, 1, sma200Buf) > 0);
+   if(d1Ok) {
+      ext += StringFormat(
+         ",\"d1\":{\"open\":%.2f,\"high\":%.2f,\"low\":%.2f,\"close\":%.2f,"
+         "\"atr14\":%.4f,\"sma50\":%.2f,\"sma200\":%.2f}",
+         d1O, d1H, d1L, d1C, atrD1Buf[0], sma50Buf[0], sma200Buf[0]);
+   }
+
+   // d1_prev: yesterday's closed D1 bar (shift=1).
+   double pdO = iOpen(Symbol_Override, PERIOD_D1, 1);
+   double pdH = iHigh(Symbol_Override, PERIOD_D1, 1);
+   double pdL = iLow(Symbol_Override, PERIOD_D1, 1);
+   double pdC = iClose(Symbol_Override, PERIOD_D1, 1);
+   double atrD1PrevBuf[];
+   bool d1PrevOk = (pdO > 0 && pdC > 0
+                    && hAtrD1 != INVALID_HANDLE
+                    && CopyBuffer(hAtrD1, 0, 1, 1, atrD1PrevBuf) > 0);
+   if(d1PrevOk) {
+      ext += StringFormat(
+         ",\"d1_prev\":{\"open\":%.2f,\"high\":%.2f,\"low\":%.2f,\"close\":%.2f,\"atr14\":%.4f}",
+         pdO, pdH, pdL, pdC, atrD1PrevBuf[0]);
+   }
+
+   // ADR20: rolling avg of the last 20 closed D1 ranges (shifts 1..20).
+   // Skipping shift=0 because the current day's range is incomplete.
+   double adr20 = 0.0; int adrCount = 0;
+   for(int i = 1; i <= 20; i++) {
+      double hi = iHigh(Symbol_Override, PERIOD_D1, i);
+      double lo = iLow(Symbol_Override, PERIOD_D1, i);
+      if(hi > 0 && lo > 0 && hi > lo) {
+         adr20 += (hi - lo);
+         adrCount++;
+      }
+   }
+   if(adrCount > 0) {
+      adr20 /= (double)adrCount;
+      ext += StringFormat(",\"adr20\":%.2f", adr20);
+   }
+
+   // ADX(14) on H1.
+   double adxBuf[];
+   if(hAdxH1 != INVALID_HANDLE && CopyBuffer(hAdxH1, MAIN_LINE, 0, 1, adxBuf) > 0) {
+      ext += StringFormat(",\"adx_h1\":%.2f", adxBuf[0]);
+   }
+
+   // h1_recent_closes: last 5 closed H1 bars (shifts 5..1, oldest first).
+   string closesArr = "";
+   int closesCount = 0;
+   for(int i = 5; i >= 1; i--) {
+      double c = iClose(Symbol_Override, PERIOD_H1, i);
+      if(c <= 0) continue;
+      if(closesCount > 0) closesArr += ",";
+      closesArr += StringFormat("%.2f", c);
+      closesCount++;
+   }
+   if(closesCount > 0) {
+      ext += ",\"h1_recent_closes\":[" + closesArr + "]";
+   }
+
    string body = StringFormat(
       "{\"symbol\":\"%s\","
       "\"m15\":{\"open\":%.2f,\"high\":%.2f,\"low\":%.2f,\"close\":%.2f,\"atr14\":%.4f},"
       "\"h1\":{\"open\":%.2f,\"high\":%.2f,\"low\":%.2f,\"close\":%.2f,\"atr14\":%.4f},"
-      "\"h4\":{\"open\":%.2f,\"high\":%.2f,\"low\":%.2f,\"close\":%.2f,\"atr14\":%.4f}}",
+      "\"h4\":{\"open\":%.2f,\"high\":%.2f,\"low\":%.2f,\"close\":%.2f,\"atr14\":%.4f}%s}",
       Symbol_Override,
       mO, mH, mL, mC, atrM15[0],
       h1O, h1H, h1L, h1C, atrH1[0],
-      h4O, h4H, h4L, h4C, atrH4[0]
+      h4O, h4H, h4L, h4C, atrH4[0],
+      ext
    );
    string resp; int status;
    if(HttpPostJsonWithStatus(ApiBaseUrl + "/market/snapshot", body, resp, status)) {
@@ -345,6 +459,7 @@ void FetchLatestEvaluation() {
       g_eval_score = 0;
       g_eval_verdict = "";
       g_eval_key_factor = "";
+      g_eval_summary = "";
       g_eval_data_quality = "";
       g_eval_age_sec = 0;
       g_eval_evaluated_at = 0;
@@ -355,6 +470,7 @@ void FetchLatestEvaluation() {
    string scoreStr = JsonField(body, "score");
    string verdict = JsonField(body, "verdict");
    string keyFactor = JsonField(body, "key_factor");
+   string summary = JsonField(body, "summary");
    string dataQuality = JsonField(body, "data_quality");
    string evaluatedAt = JsonField(body, "evaluated_at");
 
@@ -363,6 +479,7 @@ void FetchLatestEvaluation() {
    g_eval_score = (int)StringToInteger(scoreStr);
    g_eval_verdict = verdict;
    g_eval_key_factor = keyFactor;
+   g_eval_summary = summary;
    g_eval_data_quality = dataQuality;
 
    // evaluated_at is ISO-8601 like "2026-05-07T14:30:00.123456+00:00".
@@ -383,6 +500,69 @@ void FetchLatestEvaluation() {
    }
    g_eval_evaluated_at = evalTs;
    g_eval_age_sec = (evalTs > 0) ? (int)(now - evalTs) : 0;
+}
+
+// Pull the recent action stream from the API and refresh g_log_events for
+// the LogPanel widget. Throttled to LogPanelPollSec — the panel itself
+// hash-gates repaints, so polling at 3s costs at most one HTTP round-trip
+// every 3s and zero canvas work when nothing changed.
+//
+// Parser is a one-shot scan over the JSON body. The endpoint shape is
+// {"events":[{"id":N,"type":"...","status":"...","summary":"...",
+//             "ea_response":"...","created_at":"YYYY-MM-DDTHH:MM:SS..."}, ...]}.
+// We rely on JsonField for per-field extraction inside each {...} block.
+void FetchRecentEvents() {
+   datetime now = TimeCurrent();
+   if(now - g_last_log_fetch < LogPanelPollSec) return;
+   g_last_log_fetch = now;
+
+   string body;
+   if(!HttpGet(ApiBaseUrl + "/events/recent?limit=20", body)) {
+      // Network/API down — leave cache as-is; LogPanel keeps showing
+      // the last good rows so the operator isn't blinded mid-incident.
+      return;
+   }
+
+   // Reset the cache and walk each event object in the array.
+   ArrayResize(g_log_events, 0);
+   int pos = 0;
+   while(true) {
+      // Each event starts with `{"id":` — same anchor pattern used by
+      // ProcessActionsJson for /actions polling.
+      int objStart = StringFind(body, "{\"id\":", pos);
+      if(objStart < 0) break;
+      int depth = 0;
+      int objEnd = -1;
+      for(int i = objStart; i < StringLen(body); i++) {
+         ushort c = StringGetCharacter(body, i);
+         if(c == '{') depth++;
+         else if(c == '}') { depth--; if(depth == 0) { objEnd = i; break; } }
+      }
+      if(objEnd < 0) break;
+      string obj = StringSubstr(body, objStart, objEnd - objStart + 1);
+      pos = objEnd + 1;
+
+      LogEvent e;
+      e.id          = StringToInteger(JsonField(obj, "id"));
+      e.type        = JsonField(obj, "type");
+      e.status      = JsonField(obj, "status");
+      e.summary     = JsonField(obj, "summary");
+      e.ea_response = JsonField(obj, "ea_response");
+
+      // created_at is ISO-8601 like "2026-05-09T13:42:18.123+00:00".
+      // Extract HH:MM (chars 11..16) for the panel's leftmost column.
+      string created = JsonField(obj, "created_at");
+      if(StringLen(created) >= 16)
+         e.ts = StringSubstr(created, 11, 5);
+      else
+         e.ts = "--:--";
+
+      int n = ArraySize(g_log_events);
+      ArrayResize(g_log_events, n + 1);
+      g_log_events[n] = e;
+
+      if(n + 1 >= LP_MAX_EVENTS) break;
+   }
 }
 
 // Day rollover in broker-server time: when the date changes, reset the
@@ -477,6 +657,7 @@ void BuildStats(DashboardStats &s) {
    s.eval_score        = g_eval_score;
    s.eval_verdict      = g_eval_verdict;
    s.eval_key_factor   = g_eval_key_factor;
+   s.eval_summary      = g_eval_summary;
    s.eval_data_quality = g_eval_data_quality;
    s.eval_age_sec      = g_eval_age_sec;
 
@@ -942,7 +1123,8 @@ void DoOpen(long id, string payload) {
    // All fills here are market orders (out-of-margin signals rejected
    // earlier). Multi-TP signals get a staged plan for tp1/tp2 partials.
    if(tpCount >= 2) {
-      RegisterPlan(ticket, isBuy, lotsTotal, entry, sl, tps, tpCount);
+      RegisterPlan(ticket, isBuy, lotsTotal, entry, sl, entryLow, entryHigh,
+                   tps, tpCount);
    }
 
    string legJson = StringFormat(
@@ -969,13 +1151,16 @@ void DoOpen(long id, string payload) {
 }
 
 void RegisterPlan(long ticket, bool isBuy, double origLots, double entry,
-                  double sl, double &tps[], int tpCount) {
+                  double sl, double entryLow, double entryHigh,
+                  double &tps[], int tpCount) {
    TradePlan p;
    p.ticket = ticket;
    p.isBuy = isBuy;
    p.origLots = origLots;
    p.entry = entry;
    p.slOrig = sl;
+   p.entryLow = entryLow;
+   p.entryHigh = entryHigh;
    p.tpCount = tpCount;
    p.stage = 0;
    p.stage_attempts = 0;
@@ -1032,6 +1217,8 @@ void PersistPlan(const TradePlan &p) {
    GlobalVariableSet(PlanKey(p.ticket, "origLots"), p.origLots);
    GlobalVariableSet(PlanKey(p.ticket, "entry"),    p.entry);
    GlobalVariableSet(PlanKey(p.ticket, "slOrig"),   p.slOrig);
+   GlobalVariableSet(PlanKey(p.ticket, "eL"),       p.entryLow);
+   GlobalVariableSet(PlanKey(p.ticket, "eH"),       p.entryHigh);
    GlobalVariableSet(PlanKey(p.ticket, "tpCount"),  (double)p.tpCount);
    GlobalVariableSet(PlanKey(p.ticket, "tp1"),      p.tps[0]);
    GlobalVariableSet(PlanKey(p.ticket, "tp2"),      p.tps[1]);
@@ -1039,7 +1226,8 @@ void PersistPlan(const TradePlan &p) {
 }
 
 void ErasePersistedPlan(long ticket) {
-   string fields[] = {"stage","isBuy","origLots","entry","slOrig","tpCount","tp1","tp2","tp3"};
+   string fields[] = {"stage","isBuy","origLots","entry","slOrig","eL","eH",
+                      "tpCount","tp1","tp2","tp3"};
    for(int i = 0; i < ArraySize(fields); i++)
       GlobalVariableDel(PlanKey(ticket, fields[i]));
 }
@@ -1077,6 +1265,11 @@ void LoadPersistedPlans() {
       p.origLots  = GlobalVariableGet(PlanKey(ticket, "origLots"));
       p.entry     = GlobalVariableGet(PlanKey(ticket, "entry"));
       p.slOrig    = GlobalVariableGet(PlanKey(ticket, "slOrig"));
+      // entryLow/entryHigh added 2026-05-09. Legacy plans persisted before
+      // this change have no eL/eH keys — GlobalVariableGet returns 0.0
+      // and SignalAnchorSl falls back to p.entry. See plan §6 migration.
+      p.entryLow  = GlobalVariableGet(PlanKey(ticket, "eL"));
+      p.entryHigh = GlobalVariableGet(PlanKey(ticket, "eH"));
       p.tpCount   = (int)GlobalVariableGet(PlanKey(ticket, "tpCount"));
       p.tps[0]    = GlobalVariableGet(PlanKey(ticket, "tp1"));
       p.tps[1]    = GlobalVariableGet(PlanKey(ticket, "tp2"));
@@ -1090,7 +1283,41 @@ void LoadPersistedPlans() {
    }
 }
 
-void PostPositionUpdate(long ticket, double newVolume, double newSl) {
+// Look up the most recent DEAL_ENTRY_OUT for `ticket` and return its
+// net P&L (DEAL_PROFIT + DEAL_SWAP + DEAL_COMMISSION). Returns 0.0 if no
+// closing deal is found within the 7-day window. Used by partial-close
+// call sites to pass realized_pnl_delta to /positions/{ticket}/update.
+double LookupLatestExitDealPnl(long ticket) {
+   datetime now = TimeCurrent();
+   datetime since = now - 7 * 24 * 3600;
+   if(!HistorySelect(since, now)) return 0.0;
+   int total = HistoryDealsTotal();
+   datetime bestTime = 0;
+   double bestPnl = 0.0;
+   for(int i = 0; i < total; i++) {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket == 0) continue;
+      if((long)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID) != ticket) continue;
+      if(HistoryDealGetInteger(dealTicket, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+      datetime dt = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+      if(dt > bestTime) {
+         bestTime = dt;
+         bestPnl = HistoryDealGetDouble(dealTicket, DEAL_PROFIT)
+                 + HistoryDealGetDouble(dealTicket, DEAL_SWAP)
+                 + HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+      }
+   }
+   return bestPnl;
+}
+
+// `realized_pnl_delta`: when non-zero, sent to the API which adds it to
+// the position's running realized_pnl. Pass the result of
+// LookupLatestExitDealPnl(ticket) right after a partial-close so the
+// score-calibration script (Step 3 of AI_EVALUATOR_ROADMAP) can compute
+// realized R-multiples per evaluator score band. Pass 0.0 (default) for
+// non-partial updates (SL move, TP modify) — the field is then omitted.
+void PostPositionUpdate(long ticket, double newVolume, double newSl,
+                        double realized_pnl_delta = 0.0) {
    string body = "{";
    bool first = true;
    if(newVolume > 0) {
@@ -1100,6 +1327,11 @@ void PostPositionUpdate(long ticket, double newVolume, double newSl) {
    if(newSl > 0) {
       if(!first) body += ",";
       body += "\"sl\":" + DoubleToString(newSl, 5);
+      first = false;
+   }
+   if(realized_pnl_delta != 0.0) {
+      if(!first) body += ",";
+      body += "\"realized_pnl_delta\":" + DoubleToString(realized_pnl_delta, 2);
    }
    body += "}";
    string resp; int status;
@@ -1202,6 +1434,30 @@ bool IsRecentlyOpened(long ticket) {
    return false;
 }
 
+// Compute the new SL when a stage transition asks to "BE on signal anchor"
+// (the edge of the signal entry zone behind the chase fill, not the actual
+// fill price). For BUY this is entryLow; for SELL it is entryHigh — the
+// "behind-the-chase" edge in both cases. Returns the clamped value:
+//   - Falls back to p.entry when the plan was registered before entryLow/
+//     entryHigh existed (legacy persisted plans on first load post-upgrade).
+//   - Falls back to p.entry if the chosen anchor would be looser than the
+//     original SL (would *increase* risk vs current SL).
+//   - Falls back to p.entry if the anchor is on the wrong side of current
+//     price (would trigger an immediate stop-out).
+double SignalAnchorSl(const TradePlan &p, double currentExit) {
+   double anchor = p.isBuy ? p.entryLow : p.entryHigh;
+   if(anchor <= 0.0) return p.entry;  // legacy plan, no zone persisted
+   if(p.isBuy) {
+      // SL must stay below current price; SL must not loosen vs slOrig.
+      if(anchor >= currentExit) return p.entry;
+      if(anchor < p.slOrig)     return p.entry;
+   } else {
+      if(anchor <= currentExit) return p.entry;
+      if(anchor > p.slOrig)     return p.entry;
+   }
+   return anchor;
+}
+
 void ManagePlans() {
    if(ArraySize(g_plans) == 0) return;
    double minLot = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_MIN);
@@ -1223,15 +1479,20 @@ void ManagePlans() {
       // that actually realizes the TP1/TP2 target.
       double exitPrice = p.isBuy ? bid : ask;
 
-      // ---- Staged SL-management policy --------------------------------
+      // ---- Staged SL-management policy (revised 2026-05-09) -----------
       // 1-TP signal: no plan registered (RegisterPlan gate in DoOpen). The
       //              broker-set SL + TP rides the position to closure;
       //              EA never touches it.
-      // 2-TP signal: TP1 closes 1/2; SL stays. TP2 = broker-set final TP
-      //              auto-closes the other 1/2. SL never moves.
-      // 3-TP signal: TP1 closes 1/3; SL stays. TP2 closes 1/3; SL moves
-      //              to entry (Break-Even). TP3 = broker-set final TP
-      //              auto-closes the last 1/3 (with BE protecting it).
+      // 2-TP signal: TP1 closes 70%; SL → SignalAnchorSl (entry zone edge
+      //              behind the chase, not the fill price); broker TP
+      //              REMOVED; remaining ~30% rides TrailStage2Sls until
+      //              the trail SL hits on a reversal. TP2 is no longer a
+      //              broker-side close target — only a reference for the
+      //              trail-gap formula.
+      // 3-TP signal: TP1 closes 50%; SL → SignalAnchorSl; broker TP stays
+      //              at TP3 as a worst-case ceiling. TP2 closes 30% of
+      //              ORIGINAL lots; SL → TP1 price; broker TP REMOVED;
+      //              remaining ~20% rides TrailStage2Sls until reversal.
       // -----------------------------------------------------------------
 
       if(p.stage == 0) {
@@ -1239,8 +1500,10 @@ void ManagePlans() {
          bool hit = p.isBuy ? (exitPrice >= tp1) : (exitPrice <= tp1);
          if(!hit) continue;
 
-         // Close 1/tpCount of ORIGINAL lots: 50% for 2-TP, ~33% for 3-TP.
-         double frac = 1.0 / (double)p.tpCount;
+         // Stage-0 close fraction (revised 2026-05-09):
+         //   2-TP: 70% (front-loaded; remainder trails for the rest)
+         //   3-TP: 50% (still room for stage-1 to close another 30%)
+         double frac = (p.tpCount == 2) ? 0.70 : 0.50;
          double closeLots = MathFloor((p.origLots * frac) / lotStep) * lotStep;
          closeLots = NormalizeDouble(closeLots, 2);
          double volBefore = PositionGetDouble(POSITION_VOLUME);
@@ -1298,11 +1561,40 @@ void ManagePlans() {
             }
          }
 
-         // SL stays put on TP1. The original SL keeps protecting the
-         // remaining position until TP2 (or the broker-set final TP) is
-         // reached.
-         Print("CT plan stage1 SL unchanged ticket=", p.ticket,
-               " sl=", DoubleToString(p.slOrig, 5));
+         // Stage-0 SL move (revised 2026-05-09):
+         //   Both 2-TP and 3-TP push SL to SignalAnchorSl (the entry-zone
+         //   edge behind the chase, NOT the chased fill).
+         //   2-TP additionally drops the broker TP (was TP2) to 0 so the
+         //   remaining 30% can ride the trail past TP2 if the move extends.
+         //   3-TP keeps the broker TP at TP3 as a worst-case ceiling
+         //   through stage 1; it is removed at the stage-1→2 transition.
+         double newSl = SignalAnchorSl(p, exitPrice);
+         double newTp = (p.tpCount == 2)
+                        ? 0.0
+                        : (PositionSelectByTicket(p.ticket)
+                           ? PositionGetDouble(POSITION_TP) : 0.0);
+         double curSl0 = PositionSelectByTicket(p.ticket)
+                         ? PositionGetDouble(POSITION_SL) : 0.0;
+         double pointSize0 = SymbolInfoDouble(Symbol_Override, SYMBOL_POINT);
+         double tol0 = (pointSize0 > 0 ? pointSize0 : 0.01) * 5.0;
+         bool slNeedsMove0 = (MathAbs(curSl0 - newSl) > tol0);
+         double curTp0 = PositionSelectByTicket(p.ticket)
+                         ? PositionGetDouble(POSITION_TP) : 0.0;
+         bool tpNeedsChange0 = (MathAbs(curTp0 - newTp) > tol0);
+         if(!slNeedsMove0 && !tpNeedsChange0) {
+            Print("CT plan stage1 SL/TP already correct ticket=", p.ticket);
+         } else if(!trade.PositionModify(p.ticket, newSl, newTp)) {
+            Print("CT plan stage1 SL->anchor FAILED ticket=", p.ticket,
+                  " want_sl=", DoubleToString(newSl, 5),
+                  " want_tp=", DoubleToString(newTp, 5),
+                  " retcode=", trade.ResultRetcode(),
+                  " last_err=", GetLastError());
+         } else {
+            Print("CT plan stage1 SL->", DoubleToString(newSl, 5),
+                  (p.tpCount == 2 ? " +removeTp" : ""),
+                  " ok ticket=", p.ticket,
+                  " (tpCount=", p.tpCount, ")");
+         }
 
          p.stage = 1;
          p.stage_attempts = 0;  // reset retry counter for next stage
@@ -1310,16 +1602,17 @@ void ManagePlans() {
          GlobalVariableSet(PlanKey(p.ticket, "stage"), (double)p.stage);
          double postVol = PositionSelectByTicket(p.ticket)
                           ? PositionGetDouble(POSITION_VOLUME) : 0.0;
-         // newSl=0 -> server-side SL is left as-is.
-         PostPositionUpdate(p.ticket, postVol, 0.0);
+         double pnlDelta = partialOk ? LookupLatestExitDealPnl(p.ticket) : 0.0;
+         PostPositionUpdate(p.ticket, postVol, newSl, pnlDelta);
       }
       else if(p.stage == 1 && p.tpCount == 3) {
          double tp2 = p.tps[1];
          bool hit = p.isBuy ? (exitPrice >= tp2) : (exitPrice <= tp2);
          if(!hit) continue;
 
-         // Close another 1/3 of ORIGINAL lots.
-         double closeLots = MathFloor((p.origLots / 3.0) / lotStep) * lotStep;
+         // Close 30% of ORIGINAL lots (revised 2026-05-09). Combined with
+         // the 50% closed at stage 0, ~20% remains to ride the trail.
+         double closeLots = MathFloor((p.origLots * 0.30) / lotStep) * lotStep;
          closeLots = NormalizeDouble(closeLots, 2);
          double volBefore = PositionGetDouble(POSITION_VOLUME);
          double remaining = volBefore - closeLots;
@@ -1368,30 +1661,30 @@ void ManagePlans() {
             }
          }
 
-         // At stage 2 transition: SL -> entry (BE) AND broker TP removed.
-         // Removing the TP uncaps upside; TrailStage2Sls() ratchets SL up
-         // as price advances, so the trail catches a reversal whenever it
-         // comes — even past the original TP3. Trade-off vs keeping TP3
-         // as a safety ceiling: gives up the worst-case-EA-dies fallback
-         // exit at TP3 in exchange for unlimited upside on the rare
-         // extended runs gold sometimes posts past the channel's TP3.
+         // Stage-1→2 transition (revised 2026-05-09):
+         //   SL → TP1 price (locks at least the TP1 distance of profit on
+         //   the ~20% remainder), broker TP REMOVED so the trail can
+         //   capture extensions past the channel's TP3.
+         double newSl = p.tps[0];
          double curSl = PositionSelectByTicket(p.ticket)
                         ? PositionGetDouble(POSITION_SL) : 0.0;
          double curTp = PositionSelectByTicket(p.ticket)
                         ? PositionGetDouble(POSITION_TP) : 0.0;
          double pointSize = SymbolInfoDouble(Symbol_Override, SYMBOL_POINT);
          double tol = (pointSize > 0 ? pointSize : 0.01) * 5.0;
-         bool slNeedsMove = (MathAbs(curSl - p.entry) > tol);
+         bool slNeedsMove = (MathAbs(curSl - newSl) > tol);
          bool tpNeedsRemoval = (curTp != 0.0);
          if(!slNeedsMove && !tpNeedsRemoval) {
             Print("CT plan stage2 SL/TP already correct ticket=", p.ticket);
-         } else if(!trade.PositionModify(p.ticket, p.entry, 0.0)) {
-            Print("CT plan stage2 SL->BE+removeTp FAILED ticket=", p.ticket,
+         } else if(!trade.PositionModify(p.ticket, newSl, 0.0)) {
+            Print("CT plan stage2 SL->TP1+removeTp FAILED ticket=", p.ticket,
+                  " want_sl=", DoubleToString(newSl, 5),
                   " retcode=", trade.ResultRetcode(),
                   " last_err=", GetLastError());
          } else {
-            Print("CT plan stage2 SL->BE+removeTp ok ticket=", p.ticket,
-                  " (broker TP removed; trailing SL now active)");
+            Print("CT plan stage2 SL->", DoubleToString(newSl, 5),
+                  " (TP1) +removeTp ok ticket=", p.ticket,
+                  " (trailing SL now active)");
          }
 
          p.stage = 2;
@@ -1400,20 +1693,26 @@ void ManagePlans() {
          GlobalVariableSet(PlanKey(p.ticket, "stage"), (double)p.stage);
          double postVol2 = PositionSelectByTicket(p.ticket)
                            ? PositionGetDouble(POSITION_VOLUME) : 0.0;
-         PostPositionUpdate(p.ticket, postVol2, p.entry);
+         double pnlDelta2 = partialOk ? LookupLatestExitDealPnl(p.ticket) : 0.0;
+         PostPositionUpdate(p.ticket, postVol2, newSl, pnlDelta2);
       }
    }
 }
 
-// Trailing SL for stage-2 (post-TP2) 3-TP plans, Flavour A: broker TP
-// was removed at stage 2 transition (see ManagePlans), so the position
-// has no upper bound. We ratchet SL up (BUY) or down (SELL) so the
-// remaining ~17% rides the trend and exits on a reversal instead of
-// stopping at a fixed level.
+// Trailing SL for the post-broker-TP-removed remainder. Activates on:
+//   - 2-TP plans at stage >= 1 (after TP1: 30% remainder, broker TP gone)
+//   - 3-TP plans at stage >= 2 (after TP2: 20% remainder, broker TP gone)
+// Both leave the position with no broker upper bound. We ratchet SL up
+// (BUY) or down (SELL) so the remainder rides the trend and exits on a
+// reversal instead of stopping at a fixed level.
 //
-// Trail gap: |tp3 - entry| / 3. On a typical gold setup with entry
-// 4673.71 and TP3 4720, gap = $15.43/oz — the same metric we use
-// elsewhere ("1/3 of the entry-to-final-TP distance").
+// Trail gap: |finalTp - entry| divided by N, where N = 2 for 2-TP plans
+// and 3 for 3-TP plans. The 2-TP gap is intentionally wider — the
+// remainder rides a single trail stage with no intermediate SL bump,
+// so a tighter gap stops out on normal noise. The 3-TP gap is tighter
+// because SL already sits at TP1 (locked profit) when trail engages.
+// Examples: 3-TP entry 4673.71 / TP3 4720 → gap $15.43/oz.
+//           2-TP entry 4710 / TP2 4738 → gap $14.00/oz.
 //
 // Step threshold: 5 * SYMBOL_POINT. Filters tick-noise micro-updates
 // without missing meaningful trail steps. On gold (point=$0.01) that's
@@ -1438,11 +1737,21 @@ void TrailStage2Sls() {
 
    for(int i = 0; i < ArraySize(g_plans); i++) {
       TradePlan p = g_plans[i];
-      if(p.stage != 2) continue;
-      if(p.tpCount != 3) continue;
+      // Activation gates (revised 2026-05-09):
+      //   2-TP: trail starts at stage >= 1 (after TP1 partial + TP removal)
+      //   3-TP: trail starts at stage >= 2 (after TP2 partial + TP removal)
+      bool active = (p.tpCount == 2 && p.stage >= 1)
+                 || (p.tpCount == 3 && p.stage >= 2);
+      if(!active) continue;
       if(!PositionSelectByTicket(p.ticket)) continue;
 
-      double trailGap = MathAbs(p.tps[2] - p.entry) / 3.0;
+      // finalTp: last TP in the signal — TP2 for 2-TP, TP3 for 3-TP.
+      // Gap divisor: 2 for 2-TP (wider gap matches the wider remainder
+      // sitting on a single-stage trail), 3 for 3-TP (tighter, since the
+      // remainder is smaller and SL already sits at TP1).
+      double finalTp = p.tps[p.tpCount - 1];
+      double divisor = (p.tpCount == 2) ? 2.0 : 3.0;
+      double trailGap = MathAbs(finalTp - p.entry) / divisor;
       if(trailGap <= 0.0) continue;
 
       double bid = SymbolInfoDouble(Symbol_Override, SYMBOL_BID);
@@ -1474,7 +1783,8 @@ void TrailStage2Sls() {
       // trade.PositionModify wrapper handles that uniformly.
       if(trade.PositionModify(p.ticket, newSl, 0.0)) {
          PostPositionUpdate(p.ticket, 0, newSl);
-         Print("CT plan stage2 trail SL ok ticket=", p.ticket,
+         Print("CT plan trail SL ok ticket=", p.ticket,
+               " tpCount=", p.tpCount, " stage=", p.stage,
                " ", DoubleToString(curSl, digits),
                " -> ", DoubleToString(newSl, digits),
                " (gap=", DoubleToString(trailGap, digits), ")");
@@ -1482,7 +1792,8 @@ void TrailStage2Sls() {
          // Don't spam — only log when retcode changes from prior tick
          // would be ideal, but for now log every failure so issues are
          // visible in the journal.
-         Print("CT plan stage2 trail SL FAILED ticket=", p.ticket,
+         Print("CT plan trail SL FAILED ticket=", p.ticket,
+               " tpCount=", p.tpCount, " stage=", p.stage,
                " want=", DoubleToString(newSl, digits),
                " retcode=", trade.ResultRetcode(),
                " last_err=", GetLastError());
@@ -1520,7 +1831,7 @@ void DoClose(long id, string payload) {
       PostResult(id, "executed", ticket, "");
       string body;
       HttpPostJson(ApiBaseUrl + "/positions/" + IntegerToString(ticket) + "/close",
-                   "{\"reason\":\"ai_close\"}", body);
+                   BuildCloseBody("ai_close", ticket), body);
    } else {
       PostResult(id, "failed", ticket, "close_failed:" + IntegerToString(trade.ResultRetcode()));
    }
@@ -1538,7 +1849,7 @@ void DoCloseAll(long id, string payload) {
          RemovePlanByTicket((long)t);
          string body;
          HttpPostJson(ApiBaseUrl + "/positions/" + IntegerToString(t) + "/close",
-                      "{\"reason\":\"close_all\"}", body);
+                      BuildCloseBody("close_all", (long)t), body);
       } else failed++;
    }
    // Status by outcome: a CLOSE_ALL where every PositionClose failed must
@@ -1610,7 +1921,7 @@ string BuildOpenPayloadFromLastClosed(string lastClosedBody) {
 
 void DoMoveSlBe(long id, string payload) {
    if(!EnableAiPartialAndBe) {
-      PostResult(id, "rejected", 0, "ai_partial_and_be_disabled");
+      PostResult(id, "executed", 0, "noop_partial_and_be_disabled");
       return;
    }
    long ticket = FindSingletonOpenTicket(Symbol_Override);
@@ -1714,7 +2025,7 @@ void DoModifyTps(long id, string payload) {
 
 void DoClosePartial(long id, string payload) {
    if(!EnableAiPartialAndBe) {
-      PostResult(id, "rejected", 0, "ai_partial_and_be_disabled");
+      PostResult(id, "executed", 0, "noop_partial_and_be_disabled");
       return;
    }
    long ticket = FindSingletonOpenTicket(Symbol_Override);
@@ -1750,10 +2061,11 @@ void DoClosePartial(long id, string payload) {
    double volAfter = WaitForPartialFill(ticket, volBefore, lotStep);
    bool partialOk = (volAfter < volBefore - lotStep / 2.0);
    if(partialOk) {
-      PostPositionUpdate(ticket, volAfter, 0);
+      double pnlDelta = LookupLatestExitDealPnl(ticket);
+      PostPositionUpdate(ticket, volAfter, 0, pnlDelta);
       PostResult(id, "executed", ticket,
-                 StringFormat("closed=%.2f vol=%.2f->%.2f",
-                              closeLots, volBefore, volAfter));
+                 StringFormat("closed=%.2f vol=%.2f->%.2f pnl=%.2f",
+                              closeLots, volBefore, volAfter, pnlDelta));
    } else {
       PostResult(id, "failed", ticket,
                  StringFormat("partial_did_not_execute retcode=%d vol_unchanged=%.2f",
@@ -1768,7 +2080,7 @@ void DoCloseFull(long id, string payload) {
       RemovePlanByTicket(ticket);
       string body;
       HttpPostJson(ApiBaseUrl + "/positions/" + IntegerToString(ticket) + "/close",
-                   "{\"reason\":\"ai_close_full\"}", body);
+                   BuildCloseBody("ai_close_full", ticket), body);
       PostResult(id, "executed", ticket, "");
    } else {
       PostResult(id, "failed", ticket,
@@ -1821,7 +2133,7 @@ void DoReinforce(long id, string payload) {
          string closeBody;
          HttpPostJson(
             ApiBaseUrl + "/positions/" + IntegerToString(currentTicket) + "/close",
-            "{\"reason\":\"reinforce\"}", closeBody);
+            BuildCloseBody("reinforce", currentTicket), closeBody);
       } else {
          PostResult(id, "failed", currentTicket,
                     "reinforce_close_failed:" + IntegerToString(trade.ResultRetcode()));
@@ -1949,8 +2261,7 @@ void ReconcileClosedPositions() {
          string reason = ResolveCloseReason(ticket);
          string url = ApiBaseUrl + "/positions/" + IntegerToString(ticket) + "/close";
          string resp;
-         string body = "{\"reason\":\"" + reason + "\"}";
-         HttpPostJson(url, body, resp);
+         HttpPostJson(url, BuildCloseBody(reason, ticket), resp);
          Print("CT reconcile: ticket=", ticket,
                " absent from MT5 → POSTed close (", reason, ")");
       }
@@ -2004,6 +2315,52 @@ string ResolveCloseReason(long ticket) {
       case 9: return "mt5_split";         // DEAL_REASON_SPLIT
       default: return StringFormat("mt5_reason_%d", (int)bestReason);
    }
+}
+
+// Walk MT5 deal history (7-day window) for the closing deal of `ticket`
+// and produce the JSON body for POST /positions/{ticket}/close, including
+// the new exit_price + realized_pnl fields when available. The Python
+// calibration script (scripts/score_calibration.py) reads these to bucket
+// realized R-multiples per evaluator score band.
+//
+// Calculations:
+//   exit_price   = price of the most recent DEAL_ENTRY_OUT for this position
+//   realized_pnl = sum of DEAL_PROFIT across ALL exit deals for this position
+//                  (covers stage-1/stage-2 partials + the final close)
+//
+// Returns just `{"reason":"<reason>"}` when history lookup fails — the API
+// handler accepts that legacy shape and leaves exit_price/realized_pnl NULL.
+string BuildCloseBody(string reason, long ticket) {
+   datetime now = TimeCurrent();
+   datetime since = now - 7 * 24 * 3600;
+   double exit_price = 0.0;
+   double realized_pnl = 0.0;
+   datetime bestTime = 0;
+   bool foundAny = false;
+   if(HistorySelect(since, now)) {
+      int total = HistoryDealsTotal();
+      for(int i = 0; i < total; i++) {
+         ulong dealTicket = HistoryDealGetTicket(i);
+         if(dealTicket == 0) continue;
+         if((long)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID) != ticket) continue;
+         if(HistoryDealGetInteger(dealTicket, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+         realized_pnl += HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+         realized_pnl += HistoryDealGetDouble(dealTicket, DEAL_SWAP);
+         realized_pnl += HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+         datetime dt = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+         if(dt >= bestTime) {
+            bestTime = dt;
+            exit_price = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
+         }
+         foundAny = true;
+      }
+   }
+   if(!foundAny) {
+      return "{\"reason\":\"" + reason + "\"}";
+   }
+   return StringFormat(
+      "{\"reason\":\"%s\",\"exit_price\":%.2f,\"realized_pnl\":%.2f}",
+      reason, exit_price, realized_pnl);
 }
 
 void ParseTps(string tpsStr, double &out[]) {

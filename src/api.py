@@ -36,12 +36,22 @@ class ResultBody(BaseModel):
 
 class CloseBody(BaseModel):
     reason: str = ""
+    # Realized-P&L extension (Step 3 of AI_EVALUATOR_ROADMAP). Both
+    # optional — older EA builds posting just `reason` keep working.
+    # exit_price = price of the closing deal; realized_pnl = total
+    # broker-reported profit on the position (sum across all exit deals).
+    exit_price: float | None = None
+    realized_pnl: float | None = None
 
 
 class PositionUpdateBody(BaseModel):
     volume: float | None = None
     sl: float | None = None
     tp: float | None = None
+    # Used by the EA on partial closes: the broker-reported P&L of THIS
+    # deal alone, added to the position's running realized_pnl. None means
+    # "leave realized_pnl alone" — old EA builds keep working.
+    realized_pnl_delta: float | None = None
 
 
 class MarketPriceBody(BaseModel):
@@ -55,25 +65,41 @@ class MarketPriceBody(BaseModel):
 
 
 class TimeframeOhlcBody(BaseModel):
-    """OHLC + ATR for one timeframe in the market snapshot."""
+    """OHLC + ATR for one timeframe in the market snapshot.
+
+    sma50/sma200 are optional — only the D1 block populates them today
+    (the directional evaluator uses D1 trend filters). Older EA builds
+    that POST without these fields keep working.
+    """
     open: float
     high: float
     low: float
     close: float
     atr14: float
+    sma50: float | None = None
+    sma200: float | None = None
 
 
 class MarketSnapshotBody(BaseModel):
     """Multi-timeframe OHLC snapshot pushed by the EA roughly every minute.
-    Consumed by the signal-quality evaluator (see src/ai_evaluator.py) to
-    judge whether the channel's signal aligns with current price action,
-    whether the SL distance is sane vs current volatility, and whether the
-    entry zone is near recent swing levels.
+    Consumed by the directional-bias evaluator (see src/ai_evaluator.py).
+
+    The original m15/h1/h4 fields are required (older EA builds keep
+    working). The directional-rubric extensions (d1, d1_prev, adr20,
+    adx_h1, h1_recent_closes) are optional so an EA upgrade can roll out
+    independently from the API server. The evaluator falls back to
+    `data_quality=reduced` when the new fields are absent.
     """
     symbol: str = "XAUUSD"
     m15: TimeframeOhlcBody
     h1: TimeframeOhlcBody
     h4: TimeframeOhlcBody
+    # Directional-rubric extensions (added 2026-05-09).
+    d1: TimeframeOhlcBody | None = None         # current day's OHLC + SMA50/200
+    d1_prev: TimeframeOhlcBody | None = None    # yesterday's OHLC (for gap/continuation context)
+    adr20: float | None = None                  # rolling avg of last 20 D1 ranges
+    adx_h1: float | None = None                 # ADX(14) on H1 — trend vs chop
+    h1_recent_closes: list[float] | None = None # last ~5 H1 closes (oldest first), for structure
 
 
 class AlertBody(BaseModel):
@@ -319,6 +345,14 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
         if body.tp is not None:
             sets.append("tp=?"); args.append(body.tp)
             explicit_fields += 1
+        if body.realized_pnl_delta is not None:
+            # Add the partial-close P&L to the running total. COALESCE handles
+            # the first delta (NULL + x = x). Doesn't count toward
+            # explicit_fields because the EA may bundle a delta with a
+            # volume/sl/tp update; a "delta only" call is a legitimate
+            # partial-deal-only POST so we let it through with no field flag.
+            sets.append("realized_pnl = COALESCE(realized_pnl, 0) + ?")
+            args.append(body.realized_pnl_delta)
         if not sets:
             return {"ok": True, "updated": 0}
         args.append(ticket)
@@ -393,13 +427,34 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             )
             return {"ok": True, "updated": 0, "skipped": "partial_state_mt5_close"}
 
+        # Build the UPDATE dynamically so optional exit_price/realized_pnl
+        # only get set when the EA supplied them. Older EA builds POST just
+        # `reason` and the new columns stay NULL for those rows.
+        sets = ["status='closed'", "closed_at=?", "close_reason=?"]
+        params: list = [datetime.now(timezone.utc).isoformat(), body.reason]
+        if body.exit_price is not None:
+            sets.append("exit_price=?")
+            params.append(body.exit_price)
+        if body.realized_pnl is not None:
+            # COALESCE: if any partial-close deltas already accumulated via
+            # /positions/{ticket}/update, the close-time pnl REPLACES the
+            # running total — the EA's close handler computes the
+            # all-deals total via DEAL_PROFIT and that's authoritative.
+            sets.append("realized_pnl=?")
+            params.append(body.realized_pnl)
+        params.append(ticket)
         cur = conn.execute(
-            "UPDATE positions SET status='closed', closed_at=?, close_reason=? "
+            f"UPDATE positions SET {', '.join(sets)} "
             "WHERE mt5_ticket=? AND status='open'",
-            (datetime.now(timezone.utc).isoformat(), body.reason, ticket),
+            params,
         )
         if cur.rowcount > 0:
-            trades.info("position_closed ticket=%s reason=%s", ticket, body.reason or "")
+            trades.info(
+                "position_closed ticket=%s reason=%s exit_price=%s pnl=%s",
+                ticket, body.reason or "",
+                body.exit_price if body.exit_price is not None else "-",
+                body.realized_pnl if body.realized_pnl is not None else "-",
+            )
         return {"ok": True, "updated": cur.rowcount}
 
     @app.get("/positions/last_closed")
@@ -523,6 +578,56 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             "evaluation": evaluation,
         }
 
+    @app.get("/events/recent")
+    def events_recent(limit: int = 20):
+        """Recent action stream for the EA's LogPanel widget.
+
+        Returns the last N rows of `actions` (newest-first) enriched with
+        a one-line summary string. The summary is produced by the same
+        `_payload_summary` helper the bot uses for its terminal-state DMs,
+        so the side-panel rows and the operator's Telegram history stay
+        in sync wording-wise.
+
+        Response:
+          {"events": [
+             {"id": int, "type": str, "status": str,
+              "summary": str, "ea_response": str|"",
+              "created_at": str (ISO-8601 UTC)},
+             ...
+          ]}
+
+        EA polls this on a 3 s throttle (FetchRecentEvents); LogPanel
+        hashes the id list so the panel only repaints when the head
+        rows actually change.
+        """
+        # Local import: avoids forcing the API process to load the
+        # telegram-format helpers at startup if they ever grow heavy
+        # (today they're tiny — pure-string formatting only).
+        from src.telegram_format import _payload_summary
+        if limit < 1: limit = 1
+        if limit > 200: limit = 200
+        rows = conn.execute(
+            "SELECT id, action_type, status, payload_json, ea_response, "
+            "       created_at "
+            "FROM actions ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        events: list[dict] = []
+        for r in rows:
+            try:
+                payload = json.loads(r["payload_json"]) if r["payload_json"] else {}
+            except (TypeError, ValueError):
+                payload = {}
+            events.append({
+                "id": r["id"],
+                "type": r["action_type"],
+                "status": r["status"],
+                "summary": _payload_summary(r["action_type"], payload),
+                "ea_response": r["ea_response"] or "",
+                "created_at": r["created_at"],
+            })
+        return {"events": events}
+
     @app.post("/alerts")
     def post_alert(body: AlertBody):
         """EA escape hatch for events that need operator attention but
@@ -554,11 +659,20 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             raise HTTPException(400, f"unsupported symbol: {body.symbol}")
         sym = body.symbol.upper()
         now = datetime.now(timezone.utc).isoformat()
-        snapshot_json = json.dumps({
+        snapshot_dict: dict = {
             "m15": body.m15.model_dump(),
             "h1": body.h1.model_dump(),
             "h4": body.h4.model_dump(),
-        })
+        }
+        # Directional-rubric extensions — only embed when the EA provided them
+        # so a downgrade from the new EA back to the old one cleanly drops
+        # the extra keys instead of leaving stale rows in settings.
+        if body.d1 is not None:               snapshot_dict["d1"] = body.d1.model_dump()
+        if body.d1_prev is not None:          snapshot_dict["d1_prev"] = body.d1_prev.model_dump()
+        if body.adr20 is not None:            snapshot_dict["adr20"] = body.adr20
+        if body.adx_h1 is not None:           snapshot_dict["adx_h1"] = body.adx_h1
+        if body.h1_recent_closes is not None: snapshot_dict["h1_recent_closes"] = body.h1_recent_closes
+        snapshot_json = json.dumps(snapshot_dict)
         conn.execute("BEGIN")
         try:
             for key, val in (

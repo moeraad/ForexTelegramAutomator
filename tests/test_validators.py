@@ -362,7 +362,7 @@ def test_validate_open_with_close_full_preceding_passes(db_with_position):
     a position is currently open. The EA executes them in insertion order
     so by the time OPEN claims, the close has run. This is the
     close+reopen rule from the SYSTEM_PROMPT decision tree (RULE A side
-    flip; RULE B partials+profit reset)."""
+    flip; RULE B partial-taken reset)."""
     open_action = OpenAction(
         symbol="XAUUSD", side="SELL",
         entry_low=4870, entry_high=4872, tps=[4840], sl=4880,

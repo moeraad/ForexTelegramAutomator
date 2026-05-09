@@ -198,6 +198,17 @@ async def notification_dispatcher(app: Application):
                 "ORDER BY id ASC LIMIT 20"
             ).fetchall()
             for r in rows:
+                # EA-side no-op markers: when EnableAiPartialAndBe is off the
+                # EA writes status=executed with this ea_response so the
+                # rejected counter doesn't bump. The operator explicitly
+                # asked for these to be invisible — ack and move on.
+                if (r["ea_response"] or "").startswith("noop_"):
+                    conn.execute(
+                        "UPDATE actions SET notified_at=CURRENT_TIMESTAMP "
+                        "WHERE id=?",
+                        (r["id"],),
+                    )
+                    continue
                 try:
                     payload = json.loads(r["payload_json"])
                 except (TypeError, ValueError):
@@ -314,6 +325,42 @@ async def claim_sweeper_loop(app: Application):
         await asyncio.sleep(15.0)
 
 
+async def macro_feed_loop(app: Application):
+    """Periodically fetch the macro snapshot (DXY/10Y/VIX/JPY/oil) and
+    persist it under settings.macro_snapshot for the directional-bias
+    evaluator (src/ai_evaluator.py::_get_macro_snapshot).
+
+    Cadence: 60s. yfinance is rate-tolerant at this rate (5 small
+    daily-bar downloads / minute), and the evaluator's stale threshold
+    is 300s — so a single failed cycle is invisible to consumers.
+
+    Failure modes (all silent at this layer; logged at WARNING):
+      - yfinance not installed -> fetch_macro_snapshot returns None
+      - Yahoo Finance down -> fetch_macro_snapshot returns None
+      - Partial outage (some tickers fail) -> partial dict is still
+        persisted; evaluator renders the present fields.
+    """
+    from src.macro import fetch_macro_snapshot
+    from src.db import set_setting
+    conn: sqlite3.Connection = app.bot_data["conn"]
+    while True:
+        try:
+            snap = await fetch_macro_snapshot()
+            if snap is not None:
+                set_setting(conn, "macro_snapshot", json.dumps(snap))
+                set_setting(conn, "macro_snapshot_at", snap["fetched_at"])
+                log.info(
+                    "macro_feed: dxy=%s vix=%s tnx=%s (%d/5 tickers)",
+                    snap.get("dxy"), snap.get("vix"), snap.get("tnx"),
+                    sum(1 for k in ("dxy", "tnx", "vix", "jpy", "oil") if k in snap),
+                )
+            else:
+                log.warning("macro_feed: no tickers fetched this cycle")
+        except Exception as e:
+            log.exception("macro_feed_loop error: %s", e)
+        await asyncio.sleep(60.0)
+
+
 def _supervise(task: asyncio.Task, name: str) -> None:
     """Attach a done-callback that surfaces silent task deaths.
 
@@ -356,6 +403,7 @@ async def post_init(app: Application):
     _supervise(asyncio.create_task(position_close_notifier(app)), "position_close_notifier")
     _supervise(asyncio.create_task(promotion_loop(app)), "promotion_loop")
     _supervise(asyncio.create_task(claim_sweeper_loop(app)), "claim_sweeper_loop")
+    _supervise(asyncio.create_task(macro_feed_loop(app)), "macro_feed_loop")
 
 
 def main() -> None:

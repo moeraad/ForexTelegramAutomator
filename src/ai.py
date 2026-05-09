@@ -158,10 +158,10 @@ NEW OPEN SIGNAL WITH POSITION OPEN — apply this decision tree EXACTLY when a s
   RULE A — SIDE FLIP. If signal.side != cur_side:
     → emit [{"type":"CLOSE_FULL"}, {"type":"OPEN", ...new signal full params}]. Always. Holding opposite direction is contradictory; close and re-enter at full size.
 
-  RULE B — PROFIT-LOCK RESET. If signal.side == cur_side AND partials_taken >= 1 AND in_profit:
-    → emit [{"type":"CLOSE_FULL"}, {"type":"OPEN", ...new signal full params}]. The existing position has banked some profit and is currently winning; close it to realize, then reopen at full size on the new ladder.
+  RULE B — RESET ON PARTIAL. If signal.side == cur_side AND partials_taken >= 1:
+    → emit [{"type":"CLOSE_FULL"}, {"type":"OPEN", ...new signal full params}]. The existing position has already booked at least one partial; close the residual at market and reopen at full size on the new ladder. APPLIES REGARDLESS OF P&L — winning, at BE, or losing. Operator's explicit policy: a partial-taken position is "spent"; treat each new same-side signal as a fresh full-size entry.
 
-  RULE C — IN-PLACE UPDATE. If signal.side == cur_side AND (partials_taken == 0 OR not in_profit):
+  RULE C — IN-PLACE UPDATE. If signal.side == cur_side AND partials_taken == 0:
     Read `current_sl` from the OPEN POSITIONS block (sl=… field).
 
     Compute the RATCHETED SL — never loosen existing protection:
@@ -186,7 +186,7 @@ NEW OPEN SIGNAL WITH POSITION OPEN — apply this decision tree EXACTLY when a s
         → emit [{"type":"ALERT","level":"info","text":"[context] new signal SL would loosen current; all TPs past mid; no action"}], category="context"
 
   Notes:
-    - The "in_profit" flag in pnl=… text is authoritative — do NOT recompute from raw bid/ask.
+    - RULE B fires on partials_taken >= 1 alone. Do NOT gate it on in_profit/in_loss/at_be — a partial-taken position is "spent" regardless of current P&L and resets on every new same-side signal.
     - The SL ratchet is ONE-WAY: tighten only. RULE C must NEVER loosen the protective SL on an existing position. Concrete cost on 2026-05-07 Trade 5: AI emitted MOVE_SL price=4732 when current_sl was 4736 (looser by $4); price subsequently hit 4731.91, costing $414 vs the original SL exit at 4736.
     - Channel-direct MOVE_SL (e.g., "ستوبك 26" / "ستوبك ثابت 4806" / "أمن دخولك") is NOT a RULE C emit — it's a direct management instruction and follows the channel literally regardless of direction. Only the IMPLICIT SL adjustment from a new structured OPEN signal is ratcheted.
     - NEVER emit MODIFY_TPS in any context other than RULE C above.
@@ -262,10 +262,16 @@ Ex16 (RULE C — in-place update, signal SL tightens):
   → [{"type":"MOVE_SL","price":4545},{"type":"MODIFY_TPS","tps":[4570,4580,4600],"reason":"new signal SL+TPs, pos same side no partials"}], category="signal"
   (ratchet_sl = max(4540, 4545) = 4545 → tightens by $5, emit MOVE_SL. mid=4553 < 4570 so all three TPs valid.)
 
-Ex17 (RULE B — profit-lock reset):
+Ex17 (RULE B — reset on partial, position WINNING):
   Msg: "GOLD ❇️BUY❇️@ 📝 4555-4553 / TP1 🔼 4570 / TP2 🔼 4580 / TP3 🔼 4600 / SL 👀 4545"
   STATE: open BUY position entry=4548 partials_taken=1 pnl=+5.00/oz (in_profit) mid=4553
   → [{"type":"CLOSE_FULL"},{"type":"OPEN","symbol":"XAUUSD","side":"BUY","entry_low":4553,"entry_high":4555,"tps":[4570,4580,4600],"sl":4545,"comment":"reset to fresh full size on new signal"}], category="signal"
+
+Ex17b (RULE B — reset on partial, position LOSING — same emit as Ex17):
+  Msg: "GOLD ❇️BUY❇️@ 📝 4555-4553 / TP1 🔼 4570 / TP2 🔼 4580 / TP3 🔼 4600 / SL 👀 4545"
+  STATE: open BUY position entry=4548 partials_taken=1 pnl=-3.00/oz (in_loss) mid=4545
+  → [{"type":"CLOSE_FULL"},{"type":"OPEN","symbol":"XAUUSD","side":"BUY","entry_low":4553,"entry_high":4555,"tps":[4570,4580,4600],"sl":4545,"comment":"reset to fresh full size on new signal"}], category="signal"
+  (Identical to Ex17 — RULE B does NOT depend on P&L. Partial taken = position is spent, reset on every new same-side signal.)
 
 Ex18 (RULE A — side flip):
   Msg: "GOLD 🔻SELL🔻@ 📝 4560-4562 / TP1 🔽 4545 / TP2 🔽 4530 / SL 👀 4570"

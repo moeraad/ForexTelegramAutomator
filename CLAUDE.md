@@ -113,11 +113,15 @@ Plus two read-side blocks the prompt also consumes:
 
 `ManagePlans()` in `ea/CopyTrades.mq5` handles automated partial closes when an MT5-side TP is hit. Per signal-TP-count:
 
-| TPs | TP1 hit | TP2 hit | Final |
+| TPs | TP1 hit | TP2 hit | Final exit |
 |---|---|---|---|
 | **1** | — (no `TradePlan` registered; broker SL+TP ride to closure) | — | TP1 closes the position |
-| **2** | Close ½ • **SL unchanged** | Broker auto-closes other ½ at TP2 (set on the position itself) | — |
-| **3** | Close ⅓ • **SL unchanged** | Close ⅓ • **SL → entry (BE)** | Broker auto-closes last ⅓ at TP3 |
+| **2** | Close **70 %** • **SL → `SignalAnchorSl`** • broker TP **removed** • trail starts on remaining 30 % | — (broker TP gone) | Trail SL hit on reversal |
+| **3** | Close **50 %** • **SL → `SignalAnchorSl`** • broker TP unchanged | Close **30 % of original** • **SL → TP1 price** • broker TP **removed** • trail starts on remaining 20 % | Trail SL hit on reversal |
+
+`SignalAnchorSl(p, exitPrice)` returns `entry_low` for BUY / `entry_high` for SELL — the edge of the signal zone behind the chase fill. Falls back to `entry` (chased fill) when the anchor would be looser than `slOrig`, would trigger an immediate stop-out, or the plan has no zone persisted (legacy in-flight plans pre-2026-05-09).
+
+Trailing: `TrailStage2Sls()` activates for `(tpCount==2, stage>=1)` and `(tpCount==3, stage>=2)`. Gap = `|finalTp − entry| / N`, with `N=2` for 2-TP (wider, single-stage remainder) and `N=3` for 3-TP (tighter, SL already at TP1). Step threshold 5 × point; ratchet-only.
 
 Channel-driven AI instructions can override this at any point (`MOVE_SL_BE` / `MOVE_SL` / `CLOSE_PARTIAL` / `CLOSE_FULL`). Any successful `PositionModify` from a channel instruction calls `RemovePlanByTicket` so the next automatic stage doesn't stomp the operator override.
 
@@ -149,7 +153,7 @@ No throttle — the DB-side pass is cheap and must converge within one timer tic
 - `src/logging_setup.py` — every entrypoint calls `configure_logging(name)` once. Tees to stderr AND rotating `logs/<name>.log` (10MB × 5). `http_logger()` is a separate non-propagating logger for `logs/api_http.log`.
 - `src/api.py` — FastAPI app. `GET /positions?status=open` is the EA's reconciliation oracle. `GET /positions/last_closed` and `POST/GET /market/price` are the Phase-1 endpoints driving the SYSTEM STATE prompt block.
 - `src/llm_provider.py` — provider abstraction. `LLMProvider` Protocol + `AnthropicProvider` and `OpenAIProvider` concretes. `AI_PROVIDER` env switch picks one. Usage dict normalized to `{input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens}` so `logs/ai_calls.jsonl` is provider-agnostic.
-- `ea/CopyTrades.mq5` + `ea/Dashboard.mqh` — MQL5 EA. Magic number `919191`. Canvas dashboard (left-anchored, 380×560px, hash-gated repaint). `g_plans[]` persisted to MT5 `GlobalVariables` so restart doesn't lose in-flight zone watches. `ExecuteOne` dispatcher routes 11 action types (12 types minus `ALERT` which only the bot consumes). `HeartbeatMarketPrice()` POSTs bid/ask every `MarketPriceHeartbeatSec` (default 15s).
+- `ea/CopyTrades.mq5` + `ea/Dashboard.mqh` + `ea/LogPanel.mqh` — MQL5 EA. Magic number `919191`. Canvas dashboard (left-anchored, 380×900px, hash-gated repaint). Side `LogPanel` widget (360×900, mounted at `DashboardX + 388` by default; toggle `ShowLogPanel`) renders the last ~20 actions from `GET /events/recent` on a 3 s poll; same hash-gated repaint pattern as the dashboard. `g_plans[]` persisted to MT5 `GlobalVariables` so restart doesn't lose in-flight zone watches. `ExecuteOne` dispatcher routes 11 action types (12 types minus `ALERT` which only the bot consumes). `HeartbeatMarketPrice()` POSTs bid/ask every `MarketPriceHeartbeatSec` (default 15s).
 
 ## AI prompt design (Phase 3)
 
