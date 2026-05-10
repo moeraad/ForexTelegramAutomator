@@ -175,6 +175,10 @@ int OnInit() {
       // Override via LogPanelX input if the operator wants a custom layout.
       int lx = (LogPanelX > 0) ? LogPanelX : (DashboardX + 388);
       g_log_panel.Create(lx, DashboardY);
+      g_log_panel.Hide();  // hidden by default; revealed via toggle button
+      // Toggle button anchored just below the dashboard. Persists across
+      // ticks; OnChartEvent flips g_log_panel visibility and updates label.
+      CreateLogToggleButton();
    }
 
    // Run broker-compatibility checks once. Result is cached in
@@ -219,7 +223,69 @@ int OnInit() {
 void OnDeinit(const int reason) {
    EventKillTimer();
    if(ShowDashboard) g_dashboard.Destroy();
-   if(ShowLogPanel)  g_log_panel.Destroy();
+   if(ShowLogPanel)  { g_log_panel.Destroy(); DestroyLogToggleButton(); }
+}
+
+// ---- LogPanel toggle button (anchored just below the dashboard) ----
+// MT5 OBJ_BUTTON fires CHARTEVENT_OBJECT_CLICK in OnChartEvent. The
+// button stays "pressed" after click, so we always reset OBJPROP_STATE
+// back to false to keep it behaving like a momentary action.
+#define CT_LOG_TOGGLE_NAME "CT_LogToggle"
+
+void RefreshLogToggleLabel() {
+   string label = g_log_panel.IsVisible() ? "Hide Log" : "Show Log";
+   ObjectSetString(0, CT_LOG_TOGGLE_NAME, OBJPROP_TEXT, label);
+   ChartRedraw(0);
+}
+
+void CreateLogToggleButton() {
+   // Place it directly under the dashboard (dashboard height = 900).
+   // Width 120, height 24. Cheap enough to recreate on re-attach.
+   if(ObjectFind(0, CT_LOG_TOGGLE_NAME) >= 0)
+      ObjectDelete(0, CT_LOG_TOGGLE_NAME);
+   if(!ObjectCreate(0, CT_LOG_TOGGLE_NAME, OBJ_BUTTON, 0, 0, 0)) {
+      Print("CT logtoggle: ObjectCreate failed, err=", GetLastError());
+      return;
+   }
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_XDISTANCE, DashboardX + 8);
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_YDISTANCE, DashboardY + 908);
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_XSIZE, 120);
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_YSIZE, 24);
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_BGCOLOR, 0x141210);
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_BORDER_COLOR, 0x3D2F18);
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_COLOR, 0xD4AF37);
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_FONTSIZE, 10);
+   ObjectSetString(0, CT_LOG_TOGGLE_NAME, OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_BACK, false);
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_STATE, false);
+   RefreshLogToggleLabel();
+}
+
+void DestroyLogToggleButton() {
+   if(ObjectFind(0, CT_LOG_TOGGLE_NAME) >= 0)
+      ObjectDelete(0, CT_LOG_TOGGLE_NAME);
+}
+
+void OnChartEvent(const int id, const long &lparam,
+                  const double &dparam, const string &sparam) {
+   if(id != CHARTEVENT_OBJECT_CLICK) return;
+   if(sparam != CT_LOG_TOGGLE_NAME) return;
+   // Reset visual pressed-state (button is momentary, not toggle-style).
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_STATE, false);
+   if(!ShowLogPanel) return;  // input-disabled, nothing to flip
+   g_log_panel.Toggle();
+   RefreshLogToggleLabel();
+   // If just shown, fetch+paint immediately rather than waiting for the
+   // next OnTimer tick so the operator doesn't see an empty panel.
+   if(g_log_panel.IsVisible()) {
+      g_last_log_fetch = 0;  // force FetchRecentEvents on next call
+      FetchRecentEvents();
+      g_log_panel.Update(g_log_events, ArraySize(g_log_events));
+   }
 }
 
 void OnTimer() {
@@ -244,7 +310,7 @@ void OnTimer() {
       BuildStats(s);
       g_dashboard.Update(s);
    }
-   if(ShowLogPanel) {
+   if(ShowLogPanel && g_log_panel.IsVisible()) {
       FetchRecentEvents();   // self-throttled to LogPanelPollSec
       g_log_panel.Update(g_log_events, ArraySize(g_log_events));
    }
