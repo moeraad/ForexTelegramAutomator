@@ -167,7 +167,12 @@ def test_openai_interpret_passes_reasoning_effort_when_set():
     kw = client.chat.completions.create.call_args.kwargs
     assert kw["model"] == "gpt-5"
     assert kw["reasoning_effort"] == "high"
-    assert kw["max_completion_tokens"] == 1024
+    # gpt-5 reasoning models charge max_completion_tokens for BOTH hidden
+    # reasoning AND visible output. With effort=high the provider reserves
+    # an extra 8000-token reasoning budget on top of max_output_tokens so
+    # the visible JSON isn't starved (root cause of historical empty-content
+    # / finish_reason="length" failures in the evaluator).
+    assert kw["max_completion_tokens"] == 1024 + 8000
     assert kw["messages"][0] == {"role": "system", "content": "SYS"}
     assert kw["messages"][1]["role"] == "user"
     user_content = kw["messages"][1]["content"]

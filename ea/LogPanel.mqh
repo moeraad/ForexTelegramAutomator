@@ -60,8 +60,8 @@ private:
    int      WrapText(string text, int max_chars, string &out_lines[]);
 
 public:
-   CLogPanel() : m_name("CT_LogPanel"), m_width(560), m_height(900),
-                 m_x(420), m_y(20), m_font("Consolas"),
+   CLogPanel() : m_name("CT_LogPanel"), m_width(1120), m_height(900),
+                 m_x(420), m_y(20), m_font("Tahoma"),
                  m_font_size(10), m_cursor_y(0), m_last_hash(0),
                  m_visible(true) {}
    bool Create(int x, int y);
@@ -161,7 +161,7 @@ void CLogPanel::DrawRow(const LogEvent &e) {
    string body = e.type;
    if(StringLen(e.summary) > 0) body += " " + e.summary;
    string body_lines[];
-   int nb = WrapText(body, 70, body_lines);
+   int nb = WrapText(body, 120, body_lines);
    for(int li = 0; li < nb; li++) {
       m_canvas.TextOut(70, m_cursor_y, body_lines[li],
                        LP_TEXT, TA_LEFT | TA_TOP);
@@ -173,7 +173,7 @@ void CLogPanel::DrawRow(const LogEvent &e) {
    if(StringLen(e.ea_response) > 0) {
       m_cursor_y += 13;
       string resp_lines[];
-      int nr = WrapText(e.ea_response, 82, resp_lines);
+      int nr = WrapText(e.ea_response, 140, resp_lines);
       for(int li = 0; li < nr; li++) {
          m_canvas.TextOut(70, m_cursor_y, resp_lines[li],
                           LP_MUTED, TA_LEFT | TA_TOP);

@@ -51,6 +51,12 @@ class LLMProvider(Protocol):
 # "low" | "medium" | "high". We funnel both off a single helper driven by
 # the existing AI_THINKING_ENABLED + AI_THINKING_BUDGET_TOKENS knobs.
 _ANTHROPIC_BUDGETS = {"low": 2000, "medium": 4000, "high": 8000}
+# OpenAI gpt-5 reasoning-token reserves added on top of max_output_tokens
+# so the visible JSON output isn't starved when reasoning_effort is set.
+# Mirrors the Anthropic table — without this, max_completion_tokens covers
+# BOTH hidden reasoning AND visible content, and "high" reasoning eats the
+# whole budget leaving finish_reason="length" + empty content.
+_OPENAI_REASONING_BUDGETS = {"minimal": 256, "low": 2000, "medium": 4000, "high": 8000}
 
 
 def reasoning_level(thinking_enabled: bool, budget_tokens: int) -> str | None:
@@ -237,13 +243,23 @@ class OpenAIProvider:
         # cached-prefix first so it survives the cache hit, then append the
         # volatile suffix as part of the same user turn.
         user_content = f"{cached_prefix}\n\n{volatile_suffix}"
+        # For gpt-5 reasoning models, max_completion_tokens covers BOTH
+        # hidden reasoning AND the visible output. Reserve a per-effort
+        # budget on top of max_output_tokens so the JSON output isn't
+        # starved by reasoning. Without this, "high" effort eats all 2048
+        # tokens and we get finish_reason="length" + empty content.
+        if reasoning_level is not None:
+            reserve = _OPENAI_REASONING_BUDGETS.get(reasoning_level, 4000)
+            completion_budget = max_output_tokens + reserve
+        else:
+            completion_budget = max_output_tokens
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
-            "max_completion_tokens": max_output_tokens,
+            "max_completion_tokens": completion_budget,
         }
         if reasoning_level is not None:
             kwargs["reasoning_effort"] = reasoning_level

@@ -247,17 +247,19 @@ void CreateLogToggleButton() {
       Print("CT logtoggle: ObjectCreate failed, err=", GetLastError());
       return;
    }
+   // Anchored inside the dashboard header row, to the left of the LIVE
+   // pill (which sits at canvas-relative x=300..380, y=8..22).
    ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_CORNER, CORNER_LEFT_UPPER);
    ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_XDISTANCE, DashboardX + 8);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_YDISTANCE, DashboardY + 908);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_XSIZE, 120);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_YSIZE, 24);
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_XDISTANCE, DashboardX + 220);
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_YDISTANCE, DashboardY + 6);
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_XSIZE, 70);
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_YSIZE, 18);
    ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_BGCOLOR, 0x141210);
    ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_BORDER_COLOR, 0x3D2F18);
    ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_COLOR, 0xD4AF37);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_FONTSIZE, 10);
-   ObjectSetString(0, CT_LOG_TOGGLE_NAME, OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_FONTSIZE, 8);
+   ObjectSetString(0, CT_LOG_TOGGLE_NAME, OBJPROP_FONT, "Tahoma");
    ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_BACK, false);
    ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_HIDDEN, true);
@@ -856,7 +858,11 @@ bool HttpGet(string url, string &outBody) {
       Print("WebRequest GET error ", GetLastError(), " url=", url);
       return false;
    }
-   outBody = CharArrayToString(result);
+   // Force UTF-8 decoding — the API serializes Arabic summaries as raw
+   // UTF-8 (FastAPI/Starlette uses ensure_ascii=False). Without CP_UTF8
+   // here the bytes get reinterpreted in the system codepage and the
+   // LogPanel shows mojibake.
+   outBody = CharArrayToString(result, 0, -1, CP_UTF8);
    return true;
 }
 
@@ -867,10 +873,13 @@ bool HttpPostJson(string url, string jsonBody, string &outBody) {
 
 bool HttpPostJsonWithStatus(string url, string jsonBody, string &outBody, int &outStatus) {
    char post[]; char result[];
-   string reqHeaders = "Content-Type: application/json\r\n" + AuthHeader();
+   string reqHeaders = "Content-Type: application/json; charset=utf-8\r\n" + AuthHeader();
    string respHeaders;
-   StringToCharArray(jsonBody, post, 0, StringLen(jsonBody));
-   ArrayResize(post, StringLen(jsonBody));
+   // Encode outgoing body as UTF-8 so any Arabic in alert text / payloads
+   // round-trips correctly. Default StringToCharArray uses CP_ACP and
+   // would mangle multibyte chars before they ever reach the API.
+   int blen = StringToCharArray(jsonBody, post, 0, -1, CP_UTF8);
+   if(blen > 0) ArrayResize(post, blen - 1);  // drop trailing NUL
    int res = WebRequest("POST", url, reqHeaders, 5000, post, result, respHeaders);
    if(res == -1) {
       Print("WebRequest POST error ", GetLastError(), " url=", url);
@@ -878,7 +887,7 @@ bool HttpPostJsonWithStatus(string url, string jsonBody, string &outBody, int &o
       return false;
    }
    outStatus = res;
-   outBody = CharArrayToString(result);
+   outBody = CharArrayToString(result, 0, -1, CP_UTF8);
    if(res >= 400) {
       Print("HTTP ", res, " on ", url, " body=", outBody);
       return false;
