@@ -125,7 +125,7 @@ private:
    void     DrawSection(string title);
    void     DrawRow(string label, string value, uint value_color);
    void     DrawDivider();
-   void     DrawWrappedText(string text, int max_chars, uint color);
+   void     DrawWrappedText(string text, int max_chars, uint clr);
    void     Pill(int x, int y, string text, uint bg, uint fg);
    string   FmtDuration(int sec);
    string   FmtSigned(double v, int decimals);
@@ -538,7 +538,7 @@ ulong CDashboard::HashStats(const DashboardStats &s) {
 // any single word longer than max_chars (long URLs etc). Used by the
 // SIGNAL QUALITY panel to render the AI evaluator's full reasoning instead
 // of a 50-char-truncated one-liner.
-void CDashboard::DrawWrappedText(string text, int max_chars, uint color) {
+void CDashboard::DrawWrappedText(string text, int max_chars, uint clr) {
    int n = StringLen(text);
    int i = 0;
    while(i < n) {
@@ -557,7 +557,7 @@ void CDashboard::DrawWrappedText(string text, int max_chars, uint color) {
          if(last_space > 0) take = last_space;
       }
       string line = StringSubstr(text, i, take);
-      m_canvas.TextOut(12, m_cursor_y, line, color, TA_LEFT | TA_TOP);
+      m_canvas.TextOut(12, m_cursor_y, line, clr, TA_LEFT | TA_TOP);
       m_cursor_y += 14;
       i += take;
    }

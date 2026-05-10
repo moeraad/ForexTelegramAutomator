@@ -974,7 +974,7 @@ double LotsFromRisk(double slPrice, double entryPrice) {
    // and broker tick info available). Computes dollars-at-risk if SL is
    // hit at the proposed size; if it exceeds balance * MaxSlLossPercent / 100,
    // shrink the size to the largest that fits the cap.
-   double riskCapMsg = "";
+   string riskCapMsg = "";
    if(MaxSlLossPercent > 0 && slPrice > 0 && entryPrice > 0) {
       double tickSize = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_SIZE);
       double tickValue = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_VALUE);
@@ -2016,7 +2016,12 @@ void DoModifyTps(long id, string payload) {
    // RegisterPlan dedupes by ticket — replaces existing entry in place.
    // Pass curVol as origLots so future stage closes are sized against
    // what's actually open (not the pre-partial original).
-   RegisterPlan(ticket, isBuy, curVol, entry, curSl, tps, tpCount);
+   // entryLow/entryHigh = 0 -> SignalAnchorSl falls back to `entry` (the
+   // chased fill), preserving the pre-Step-1 BE-on-fill behaviour for
+   // re-staged plans. MODIFY_TPS does not currently carry the new signal's
+   // entry zone in its payload; revisit if you want full new-policy
+   // fidelity on re-stages.
+   RegisterPlan(ticket, isBuy, curVol, entry, curSl, 0.0, 0.0, tps, tpCount);
 
    PostPositionUpdate(ticket, curVol, 0);    // newSl=0 → leave DB SL as-is (set by preceding MOVE_SL)
    PostResult(id, "executed", ticket,
