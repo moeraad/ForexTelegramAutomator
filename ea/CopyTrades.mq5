@@ -80,7 +80,14 @@ input int    MarketPriceHeartbeatSec = 15;
 // NOT affected by this — only the AI's ad-hoc reactions to channel
 // messages mid-trade. Default false: most operators prefer the channel
 // signal to ride to its broker-set final TP without mid-flight partials.
-input bool   EnableAiPartialAndBe    = false;
+input bool   EnableAiPartialAndBe    = true;
+// Gate the AI's REINFORCE action (close current + reopen same side with
+// prior params). When false, REINFORCE actions silently no-op
+// (status=executed, ea_response="noop_reinforce_disabled") so they don't
+// pollute the rejected/failed counters. Useful when the channel uses
+// ambiguous wording ("any reinforce opportunity I'll post") that the AI
+// over-reads as an imperative. Default true preserves prior behavior.
+input bool   EnableReinforce          = false;
 
 CTrade trade;
 
@@ -2004,7 +2011,20 @@ void DoMoveSlBe(long id, string payload) {
    if(!PositionSelectByTicket(ticket)) { PostResult(id, "failed", ticket, "no_position"); return; }
    double entry = PositionGetDouble(POSITION_PRICE_OPEN);
    double curTp = PositionGetDouble(POSITION_TP);
-   if(trade.PositionModify(ticket, entry, curTp)) {
+   // Anchor SL on the signal-zone edge (entry_low for BUY / entry_high for
+   // SELL) — same as the staged ManagePlans pipeline. Falls back to the
+   // chased fill `entry` when no plan is registered (1-TP signals, legacy
+   // in-flight) or when SignalAnchorSl's safety net trips (anchor looser
+   // than slOrig, or wrong side of price).
+   double beSl = entry;
+   int planIdxBe = FindPlanIdx(ticket);
+   if(planIdxBe >= 0) {
+      double curExit = g_plans[planIdxBe].isBuy
+                       ? SymbolInfoDouble(Symbol_Override, SYMBOL_BID)
+                       : SymbolInfoDouble(Symbol_Override, SYMBOL_ASK);
+      beSl = SignalAnchorSl(g_plans[planIdxBe], curExit);
+   }
+   if(trade.PositionModify(ticket, beSl, curTp)) {
       // For 3-TP plans still in stage 0: keep the plan armed and advance
       // stage 0 -> 1 instead of dropping it. This lets ManagePlans fire
       // the natural stage-1 partial close at TP2 even after the AI's
@@ -2024,7 +2044,7 @@ void DoMoveSlBe(long id, string payload) {
       } else {
          RemovePlanByTicket(ticket);
       }
-      PostPositionUpdate(ticket, 0, entry);
+      PostPositionUpdate(ticket, 0, beSl);
       PostResult(id, "executed", ticket, "");
    } else {
       PostResult(id, "failed", ticket,
@@ -2192,6 +2212,10 @@ void DoReopenLast(long id, string payload) {
 }
 
 void DoReinforce(long id, string payload) {
+   if(!EnableReinforce) {
+      PostResult(id, "executed", 0, "noop_reinforce_disabled");
+      return;
+   }
    long currentTicket = FindSingletonOpenTicket(Symbol_Override);
    string fakePayload = "";
 
