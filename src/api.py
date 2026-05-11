@@ -54,6 +54,19 @@ class PositionUpdateBody(BaseModel):
     realized_pnl_delta: float | None = None
 
 
+class AttachSignalBody(BaseModel):
+    """EA-posted body for /positions/{ticket}/attach_signal.
+
+    Called after the EA successfully modifies the broker-side SL/TP on a
+    naked position. Clears is_naked, sets sl/tp on the row. Final-TP only —
+    the broker only holds one TP; the full tps[] ladder lives on the
+    ATTACH_SIGNAL action payload and is consumed by the EA's RegisterPlan
+    for the staged exit.
+    """
+    sl: float
+    tp: float
+
+
 class MarketPriceBody(BaseModel):
     """Heartbeat from the EA so the AI prompt has a current price for
     two-digit SL shorthand decoding (e.g. "ستوبك 56" -> 4856 only if we
@@ -256,13 +269,17 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             )
             for leg in legs:
                 s = leg.snapshot
+                is_naked = 1 if s.get("is_naked") else 0
+                naked_opened_at = now if is_naked else None
                 conn.execute(
                     "INSERT OR IGNORE INTO positions(action_id, mt5_ticket, symbol, side, "
-                    "volume, original_volume, entry_price, sl, tp, status, opened_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?, 'open', ?)",
+                    "volume, original_volume, entry_price, sl, tp, status, opened_at, "
+                    "is_naked, naked_opened_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?, 'open', ?, ?, ?)",
                     (action_id, leg.mt5_ticket, s.get("symbol"), s.get("side"),
                      s.get("volume"), s.get("volume"),
-                     s.get("entry_price"), s.get("sl"), s.get("tp"), now),
+                     s.get("entry_price"), s.get("sl"), s.get("tp"), now,
+                     is_naked, naked_opened_at),
                 )
             conn.execute("COMMIT")
         except Exception:
@@ -371,6 +388,37 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
                 ticket, row["sl"], body.sl,
             )
         return {"ok": True, "updated": explicit_fields}
+
+    @app.post("/positions/{ticket}/attach_signal")
+    def attach_signal(ticket: int, body: AttachSignalBody):
+        """EA calls this after wiring a structured signal's SL/TP into a
+        previously naked OPEN_INSTANT position. Clears the naked flag,
+        records new SL/TP, and stamps sl_moved_at if this is the first SL
+        move. Idempotent on a non-naked open row (just updates sl/tp).
+        """
+        row = conn.execute(
+            "SELECT status, sl, sl_moved_at, is_naked FROM positions WHERE mt5_ticket=?",
+            (ticket,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404)
+        if row["status"] != "open":
+            raise HTTPException(409, f"position is {row['status']}")
+        sets = ["is_naked=0", "naked_opened_at=NULL", "sl=?", "tp=?"]
+        args: list = [body.sl, body.tp]
+        if row["sl"] != body.sl and row["sl_moved_at"] is None:
+            sets.append("sl_moved_at=?")
+            args.append(datetime.now(timezone.utc).isoformat())
+        args.append(ticket)
+        conn.execute(
+            f"UPDATE positions SET {', '.join(sets)} WHERE mt5_ticket=?",
+            args,
+        )
+        trades.info(
+            "position_attach_signal ticket=%s sl_before=%s sl_after=%s tp=%s",
+            ticket, row["sl"], body.sl, body.tp,
+        )
+        return {"ok": True, "was_naked": bool(row["is_naked"])}
 
     @app.post("/positions/{ticket}/close")
     def close_position(ticket: int, body: CloseBody):

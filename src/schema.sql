@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS actions (
   action_type     TEXT NOT NULL CHECK(action_type IN (
                     'OPEN','MODIFY','CLOSE','CLOSE_ALL','ALERT',
                     'MOVE_SL_BE','MOVE_SL','CLOSE_PARTIAL','CLOSE_FULL',
-                    'REOPEN_LAST','REINFORCE','TIGHTEN_SL','MODIFY_TPS'
+                    'REOPEN_LAST','REINFORCE','TIGHTEN_SL','MODIFY_TPS',
+                    'OPEN_INSTANT','ATTACH_SIGNAL'
                   )),
   payload_json    TEXT NOT NULL,
   status          TEXT NOT NULL DEFAULT 'pending'
@@ -71,7 +72,13 @@ CREATE TABLE IF NOT EXISTS positions (
   status               TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
   opened_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
   closed_at            DATETIME,
-  close_reason         TEXT
+  close_reason         TEXT,
+  -- is_naked / naked_opened_at: set by OPEN_INSTANT; cleared by ATTACH_SIGNAL
+  -- or by the EA fallback timer when the structured signal never arrives.
+  -- A naked position has no signal-defined SL/TP and rides only on the
+  -- emergency SL set at open. naked_opened_at is ISO-8601 UTC.
+  is_naked             INTEGER NOT NULL DEFAULT 0,
+  naked_opened_at      DATETIME
 );
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 -- Hot path: GET /positions/last_closed?symbol=X&within_hours=N

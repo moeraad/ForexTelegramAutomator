@@ -6,6 +6,7 @@ from src.validators import (
     AIResponse, parse_ai_response,
     MoveSlBeAction, MoveSlAction, ClosePartialAction, CloseFullAction,
     ReopenLastAction, ReinforceAction, TightenSlAction, ModifyTpsAction,
+    OpenInstantAction, AttachSignalAction,
 )
 from src.validators import validate_action, ValidationResult
 from src.db import connect, init_schema
@@ -415,3 +416,102 @@ def test_db_accepts_modify_tps_action_type(tmp_path):
         "SELECT action_type FROM actions WHERE action_type='MODIFY_TPS'"
     ).fetchone()
     assert row is not None
+
+
+# ---- Phase 4: OPEN_INSTANT / ATTACH_SIGNAL -----------------------------
+
+def test_open_instant_action_valid():
+    a = OpenInstantAction(symbol="XAUUSD", side="BUY", comment="instant buy")
+    assert a.type == "OPEN_INSTANT"
+    assert a.side == "BUY"
+
+
+def test_open_instant_rejects_non_gold():
+    with pytest.raises(ValidationError):
+        OpenInstantAction(symbol="EURUSD", side="BUY")
+
+
+def test_open_instant_rejects_invalid_side():
+    with pytest.raises(ValidationError):
+        OpenInstantAction(symbol="XAUUSD", side="HOLD")
+
+
+def test_attach_signal_action_valid():
+    a = AttachSignalAction(
+        symbol="XAUUSD", side="BUY",
+        entry_low=4679, entry_high=4681,
+        sl=4671, tps=[4694, 4700, 4720],
+        comment="FXENG",
+    )
+    assert a.type == "ATTACH_SIGNAL"
+    assert a.tps == [4694, 4700, 4720]
+
+
+def test_attach_signal_rejects_empty_tps():
+    with pytest.raises(ValidationError):
+        AttachSignalAction(
+            symbol="XAUUSD", side="BUY",
+            entry_low=4679, entry_high=4681,
+            sl=4671, tps=[],
+        )
+
+
+def test_attach_signal_rejects_negative_tp():
+    with pytest.raises(ValidationError):
+        AttachSignalAction(
+            symbol="XAUUSD", side="BUY",
+            entry_low=4679, entry_high=4681,
+            sl=4671, tps=[4694, -1.0],
+        )
+
+
+def test_attach_signal_rejects_non_positive_sl():
+    with pytest.raises(ValidationError):
+        AttachSignalAction(
+            symbol="XAUUSD", side="BUY",
+            entry_low=4679, entry_high=4681,
+            sl=0, tps=[4694],
+        )
+
+
+def test_parse_ai_response_dispatches_open_instant():
+    raw = '{"actions":[{"type":"OPEN_INSTANT","symbol":"XAUUSD","side":"SELL"}]}'
+    resp = parse_ai_response(raw)
+    assert len(resp.actions) == 1
+    assert isinstance(resp.actions[0], OpenInstantAction)
+    assert resp.actions[0].side == "SELL"
+
+
+def test_parse_ai_response_dispatches_attach_signal():
+    raw = (
+        '{"actions":[{"type":"ATTACH_SIGNAL","symbol":"XAUUSD","side":"BUY",'
+        '"entry_low":4679,"entry_high":4681,"sl":4671,"tps":[4694,4720]}]}'
+    )
+    resp = parse_ai_response(raw)
+    assert len(resp.actions) == 1
+    assert isinstance(resp.actions[0], AttachSignalAction)
+
+
+def test_db_accepts_instant_action_types(tmp_path):
+    """Phase-4 migration widens actions.action_type CHECK to allow
+    OPEN_INSTANT and ATTACH_SIGNAL tokens."""
+    conn = connect(str(tmp_path / "v.db"))
+    init_schema(conn)
+    for atype in ("OPEN_INSTANT", "ATTACH_SIGNAL"):
+        conn.execute(
+            "INSERT INTO actions(action_type, payload_json) VALUES(?, '{}')",
+            (atype,)
+        )
+    rows = conn.execute(
+        "SELECT action_type FROM actions WHERE action_type IN ('OPEN_INSTANT','ATTACH_SIGNAL')"
+    ).fetchall()
+    assert len(rows) == 2
+
+
+def test_positions_table_has_is_naked_column(tmp_path):
+    """Phase-4 positions migration adds is_naked + naked_opened_at."""
+    conn = connect(str(tmp_path / "v.db"))
+    init_schema(conn)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(positions)").fetchall()}
+    assert "is_naked" in cols
+    assert "naked_opened_at" in cols

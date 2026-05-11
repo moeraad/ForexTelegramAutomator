@@ -810,3 +810,94 @@ def test_post_position_update_no_delta_leaves_pnl_null(tmp_path):
         "SELECT realized_pnl FROM positions WHERE mt5_ticket=?", (5004,),
     ).fetchone()
     assert row["realized_pnl"] is None
+
+
+# ---- Phase 4: OPEN_INSTANT / ATTACH_SIGNAL -----------------------------
+
+def test_post_result_naked_sets_is_naked(tmp_path):
+    """A snapshot with is_naked=true marks the position row naked +
+    stamps naked_opened_at."""
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN_INSTANT', '{}', 'sent')"
+    )
+    aid = cur.lastrowid
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{aid}/result", json={
+        "status": "executed",
+        "mt5_ticket": 77001,
+        "snapshot": {
+            "symbol": "XAUUSD", "side": "BUY", "volume": 0.30,
+            "entry_price": 4690.0, "sl": 4680.0, "tp": 0.0,
+            "is_naked": True,
+        },
+    })
+    assert r.status_code == 200
+    row = conn.execute(
+        "SELECT is_naked, naked_opened_at FROM positions WHERE mt5_ticket=77001"
+    ).fetchone()
+    assert row["is_naked"] == 1
+    assert row["naked_opened_at"] is not None
+
+
+def test_attach_signal_clears_naked_and_sets_sl_tp(tmp_path):
+    """ATTACH_SIGNAL endpoint clears is_naked, updates sl/tp, stamps
+    sl_moved_at on first move."""
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN_INSTANT', '{}', 'executed')"
+    )
+    aid = cur.lastrowid
+    conn.execute(
+        "INSERT INTO positions(action_id, mt5_ticket, symbol, side, volume, "
+        "entry_price, sl, tp, status, is_naked, naked_opened_at) "
+        "VALUES(?, 77002, 'XAUUSD', 'BUY', 0.30, 4690, 4680, 0, 'open', 1, ?)",
+        (aid, datetime.now(timezone.utc).isoformat()),
+    )
+    client = TestClient(build_app(conn))
+    r = client.post("/positions/77002/attach_signal", json={
+        "sl": 4685.0,
+        "tp": 4720.0,
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["was_naked"] is True
+    row = conn.execute(
+        "SELECT is_naked, naked_opened_at, sl, tp, sl_moved_at "
+        "FROM positions WHERE mt5_ticket=77002"
+    ).fetchone()
+    assert row["is_naked"] == 0
+    assert row["naked_opened_at"] is None
+    assert row["sl"] == 4685.0
+    assert row["tp"] == 4720.0
+    assert row["sl_moved_at"] is not None
+
+
+def test_attach_signal_404_when_ticket_unknown(tmp_path):
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.post("/positions/99999/attach_signal",
+                    json={"sl": 4685.0, "tp": 4720.0})
+    assert r.status_code == 404
+
+
+def test_attach_signal_409_when_already_closed(tmp_path):
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN_INSTANT', '{}', 'executed')"
+    )
+    aid = cur.lastrowid
+    conn.execute(
+        "INSERT INTO positions(action_id, mt5_ticket, symbol, side, volume, "
+        "entry_price, sl, tp, status) "
+        "VALUES(?, 77003, 'XAUUSD', 'BUY', 0.30, 4690, 4680, 0, 'closed')",
+        (aid,),
+    )
+    client = TestClient(build_app(conn))
+    r = client.post("/positions/77003/attach_signal",
+                    json={"sl": 4685.0, "tp": 4720.0})
+    assert r.status_code == 409

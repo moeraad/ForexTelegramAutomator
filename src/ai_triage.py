@@ -48,7 +48,8 @@ ARABIC MANAGEMENT TRIGGERS (always keep these — high-signal phrases from
 the channel; do not let their brevity fool the filter):
   أمن دخولك | احجز نصف | حجز الارباح | متاح حجز | ستوبك | ارفع ستوبك |
   خرجنا | متاح للشراء | متاحة للدخول | عزز شراء | عزز بيع | ضيق ستوبك |
-  قرب ستوبك | ثبات للنهاية | كمل | على الدخول من جديد
+  قرب ستوبك | ثبات للنهاية | كمل | على الدخول من جديد |
+  اشتري الذهب | اشتري ذهب | شراء الذهب | بيع الذهب | بيع ذهب
 
 WHEN IN DOUBT, RETURN "keep". False negatives (losing a real signal) are
 much worse than false positives (letting noise through to the next stage,

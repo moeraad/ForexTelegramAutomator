@@ -88,6 +88,33 @@ input bool   EnableAiPartialAndBe    = true;
 // ambiguous wording ("any reinforce opportunity I'll post") that the AI
 // over-reads as an imperative. Default true preserves prior behavior.
 input bool   EnableReinforce          = false;
+// Final-stage exit policy for 2-TP and 3-TP plans:
+//   FINAL_TRAIL  — at the stage that activates the trail (2-TP stage 0→1,
+//                  3-TP stage 1→2) the broker TP is removed and the
+//                  remainder rides TrailStage2Sls until SL hits. Captures
+//                  extensions past the channel's final TP.
+//   FINAL_KEEP_TP — the broker TP stays at the signal's final TP so the
+//                  remainder closes at market when price reaches that
+//                  level. TrailStage2Sls is skipped for this plan.
+// SL still moves at each stage transition in both modes (anchor / TP1).
+// 1-TP signals are unaffected (no plan registered; broker TP rides).
+enum ENUM_FINAL_STAGE_MODE { FINAL_TRAIL, FINAL_KEEP_TP };
+input ENUM_FINAL_STAGE_MODE FinalStageMode = FINAL_KEEP_TP;
+// ---- Phase 4: directional-command-first flow (OPEN_INSTANT / ATTACH_SIGNAL).
+// Channel posts "اشتري الذهب" / "بيع الذهب" → AI emits OPEN_INSTANT → EA
+// opens market with no signal SL/TP, just an emergency SL sized so a hit
+// equals InstantRiskPercent of account balance. Structured signal expected
+// within InstantTimeoutMinutes; if it arrives, ATTACH_SIGNAL wires real
+// SL/TPs and registers a staged plan. If the timeout fires first, the EA
+// installs a fallback TP at InstantTpMultiplier × original_sl_distance and
+// trails SL at InstantTrailPoints behind price (ratchet-only).
+// Set EnableInstantOpen=false to disable the whole pipeline (DoOpenInstant
+// rejects with "instant_open_disabled").
+input bool   EnableInstantOpen        = true;
+input double InstantRiskPercent       = 1.0;
+input int    InstantTimeoutMinutes    = 5;
+input int    InstantTrailPoints       = 300;
+input double InstantTpMultiplier      = 2.0;
 
 CTrade trade;
 
@@ -173,6 +200,7 @@ int OnInit() {
    trade.SetDeviationInPoints(SlippagePoints);
    EventSetTimer(PollIntervalSec);
    LoadPersistedPlans();
+   LoadPersistedNaked();
    g_ea_start = TimeCurrent();
    g_balance_open_today = AccountInfoDouble(ACCOUNT_BALANCE);
    g_equity_peak_today = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -304,6 +332,7 @@ void OnTimer() {
       PollAndExecute();
       ManagePlans();  // also driven by OnTick; belt-and-suspenders
       TrailStage2Sls();  // post-TP2 trailing SL on 3-TP plans (Flavour A)
+      ManageNakedPlans();  // Phase 4: OPEN_INSTANT timeout fallback + trail
       ReconcileClosedPositions();
       DrainRetryQueue();  // resend any persisted POSTs from a prior outage
    }
@@ -998,6 +1027,8 @@ void ExecuteOne(string obj) {
    else if(atype == "REINFORCE")    DoReinforce(id, payload);
    else if(atype == "TIGHTEN_SL")   DoTightenSl(id, payload);
    else if(atype == "MODIFY_TPS")   DoModifyTps(id, payload);
+   else if(atype == "OPEN_INSTANT") DoOpenInstant(id, payload);
+   else if(atype == "ATTACH_SIGNAL") DoAttachSignal(id, payload);
    else PostResult(id, "rejected", 0, "unknown_action_type:" + atype);
 }
 
@@ -1651,10 +1682,21 @@ void ManagePlans() {
          //   3-TP keeps the broker TP at TP3 as a worst-case ceiling
          //   through stage 1; it is removed at the stage-1→2 transition.
          double newSl = SignalAnchorSl(p, exitPrice);
-         double newTp = (p.tpCount == 2)
-                        ? 0.0
-                        : (PositionSelectByTicket(p.ticket)
-                           ? PositionGetDouble(POSITION_TP) : 0.0);
+         // 2-TP stage-0 broker TP removal is gated by FinalStageMode:
+         //   FINAL_TRAIL  → remove TP (0.0) so trail can capture extensions
+         //   FINAL_KEEP_TP → leave broker TP at signal final (rides to market hit)
+         // 3-TP at stage 0 always keeps current TP (final ceiling persists
+         // through stage 1; removal happens at the stage 1→2 transition).
+         double newTp;
+         if(p.tpCount == 2) {
+            newTp = (FinalStageMode == FINAL_TRAIL)
+                    ? 0.0
+                    : (PositionSelectByTicket(p.ticket)
+                       ? PositionGetDouble(POSITION_TP) : 0.0);
+         } else {
+            newTp = PositionSelectByTicket(p.ticket)
+                    ? PositionGetDouble(POSITION_TP) : 0.0;
+         }
          double curSl0 = PositionSelectByTicket(p.ticket)
                          ? PositionGetDouble(POSITION_SL) : 0.0;
          double pointSize0 = SymbolInfoDouble(Symbol_Override, SYMBOL_POINT);
@@ -1754,11 +1796,15 @@ void ManagePlans() {
                         ? PositionGetDouble(POSITION_TP) : 0.0;
          double pointSize = SymbolInfoDouble(Symbol_Override, SYMBOL_POINT);
          double tol = (pointSize > 0 ? pointSize : 0.01) * 5.0;
+         // 3-TP stage 1→2 broker TP removal gated by FinalStageMode:
+         //   FINAL_TRAIL  → remove TP (0.0) so trail engages
+         //   FINAL_KEEP_TP → leave broker TP at TP3 (rides to market hit)
+         double targetTp = (FinalStageMode == FINAL_TRAIL) ? 0.0 : curTp;
          bool slNeedsMove = (MathAbs(curSl - newSl) > tol);
-         bool tpNeedsRemoval = (curTp != 0.0);
+         bool tpNeedsRemoval = (MathAbs(curTp - targetTp) > tol);
          if(!slNeedsMove && !tpNeedsRemoval) {
             Print("CT plan stage2 SL/TP already correct ticket=", p.ticket);
-         } else if(!trade.PositionModify(p.ticket, newSl, 0.0)) {
+         } else if(!trade.PositionModify(p.ticket, newSl, targetTp)) {
             Print("CT plan stage2 SL->TP1+removeTp FAILED ticket=", p.ticket,
                   " want_sl=", DoubleToString(newSl, 5),
                   " retcode=", trade.ResultRetcode(),
@@ -1809,6 +1855,9 @@ void ManagePlans() {
 // down for SELL). Never loosens.
 void TrailStage2Sls() {
    if(ArraySize(g_plans) == 0) return;
+   // Skip trailing entirely when operator prefers the broker TP at the
+   // signal's final TP to close the remainder at market.
+   if(FinalStageMode == FINAL_KEEP_TP) return;
 
    double pointSize = SymbolInfoDouble(Symbol_Override, SYMBOL_POINT);
    if(pointSize <= 0) pointSize = 0.01;
@@ -2615,4 +2664,377 @@ void PostResult(long id, string status, long ticket, string err) {
    body += "}";
    string resp;
    HttpPostJson(ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result", body, resp);
+}
+
+// =====================================================================
+// Phase 4: OPEN_INSTANT / ATTACH_SIGNAL
+// =====================================================================
+//
+// One naked ticket at a time (single-position invariant). The g_naked[]
+// array is always size 0 or 1 in normal flow; we use an array (not a
+// single struct) so persistence + restart recovery is symmetric with
+// g_plans[].
+//
+// Lifecycle:
+//   OPEN_INSTANT  → opens market, computes emergency SL, appends naked entry
+//   ATTACH_SIGNAL → matches ticket+side, sets real SL/TP, registers TradePlan,
+//                   removes naked entry
+//   Timeout       → ManageNakedPlans installs fallback TP at
+//                   InstantTpMultiplier × emergency_sl_distance and trails SL
+//                   InstantTrailPoints behind price (ratchet-only).
+//                   naked entry stays present, fallback_armed=1, so trail
+//                   continues each OnTimer tick.
+//   Manual close  → ManageNakedPlans drops the entry when the ticket is gone.
+
+struct NakedPlan {
+   long     ticket;
+   bool     isBuy;
+   double   entry;          // actual broker fill price
+   double   emergencySl;    // SL set at open (the 1%-balance-loss price)
+   datetime openedAt;       // broker time of the fill
+   bool     fallbackArmed;  // true once timeout TP + trail were installed
+};
+
+NakedPlan g_naked[];
+
+string NakedKey(long ticket, string field) {
+   return "ct_naked_" + IntegerToString(ticket) + "_" + field;
+}
+
+void PersistNaked(const NakedPlan &n) {
+   GlobalVariableSet(NakedKey(n.ticket, "isBuy"),        n.isBuy ? 1.0 : 0.0);
+   GlobalVariableSet(NakedKey(n.ticket, "entry"),        n.entry);
+   GlobalVariableSet(NakedKey(n.ticket, "emergencySl"),  n.emergencySl);
+   GlobalVariableSet(NakedKey(n.ticket, "openedAt"),     (double)n.openedAt);
+   GlobalVariableSet(NakedKey(n.ticket, "fallback"),     n.fallbackArmed ? 1.0 : 0.0);
+}
+
+void EraseNaked(long ticket) {
+   string fields[] = {"isBuy","entry","emergencySl","openedAt","fallback"};
+   for(int i = 0; i < ArraySize(fields); i++)
+      GlobalVariableDel(NakedKey(ticket, fields[i]));
+}
+
+int FindNakedIdx(long ticket) {
+   for(int i = 0; i < ArraySize(g_naked); i++)
+      if(g_naked[i].ticket == ticket) return i;
+   return -1;
+}
+
+long FindSingletonNakedTicket() {
+   for(int i = 0; i < ArraySize(g_naked); i++)
+      if(PositionSelectByTicket(g_naked[i].ticket)) return g_naked[i].ticket;
+   return 0;
+}
+
+void RemoveNaked(int idx) {
+   long t = g_naked[idx].ticket;
+   int n = ArraySize(g_naked);
+   for(int j = idx; j < n - 1; j++) g_naked[j] = g_naked[j + 1];
+   ArrayResize(g_naked, n - 1);
+   EraseNaked(t);
+}
+
+// Balance-only lot sizing (no SL-distance scaling). Mirrors LotsFromRisk
+// step 1 + step 3; we skip step 2 because OPEN_INSTANT has no signal SL
+// to cap against.
+double LotsFromBalance() {
+   double minLot = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_MIN);
+   double lotStep = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_STEP);
+   if(lotStep <= 0) lotStep = 0.01;
+   if(minLot <= 0) minLot = lotStep;
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(balance <= 0 || LotsPer100Balance <= 0) return minLot;
+   double lots = (balance / 100.0) * LotsPer100Balance;
+   lots = MathFloor(lots / lotStep) * lotStep;
+   if(lots > MaxLotsPerSignal) lots = MaxLotsPerSignal;
+   if(lots < minLot) lots = minLot;
+   return NormalizeDouble(lots, 2);
+}
+
+// Price distance such that hitting it costs `riskPercent` of account balance
+// for `lots` size. Uses tick size/value so the result is correct on any
+// symbol the EA is configured for, not just XAUUSD.
+double EmergencySlDistance(double lots, double riskPercent) {
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double tickSize = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_SIZE);
+   double tickValue = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_VALUE);
+   if(lots <= 0 || balance <= 0 || tickSize <= 0 || tickValue <= 0 || riskPercent <= 0)
+      return 0.0;
+   double targetLoss = balance * riskPercent / 100.0;
+   double dollarsPerUnit = tickValue / tickSize;     // $ per 1.0 price move per lot
+   if(dollarsPerUnit <= 0) return 0.0;
+   double distance = targetLoss / (lots * dollarsPerUnit);
+   return distance;
+}
+
+void DoOpenInstant(long id, string payload) {
+   if(!EnableInstantOpen) {
+      PostResult(id, "rejected", 0, "instant_open_disabled");
+      return;
+   }
+   // Single-position invariant. If anything is open (managed OR naked),
+   // the AI should have emitted CLOSE_FULL first. Belt-and-suspenders: reject.
+   if(CountOurOpenPositions() >= 1) {
+      PostResult(id, "rejected", 0, "already_open");
+      return;
+   }
+   string side = JsonField(payload, "side");
+   bool isBuy = (side == "BUY");
+   if(side != "BUY" && side != "SELL") {
+      PostResult(id, "failed", 0, "invalid_side:" + side);
+      return;
+   }
+
+   double lots = LotsFromBalance();
+   double price = SymbolInfoDouble(Symbol_Override, isBuy ? SYMBOL_ASK : SYMBOL_BID);
+   if(price <= 0) { PostResult(id, "failed", 0, "no_price"); return; }
+   double slDistance = EmergencySlDistance(lots, InstantRiskPercent);
+   if(slDistance <= 0) {
+      PostResult(id, "failed", 0, "emergency_sl_calc_failed");
+      return;
+   }
+   double slPrice = isBuy ? price - slDistance : price + slDistance;
+   int digits = (int)SymbolInfoInteger(Symbol_Override, SYMBOL_DIGITS);
+   slPrice = NormalizeDouble(slPrice, digits);
+
+   bool ok = isBuy
+      ? trade.Buy(lots, Symbol_Override, 0.0, slPrice, 0.0, "ct-instant")
+      : trade.Sell(lots, Symbol_Override, 0.0, slPrice, 0.0, "ct-instant");
+   if(!ok) {
+      PostResult(id, "failed", 0,
+                 "instant_open_failed:" + IntegerToString(trade.ResultRetcode()));
+      return;
+   }
+   long ticket = (long)trade.ResultDeal();
+   if(ticket == 0) ticket = (long)trade.ResultOrder();
+   // Fall back to scanning open positions for a freshly-opened ticket.
+   if(ticket == 0) {
+      for(int i = PositionsTotal() - 1; i >= 0; i--) {
+         long t = (long)PositionGetTicket(i);
+         if(PositionSelectByTicket(t)
+            && PositionGetString(POSITION_SYMBOL) == Symbol_Override) {
+            ticket = t;
+            break;
+         }
+      }
+   }
+   if(ticket == 0) {
+      PostResult(id, "failed", 0, "no_ticket_after_open");
+      return;
+   }
+
+   double fillPrice = price;
+   if(PositionSelectByTicket(ticket))
+      fillPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+
+   NakedPlan n;
+   n.ticket = ticket;
+   n.isBuy = isBuy;
+   n.entry = fillPrice;
+   n.emergencySl = slPrice;
+   n.openedAt = TimeCurrent();
+   n.fallbackArmed = false;
+   int existing = FindNakedIdx(ticket);
+   if(existing >= 0) g_naked[existing] = n;
+   else {
+      int m = ArraySize(g_naked);
+      ArrayResize(g_naked, m + 1);
+      g_naked[m] = n;
+   }
+   PersistNaked(n);
+   RememberRecentOpen(ticket);
+
+   string legJson = StringFormat(
+      "{\"mt5_ticket\":%I64d,\"snapshot\":{\"symbol\":\"%s\",\"side\":\"%s\","
+      "\"volume\":%.2f,\"entry_price\":%.2f,\"sl\":%.2f,\"tp\":0.0,"
+      "\"is_naked\":true}}",
+      ticket, Symbol_Override, side, lots, fillPrice, slPrice
+   );
+   string body = "{\"status\":\"executed\",\"legs\":[" + legJson + "]}";
+   string resp; int status;
+   string resultUrl = ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result";
+   bool postOk = HttpPostJsonWithStatus(resultUrl, body, resp, status);
+   if(!postOk) {
+      Print("Result POST failed for instant action ", id, " status=", status,
+            " — queued for retry");
+      EnqueueRetry(resultUrl, body);
+   }
+   Print("CT OPEN_INSTANT id=", id, " ticket=", ticket, " side=", side,
+         " lots=", lots, " entry=", fillPrice, " emergency_sl=", slPrice,
+         " (risk=", InstantRiskPercent, "% balance)");
+   g_stats_executed++;
+   g_last_action_status = "executed";
+   g_last_action_at = TimeCurrent();
+}
+
+void DoAttachSignal(long id, string payload) {
+   string side = JsonField(payload, "side");
+   bool isBuy = (side == "BUY");
+   double sl = StringToDouble(JsonField(payload, "sl"));
+   double entryLow = StringToDouble(JsonField(payload, "entry_low"));
+   double entryHigh = StringToDouble(JsonField(payload, "entry_high"));
+   string tpsStr = JsonField(payload, "tps");
+   double tps[];
+   ParseTps(tpsStr, tps);
+   int tpCount = ArraySize(tps);
+   if(tpCount == 0) { PostResult(id, "failed", 0, "no_tps"); return; }
+   if(tpCount > 3) tpCount = 3;
+
+   long ticket = FindSingletonNakedTicket();
+   if(ticket <= 0) {
+      PostResult(id, "rejected", 0, "no_naked_position");
+      return;
+   }
+   int idx = FindNakedIdx(ticket);
+   if(idx < 0) {
+      PostResult(id, "rejected", 0, "naked_idx_missing");
+      return;
+   }
+   if(g_naked[idx].isBuy != isBuy) {
+      // Direction mismatch — the AI should have emitted CLOSE_FULL + OPEN_INSTANT
+      // (the conflict-flip path). Reject so we don't silently flip direction.
+      PostResult(id, "rejected", ticket, "naked_side_mismatch");
+      return;
+   }
+   if(!PositionSelectByTicket(ticket)) {
+      PostResult(id, "failed", ticket, "naked_position_vanished");
+      return;
+   }
+
+   SortTpsByDistance(tps, tpCount, isBuy);
+   double tpFinal = tps[tpCount - 1];
+   double entry = g_naked[idx].entry;
+
+   if(!trade.PositionModify(ticket, sl, tpFinal)) {
+      PostResult(id, "failed", ticket,
+                 "attach_modify_failed:" + IntegerToString(trade.ResultRetcode()));
+      return;
+   }
+
+   // Register a staged plan as if the position had opened from a normal OPEN.
+   // entry stays the chased fill (g_naked[idx].entry); slOrig becomes the
+   // signal SL — used by SignalAnchorSl as the "loosen guard".
+   if(tpCount >= 2) {
+      RegisterPlan(ticket, isBuy, PositionGetDouble(POSITION_VOLUME),
+                   entry, sl, entryLow, entryHigh, tps, tpCount);
+   }
+
+   // POST attach_signal — DB clears is_naked, records sl/tp.
+   string body = StringFormat("{\"sl\":%.2f,\"tp\":%.2f}", sl, tpFinal);
+   string resp;
+   HttpPostJson(ApiBaseUrl + "/positions/" + IntegerToString(ticket)
+                + "/attach_signal", body, resp);
+
+   RemoveNaked(idx);
+   PostResult(id, "executed", ticket, "");
+   Print("CT ATTACH_SIGNAL id=", id, " ticket=", ticket, " side=", side,
+         " sl=", sl, " tpFinal=", tpFinal, " tpCount=", tpCount);
+}
+
+void ManageNakedPlans() {
+   if(ArraySize(g_naked) == 0) return;
+   datetime now = TimeCurrent();
+   int timeoutSec = InstantTimeoutMinutes * 60;
+   double pointSize = SymbolInfoDouble(Symbol_Override, SYMBOL_POINT);
+   if(pointSize <= 0) pointSize = 0.01;
+   double trailDist = InstantTrailPoints * pointSize;
+   long stopsLevel = SymbolInfoInteger(Symbol_Override, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDist = (double)stopsLevel * pointSize;
+   int digits = (int)SymbolInfoInteger(Symbol_Override, SYMBOL_DIGITS);
+
+   for(int i = ArraySize(g_naked) - 1; i >= 0; i--) {
+      NakedPlan p = g_naked[i];
+      if(!PositionSelectByTicket(p.ticket)) {
+         // Closed (SL hit, manual close, etc.). Drop the entry.
+         RemoveNaked(i);
+         continue;
+      }
+      int age = (int)(now - p.openedAt);
+      if(!p.fallbackArmed) {
+         if(age < timeoutSec) continue;
+         // Timeout fired. Install fallback TP at InstantTpMultiplier ×
+         // emergency-SL distance from entry; leave SL where it is.
+         double slDist = MathAbs(p.entry - p.emergencySl);
+         double tpDist = slDist * InstantTpMultiplier;
+         double newTp = p.isBuy ? p.entry + tpDist : p.entry - tpDist;
+         newTp = NormalizeDouble(newTp, digits);
+         double curSl = PositionGetDouble(POSITION_SL);
+         if(trade.PositionModify(p.ticket, curSl, newTp)) {
+            p.fallbackArmed = true;
+            g_naked[i] = p;
+            PersistNaked(p);
+            Print("CT naked timeout fallback ticket=", p.ticket,
+                  " tp=", newTp, " (", InstantTpMultiplier,
+                  "x emergency_sl_distance ", slDist, ")");
+            string alertBody = StringFormat(
+               "{\"level\":\"warning\",\"text\":\"naked timeout ticket=%I64d "
+               "after %d min; fallback TP=%.2f, trailing SL @ %d pts now active. "
+               "No structured signal arrived.\"}",
+               p.ticket, InstantTimeoutMinutes, newTp, InstantTrailPoints);
+            string ar;
+            HttpPostJson(ApiBaseUrl + "/alerts", alertBody, ar);
+         } else {
+            Print("CT naked timeout fallback FAILED ticket=", p.ticket,
+                  " retcode=", trade.ResultRetcode());
+         }
+         continue;
+      }
+      // Already armed — trail SL @ InstantTrailPoints behind current price,
+      // ratchet-only. Same pattern as TrailStage2Sls.
+      double bid = SymbolInfoDouble(Symbol_Override, SYMBOL_BID);
+      double ask = SymbolInfoDouble(Symbol_Override, SYMBOL_ASK);
+      if(bid <= 0.0 || ask <= 0.0) continue;
+      double curSl = PositionGetDouble(POSITION_SL);
+      double curTp = PositionGetDouble(POSITION_TP);
+      double newSl = 0.0;
+      if(p.isBuy) {
+         double slFloor = bid - trailDist;
+         if(bid - slFloor < minDist) slFloor = bid - minDist;
+         if(slFloor <= curSl + pointSize * 5.0) continue;
+         newSl = NormalizeDouble(slFloor, digits);
+      } else {
+         double slCeil = ask + trailDist;
+         if(slCeil - ask < minDist) slCeil = ask + minDist;
+         if(slCeil >= curSl - pointSize * 5.0) continue;
+         newSl = NormalizeDouble(slCeil, digits);
+      }
+      if(trade.PositionModify(p.ticket, newSl, curTp)) {
+         PostPositionUpdate(p.ticket, 0, newSl);
+         Print("CT naked trail ticket=", p.ticket, " sl=", newSl);
+      }
+   }
+}
+
+void LoadPersistedNaked() {
+   int total = GlobalVariablesTotal();
+   string scanned[];
+   for(int i = 0; i < total; i++) {
+      string name = GlobalVariableName(i);
+      if(StringFind(name, "ct_naked_") != 0) continue;
+      if(StringFind(name, "_isBuy") < 0) continue;
+      // ct_naked_<ticket>_isBuy → extract ticket
+      string rest = StringSubstr(name, 9);  // strip "ct_naked_"
+      int us = StringFind(rest, "_");
+      if(us <= 0) continue;
+      string ticketStr = StringSubstr(rest, 0, us);
+      long ticket = StringToInteger(ticketStr);
+      if(ticket <= 0) continue;
+      if(!PositionSelectByTicket(ticket)) {
+         EraseNaked(ticket);
+         continue;
+      }
+      NakedPlan n;
+      n.ticket = ticket;
+      n.isBuy        = GlobalVariableGet(NakedKey(ticket, "isBuy")) > 0.5;
+      n.entry        = GlobalVariableGet(NakedKey(ticket, "entry"));
+      n.emergencySl  = GlobalVariableGet(NakedKey(ticket, "emergencySl"));
+      n.openedAt     = (datetime)GlobalVariableGet(NakedKey(ticket, "openedAt"));
+      n.fallbackArmed = GlobalVariableGet(NakedKey(ticket, "fallback")) > 0.5;
+      int m = ArraySize(g_naked);
+      ArrayResize(g_naked, m + 1);
+      g_naked[m] = n;
+      Print("CT restored naked ticket=", ticket, " isBuy=", n.isBuy,
+            " armed=", n.fallbackArmed);
+   }
 }

@@ -85,6 +85,12 @@ TIGHTEN_SL — reduce SL distance by `by_fraction` (default 0.5 = halve the dist
 MODIFY_TPS — replace the TP ladder on the open position. NO ticket field. EA modifies broker TP to the LAST value in `tps` and re-stages partials with the new ladder. Only emit alongside MOVE_SL when a new structured OPEN signal arrives while a position is already open AND we are keeping that position (see "NEW OPEN SIGNAL WITH POSITION OPEN" below). `tps` MUST be filtered to values still ahead of MARKET.mid (BUY: t > mid; SELL: t < mid).
   {"type":"MODIFY_TPS","tps":[<float>,...],"reason":"<short>"}
 
+OPEN_INSTANT — open at market from a bare directional command (no SL/TPs yet). EA computes lot size from balance and parks an emergency SL sized at ~1% of account balance. Expects a follow-up structured signal within minutes that becomes ATTACH_SIGNAL.
+  {"type":"OPEN_INSTANT","symbol":"XAUUSD","side":"BUY"|"SELL","comment":"<short>"}
+
+ATTACH_SIGNAL — wire SL/TPs to an already-open NAKED position (one opened by OPEN_INSTANT). EA finds the singleton naked ticket, modifies broker SL/final-TP, and registers a staged plan. Side MUST match the naked side — opposite-direction conflicts use CLOSE_FULL + OPEN instead.
+  {"type":"ATTACH_SIGNAL","symbol":"XAUUSD","side":"BUY"|"SELL","entry_low":<float>,"entry_high":<float>,"sl":<float>,"tps":[<float>,...],"comment":"<short>"}
+
 ALERT — info or warning only, no trade:
   {"type":"ALERT","level":"info"|"warning","text":"<text>"}
 
@@ -102,6 +108,10 @@ ARABIC VOCABULARY → ACTION MAP (high-confidence triggers from this channel):
   متاح للشراء / متاح للبيع / متاحة للدخول لو مش داخل / على الدخول من جديد ومكملين / نمسكوا مرة ثانية
                                     → REOPEN_LAST (only if no position open)
   عزز شراء / عزز بيع / عزز شراء الذهب  → REINFORCE (side from the message)
+  اشتري الذهب / اشتري ذهب / شراء الذهب (bare, NO entry/SL/TP)
+                                    → OPEN_INSTANT(side=BUY) — see DIRECTIONAL COMMAND FLOW below
+  بيع الذهب / بيع ذهب (bare, NO entry/SL/TP)
+                                    → OPEN_INSTANT(side=SELL) — see DIRECTIONAL COMMAND FLOW below
   استمر / مكملين / كمل / ثبات للنهاية   → CONTEXT (encouragement, no action by itself; combine with adjacent imperatives if present)
 
 PRICE DECODING (CRITICAL):
@@ -145,6 +155,27 @@ REOPEN_LAST DETAILS:
 REINFORCE DETAILS:
   - Use SYSTEM STATE `LAST CLOSED POSITION` for params. If none → ALERT warning.
   - Closes current (any PnL) AND reopens. Both happen server-side from a single REINFORCE action — do NOT emit a separate CLOSE_FULL+OPEN.
+
+DIRECTIONAL COMMAND FLOW (bare "اشتري الذهب" / "بيع الذهب" with NO entry/SL/TP):
+  Decision depends on SYSTEM STATE. "naked" = OPEN POSITIONS row tagged "[NAKED — awaiting ATTACH_SIGNAL]".
+
+  Channel says "اشتري الذهب" (implied side=BUY):
+    - No position open                 → emit [{"type":"OPEN_INSTANT","symbol":"XAUUSD","side":"BUY","comment":"<short>"}]
+    - Naked BUY already open           → emit ZERO actions, category="context", reasoning "naked BUY already open, idempotent"
+    - Naked SELL already open          → emit [{"type":"CLOSE_FULL"}, {"type":"OPEN_INSTANT","symbol":"XAUUSD","side":"BUY","comment":"<short>"}] (flip)
+    - Normal BUY managed position open → emit ZERO actions, category="context", reasoning "BUY already managed, ignore verbal repeat"
+    - Normal SELL managed position open → emit [{"type":"CLOSE_FULL"}, {"type":"OPEN_INSTANT","symbol":"XAUUSD","side":"BUY","comment":"<short>"}] (flip)
+
+  Channel says "بيع الذهب" (implied side=SELL): mirror image of the above.
+
+  When a STRUCTURED signal (entry + SL + TPs) arrives later AND a naked position exists:
+    - Naked side matches structured side → emit [{"type":"ATTACH_SIGNAL","symbol":"XAUUSD","side":<naked side>,"entry_low":…,"entry_high":…,"sl":…,"tps":[…],"comment":"<short>"}]
+    - Naked side opposite                → emit [{"type":"CLOSE_FULL"}, {"type":"OPEN","symbol":"XAUUSD","side":<structured side>, ...}] (treat as normal flip)
+    - No naked position                  → normal OPEN flow (current behavior, unchanged)
+
+  ATTACH_SIGNAL must include `side`, `entry_low`, `entry_high`, `sl`, and `tps`. Do NOT include `mt5_ticket` — the EA resolves the singleton naked ticket. Filter `tps` to all signal TPs (no MARKET.mid filtering — the broker only ever applies the final TP, and the EA stages partials from the full ladder).
+
+  NEVER emit OPEN_INSTANT when a structured signal is in the same message — that message goes through the normal OPEN flow. OPEN_INSTANT is ONLY for bare directional commands.
 
 NEW OPEN SIGNAL WITH POSITION OPEN — apply this decision tree EXACTLY when a structured OPEN block (BUY/SELL with entry zone + SL + TPs) arrives AND OPEN POSITIONS is non-empty:
 

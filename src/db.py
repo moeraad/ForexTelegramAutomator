@@ -30,6 +30,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_actions_drop_watch_columns(conn)
     _migrate_actions_add_modify_tps(conn)
     _migrate_positions_add_pnl(conn)
+    _migrate_actions_add_instant_types(conn)
+    _migrate_positions_add_naked(conn)
 
 
 def _migrate_actions_add_phase2_types(conn: sqlite3.Connection) -> None:
@@ -423,6 +425,88 @@ def _migrate_actions_add_modify_tps(conn: sqlite3.Connection) -> None:
         )
     finally:
         conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _migrate_actions_add_instant_types(conn: sqlite3.Connection) -> None:
+    """Widen actions.action_type CHECK to allow OPEN_INSTANT and ATTACH_SIGNAL.
+
+    The directional-command-first flow (Phase 4): channel posts "اشتري الذهب"
+    or "بيع الذهب" → AI emits OPEN_INSTANT → EA opens at market with an
+    emergency SL → structured signal arrives within ~3 min → AI emits
+    ATTACH_SIGNAL → EA modifies SL/TPs and registers the staged plan.
+    Pre-Phase-4 databases reject these via the older CHECK, so we rebuild
+    the table preserving every row when the new types are absent. Same
+    pattern as _migrate_actions_add_modify_tps.
+    """
+    sql_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='actions'"
+    ).fetchone()
+    if not sql_row or "'OPEN_INSTANT'" in sql_row["sql"]:
+        return
+    conn.execute(
+        "UPDATE actions SET source_msg_id = NULL "
+        "WHERE source_msg_id IS NOT NULL "
+        "  AND source_msg_id NOT IN (SELECT id FROM messages)"
+    )
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.executescript(
+            "BEGIN;"
+            "CREATE TABLE actions_new ("
+            "  id              INTEGER PRIMARY KEY,"
+            "  source_msg_id   INTEGER REFERENCES messages(id),"
+            "  action_type     TEXT NOT NULL CHECK(action_type IN ("
+            "                    'OPEN','MODIFY','CLOSE','CLOSE_ALL','ALERT',"
+            "                    'MOVE_SL_BE','MOVE_SL','CLOSE_PARTIAL','CLOSE_FULL',"
+            "                    'REOPEN_LAST','REINFORCE','TIGHTEN_SL','MODIFY_TPS',"
+            "                    'OPEN_INSTANT','ATTACH_SIGNAL'"
+            "                  )),"
+            "  payload_json    TEXT NOT NULL,"
+            "  status          TEXT NOT NULL DEFAULT 'pending'"
+            "                  CHECK(status IN ('pending','cancelled','sent','claimed','executed','failed','rejected')),"
+            "  created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,"
+            "  notified_at     DATETIME,"
+            "  execute_after   DATETIME,"
+            "  claimed_at      DATETIME,"
+            "  executed_at     DATETIME,"
+            "  ea_response     TEXT,"
+            "  fingerprint     TEXT"
+            ");"
+            "INSERT INTO actions_new(id, source_msg_id, action_type, payload_json, status,"
+            "  created_at, notified_at, execute_after, claimed_at, executed_at, ea_response,"
+            "  fingerprint) "
+            "SELECT id, source_msg_id, action_type, payload_json, status,"
+            "  created_at, notified_at, execute_after, claimed_at, executed_at, ea_response,"
+            "  fingerprint "
+            "FROM actions;"
+            "DROP TABLE actions;"
+            "ALTER TABLE actions_new RENAME TO actions;"
+            "CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);"
+            "CREATE INDEX IF NOT EXISTS idx_actions_fingerprint "
+            "  ON actions(fingerprint, created_at) "
+            "  WHERE fingerprint IS NOT NULL;"
+            "COMMIT;"
+        )
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _migrate_positions_add_naked(conn: sqlite3.Connection) -> None:
+    """Add is_naked + naked_opened_at to positions for OPEN_INSTANT flow.
+
+    A naked row is one opened via OPEN_INSTANT with only an emergency SL.
+    ATTACH_SIGNAL or the EA fallback timer clears is_naked when the position
+    becomes a fully-managed trade. Pre-migration rows backfill to is_naked=0
+    (legacy positions were never naked).
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(positions)").fetchall()}
+    if "is_naked" not in cols:
+        conn.execute(
+            "ALTER TABLE positions ADD COLUMN "
+            "is_naked INTEGER NOT NULL DEFAULT 0"
+        )
+    if "naked_opened_at" not in cols:
+        conn.execute("ALTER TABLE positions ADD COLUMN naked_opened_at DATETIME")
 
 
 def get_setting(conn: sqlite3.Connection, key: str) -> str | None:

@@ -140,10 +140,69 @@ class ModifyTpsAction(BaseModel):
         return v
 
 
+class OpenInstantAction(BaseModel):
+    """Open a market position from a bare directional command (e.g.
+    "اشتري الذهب" / "بيع الذهب") with no entry zone, no signal SL, no TPs.
+
+    The EA opens at market using the standard LotsPer100Balance formula and
+    parks an emergency SL at a price that, if hit, equals InstantRiskPercent
+    of account balance. The structured signal is expected within
+    InstantTimeoutMinutes; if it arrives, the EA's ATTACH_SIGNAL handler
+    wires SL/TPs and registers the staged plan. If the timeout fires first,
+    the EA installs a fallback TP at InstantTpMultiplier * original SL
+    distance and trails SL at InstantTrailPoints behind price.
+    """
+    type: Literal["OPEN_INSTANT"] = "OPEN_INSTANT"
+    symbol: str
+    side: Literal["BUY", "SELL"]
+    comment: str = ""
+
+    @field_validator("symbol")
+    @classmethod
+    def supported(cls, v: str) -> str:
+        if v not in SUPPORTED_SYMBOLS:
+            raise ValueError(f"unsupported symbol {v}")
+        return v
+
+
+class AttachSignalAction(BaseModel):
+    """Attach a structured signal (entry zone, SL, TPs) to an already-open
+    naked position opened by OPEN_INSTANT.
+
+    The EA finds the singleton naked ticket, modifies SL/TP on the broker
+    side, and registers a ManagePlans entry as if the position had opened
+    normally. Side must match the naked position's side — direction conflict
+    is handled upstream by the AI emitting CLOSE_FULL + OPEN_INSTANT instead.
+    """
+    type: Literal["ATTACH_SIGNAL"] = "ATTACH_SIGNAL"
+    symbol: str
+    side: Literal["BUY", "SELL"]
+    entry_low: float
+    entry_high: float
+    sl: float = Field(gt=0)
+    tps: list[float] = Field(min_length=1, max_length=3)
+    comment: str = ""
+
+    @field_validator("symbol")
+    @classmethod
+    def supported(cls, v: str) -> str:
+        if v not in SUPPORTED_SYMBOLS:
+            raise ValueError(f"unsupported symbol {v}")
+        return v
+
+    @field_validator("tps")
+    @classmethod
+    def all_positive(cls, v: list[float]) -> list[float]:
+        if any(t <= 0 for t in v):
+            raise ValueError("all tps must be positive")
+        return v
+
+
 Action = Union[
     OpenAction, ModifyAction, CloseAction, CloseAllAction, AlertAction,
     MoveSlBeAction, MoveSlAction, ClosePartialAction, CloseFullAction,
     ReopenLastAction, ReinforceAction, TightenSlAction, ModifyTpsAction,
+    OpenInstantAction, AttachSignalAction,
 ]
 
 _ACTION_BY_TYPE = {
@@ -160,6 +219,8 @@ _ACTION_BY_TYPE = {
     "REINFORCE": ReinforceAction,
     "TIGHTEN_SL": TightenSlAction,
     "MODIFY_TPS": ModifyTpsAction,
+    "OPEN_INSTANT": OpenInstantAction,
+    "ATTACH_SIGNAL": AttachSignalAction,
 }
 
 
@@ -285,6 +346,7 @@ def validate_action(
     if isinstance(action, (
         MoveSlBeAction, MoveSlAction, ClosePartialAction, CloseFullAction,
         ReopenLastAction, ReinforceAction, TightenSlAction, ModifyTpsAction,
+        OpenInstantAction, AttachSignalAction,
     )):
         return ValidationResult(True)
     # AlertAction

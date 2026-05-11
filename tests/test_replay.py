@@ -7,8 +7,8 @@ from src.ai import AIClient
 FIXTURE_PATH = Path(__file__).resolve().parent.parent / "fixtures" / "messages.jsonl"
 
 pytestmark = pytest.mark.skipif(
-    not os.getenv("ANTHROPIC_API_KEY"),
-    reason="No ANTHROPIC_API_KEY set; skipping live AI tests."
+    not (os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY")),
+    reason="No LLM API key set; skipping live AI tests."
 )
 
 

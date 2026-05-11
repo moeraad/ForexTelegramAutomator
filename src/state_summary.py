@@ -111,7 +111,8 @@ def _render_executed_positions(
 ) -> list[str]:
     rows = conn.execute(
         "SELECT action_id, mt5_ticket, symbol, side, volume, original_volume, "
-        "       partial_close_count, entry_price, sl, tp, sl_moved_at, opened_at "
+        "       partial_close_count, entry_price, sl, tp, sl_moved_at, opened_at, "
+        "       COALESCE(is_naked, 0) AS is_naked, naked_opened_at "
         "FROM positions WHERE status='open' "
         "ORDER BY action_id, mt5_ticket"
     ).fetchall()
@@ -139,9 +140,15 @@ def _render_executed_positions(
             partials = r["partial_close_count"] or 0
             age = _age_seconds(r["opened_at"])
             age_str = f"  age={age // 60}min" if age is not None else ""
+            # NAKED flag: position opened from a bare directional command
+            # (OPEN_INSTANT). Awaiting a structured signal to attach SL/TPs.
+            # AI must emit ATTACH_SIGNAL (same side) or CLOSE_FULL +
+            # OPEN_INSTANT (opposite side), NEVER a new OPEN.
+            naked_tag = "  [NAKED — awaiting ATTACH_SIGNAL]" if r["is_naked"] else ""
             lines.append(
                 f"    ticket={r['mt5_ticket']}  {r['side']} {r['symbol']}  "
                 f"vol={_fmt(r['volume'])}{orig_str}  entry={_fmt(r['entry_price'])}"
+                f"{naked_tag}"
             )
             lines.append(
                 f"      sl={_fmt(r['sl'])}{sl_suffix}  tp={_fmt(r['tp'])}  "
