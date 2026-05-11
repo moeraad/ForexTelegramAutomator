@@ -654,10 +654,15 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
         from src.telegram_format import _payload_summary
         if limit < 1: limit = 1
         if limit > 200: limit = 200
+        # Only surface actions the bot actually DMed to the operator —
+        # notified_at is stamped by notification_dispatcher when (or just
+        # before) the Telegram DM goes out. This keeps the dashboard log
+        # panel in lockstep with what the operator sees in their bot chat.
         rows = conn.execute(
             "SELECT id, action_type, status, payload_json, ea_response, "
             "       created_at "
-            "FROM actions ORDER BY id DESC LIMIT ?",
+            "FROM actions WHERE notified_at IS NOT NULL "
+            "ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         events: list[dict] = []

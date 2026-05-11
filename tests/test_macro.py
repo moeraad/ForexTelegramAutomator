@@ -27,7 +27,16 @@ _yf_stub.download = MagicMock()  # type: ignore[attr-defined]
 sys.modules["yfinance"] = _yf_stub
 
 # Now safe to import.
-from src.macro import _fetch_one_sync, fetch_macro_snapshot  # noqa: E402
+from src.macro import _fetch_one_sync, _fetch_fred_csv_sync, fetch_macro_snapshot  # noqa: E402
+import src.macro as _macro_mod  # for monkeypatching the FRED helper
+
+
+@pytest.fixture(autouse=True)
+def _no_real_fred(monkeypatch):
+    """Default: FRED helper returns None in every test. Tests that need
+    real_yield to be present override _fetch_fred_csv_sync explicitly.
+    Keeps the suite hermetic — no real network calls to FRED."""
+    monkeypatch.setattr(_macro_mod, "_fetch_fred_csv_sync", lambda *a, **kw: None)
 
 
 def _frame(closes: list[float]):
@@ -143,3 +152,76 @@ async def test_fetch_macro_snapshot_returns_none_when_all_fail():
     finally:
         _yf_stub.download.side_effect = None
     assert snap is None
+
+
+# ---- FRED real-yield helper --------------------------------------------
+
+def _stub_urlopen(csv_text: str):
+    """Build a fake context manager that mimics urlopen()."""
+    class _Resp:
+        def __init__(self, text): self._b = text.encode("utf-8")
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self._b
+    return lambda url, timeout=10: _Resp(csv_text)
+
+
+def test_fred_csv_parses_last_two_values(monkeypatch):
+    csv = (
+        "DATE,DFII10\n"
+        "2026-05-08,1.85\n"
+        "2026-05-09,1.82\n"
+        "2026-05-10,1.90\n"
+    )
+    monkeypatch.setattr("urllib.request.urlopen", _stub_urlopen(csv))
+    r = _fetch_fred_csv_sync("real_yield", "DFII10")
+    assert r is not None
+    label, last, chg = r
+    assert label == "real_yield"
+    assert last == 1.90
+    # chg_pct: (1.90 - 1.82) / 1.82 * 100 ≈ 4.395%
+    assert abs(chg - 4.3956) < 0.01
+
+
+def test_fred_csv_skips_dot_rows(monkeypatch):
+    """FRED encodes missing weekend/holiday observations as '.' — those
+    rows must be skipped so chg_pct compares the two latest REAL values."""
+    csv = (
+        "DATE,DFII10\n"
+        "2026-05-08,1.85\n"
+        "2026-05-09,.\n"          # weekend skip
+        "2026-05-10,.\n"          # weekend skip
+        "2026-05-11,1.88\n"
+    )
+    monkeypatch.setattr("urllib.request.urlopen", _stub_urlopen(csv))
+    r = _fetch_fred_csv_sync("real_yield", "DFII10")
+    assert r is not None
+    _, last, chg = r
+    assert last == 1.88
+    # chg vs 1.85 (the prior REAL value), not vs "."
+    assert abs(chg - ((1.88 - 1.85) / 1.85 * 100.0)) < 0.001
+
+
+def test_fred_csv_returns_none_on_error(monkeypatch):
+    def boom(*a, **kw):
+        raise RuntimeError("DNS")
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    r = _fetch_fred_csv_sync("real_yield", "DFII10")
+    assert r is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_macro_snapshot_includes_real_yield_when_fred_succeeds(monkeypatch):
+    """When FRED responds and yfinance also responds, the snapshot
+    contains both real_yield and the yfinance tickers."""
+    _yf_stub.download.side_effect = None
+    _yf_stub.download.return_value = _frame([100.0, 100.5])
+    monkeypatch.setattr(
+        _macro_mod, "_fetch_fred_csv_sync",
+        lambda label, series_id: (label, 1.85, 1.21),
+    )
+    snap = await fetch_macro_snapshot()
+    assert snap is not None
+    assert snap.get("real_yield") == 1.85
+    assert abs(snap.get("real_yield_chg_pct") - 1.21) < 0.01
+    assert "dxy" in snap  # yfinance side still present

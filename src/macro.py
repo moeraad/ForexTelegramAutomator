@@ -1,35 +1,40 @@
 """Macro cross-asset feed for the directional-bias evaluator (Step 2).
 
-Pulls DXY (US Dollar Index), US 10Y nominal yield, VIX, JPY, and oil
-(WTI) values + intraday % change from Yahoo Finance via yfinance. Output
+Pulls DXY (US Dollar Index), US 10Y nominal yield, US 10Y REAL yield, VIX,
+JPY, and oil (WTI) values + intraday % change. yfinance for everything
+except real yields, which come from FRED's public CSV endpoint (DFII10:
+10-Year Treasury Inflation-Indexed Security, Constant Maturity). Output
 is consumed by `src/ai_evaluator.py::_get_macro_snapshot` after the bot's
 `macro_feed_loop` writes it to the `settings` table.
 
 Why these tickers (gold-specific):
   - DXY (^DXY / DX-Y.NYB): gold is dollar-inverse (the strongest
     short-horizon macro driver for XAUUSD).
-  - 10Y (^TNX): yield-inverse — gold pays no yield, so rising yields
-    are a structural headwind.
+  - 10Y nominal (^TNX): yield-inverse — gold pays no yield, so rising
+    nominal yields are a structural headwind.
+  - 10Y REAL yield (FRED DFII10): empirically the strongest macro
+    predictor of gold (R^2 ~2-3x stronger than nominal on daily horizon).
+    Gold has no carry, so opportunity cost vs real yields drives flow.
   - VIX (^VIX): risk-off regime support (gold benefits in flight-to-safety).
   - JPY (JPY=X): co-haven; the *direction* of JPY tells us whether a
-    gold rally is haven-driven or industrial/inflation-driven.
-  - Oil (CL=F): inflation proxy; sustained oil rally supports gold via
-    inflation expectations.
+    gold rally is haven-driven or industrial/inflation-driven. Still
+    fetched but no longer rendered in the evaluator prompt (dropped
+    2026-05-11). Kept for backfill / future use.
+  - Oil (CL=F): inflation proxy. Same — fetched, not rendered.
 
 Design:
-  - Per-ticker fetches (5 small downloads) instead of multi-ticker
-    (one big call with multi-index parsing). Simpler error handling, and
-    a single bad symbol doesn't poison the whole snapshot.
+  - Per-ticker fetches (5 yfinance + 1 FRED) instead of multi-ticker.
+    Simpler error handling; a single bad symbol doesn't poison the
+    whole snapshot.
   - All fetches run concurrently via asyncio.to_thread + asyncio.gather.
     Total wall time on a healthy network is 1-2 seconds.
-  - yfinance is a sync HTTP library; wrapping in to_thread keeps the
-    bot's asyncio event loop responsive.
   - The function never raises — any exception (network, yfinance internal,
-    missing ticker) is caught and the field is omitted from the result.
-    A snapshot with 4/5 fields is more useful than no snapshot at all.
-  - chg_pct is computed from the LAST TWO daily closes returned by
-    yfinance. On weekends the "today" close is Friday's; chg_pct is
-    Friday vs Thursday — still meaningful for the evaluator.
+    missing ticker, FRED CSV format change) is caught and the field is
+    omitted from the result.
+  - chg_pct is computed from the LAST TWO daily values. On weekends the
+    "today" value is Friday's; chg_pct is Friday vs Thursday. FRED CSVs
+    use "." for missing observations on weekends/holidays — those rows
+    are skipped before computing chg_pct.
 """
 from __future__ import annotations
 
@@ -93,12 +98,60 @@ def _fetch_one_sync(label: str, symbol: str) -> tuple[str, float, float] | None:
         return None
 
 
+def _fetch_fred_csv_sync(
+    label: str, series_id: str
+) -> tuple[str, float, float] | None:
+    """Sync fetch of a daily FRED series via the public CSV endpoint.
+
+    Returns (label, last_value, chg_pct_today) or None on any error. No
+    API key required — `fredgraph.csv` is a public endpoint. Skips rows
+    where the value is "." (FRED's missing-observation marker for
+    weekends and holidays). Uses urllib from stdlib so we don't add a
+    new dependency just for one feed.
+    """
+    try:
+        import urllib.request
+
+        url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = resp.read().decode("utf-8")
+        lines = [ln for ln in data.splitlines() if ln.strip()]
+        if len(lines) < 3:
+            log.warning("macro FRED %s: <2 data rows", series_id)
+            return None
+        values: list[float] = []
+        for ln in lines[1:]:  # skip header
+            parts = ln.split(",")
+            if len(parts) != 2:
+                continue
+            v = parts[1].strip()
+            if v in ("", "."):
+                continue
+            try:
+                values.append(float(v))
+            except ValueError:
+                continue
+        if len(values) < 2:
+            log.warning("macro FRED %s: <2 numeric values after filter", series_id)
+            return None
+        prev = values[-2]
+        last = values[-1]
+        if prev == 0:
+            return None
+        chg_pct = ((last - prev) / prev) * 100.0
+        return label, last, chg_pct
+    except Exception as e:
+        log.warning("macro FRED %s fetch failed: %r", series_id, e)
+        return None
+
+
 async def fetch_macro_snapshot() -> dict | None:
     """Fetch all macro tickers concurrently and return the snapshot dict.
 
     Returns the same shape `_get_macro_snapshot` in `ai_evaluator.py` expects:
         {"dxy": float, "dxy_chg_pct": float,
          "tnx": float, "tnx_chg_pct": float,
+         "real_yield": float, "real_yield_chg_pct": float,
          "vix": float, "vix_chg_pct": float,
          "jpy": float, "jpy_chg_pct": float,
          "oil": float, "oil_chg_pct": float,
@@ -113,6 +166,10 @@ async def fetch_macro_snapshot() -> dict | None:
         asyncio.to_thread(_fetch_one_sync, label, sym)
         for label, sym in _TICKERS.items()
     ]
+    # FRED real yield (DFII10) — fetched from a different source (public
+    # CSV endpoint) but same shape, so it joins the gather and slots into
+    # the same result-aggregation path.
+    tasks.append(asyncio.to_thread(_fetch_fred_csv_sync, "real_yield", "DFII10"))
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     snap: dict[str, Any] = {}

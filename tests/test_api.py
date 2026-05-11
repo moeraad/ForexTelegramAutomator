@@ -675,21 +675,24 @@ def test_events_recent_returns_actions_newest_first(tmp_path):
     bot DMs stay in sync wording-wise.
     """
     conn = _setup(tmp_path)
+    # notified_at set on each row: /events/recent filters on
+    # notified_at IS NOT NULL so the dashboard only surfaces actions the
+    # bot actually DMed to the operator.
     conn.execute(
-        "INSERT INTO actions(action_type, payload_json, status) "
-        "VALUES('OPEN', ?, 'executed')",
+        "INSERT INTO actions(action_type, payload_json, status, notified_at) "
+        "VALUES('OPEN', ?, 'executed', CURRENT_TIMESTAMP)",
         (json.dumps({"symbol": "XAUUSD", "side": "BUY",
                      "entry_low": 4710, "entry_high": 4712,
                      "tps": [4730, 4750, 4760], "sl": 4704}),),
     )
     conn.execute(
-        "INSERT INTO actions(action_type, payload_json, status, ea_response) "
-        "VALUES('CLOSE_PARTIAL', ?, 'executed', 'noop_partial_and_be_disabled')",
+        "INSERT INTO actions(action_type, payload_json, status, ea_response, notified_at) "
+        "VALUES('CLOSE_PARTIAL', ?, 'executed', 'noop_partial_and_be_disabled', CURRENT_TIMESTAMP)",
         (json.dumps({"fraction": 0.5}),),
     )
     conn.execute(
-        "INSERT INTO actions(action_type, payload_json, status) "
-        "VALUES('ALERT', ?, 'pending')",
+        "INSERT INTO actions(action_type, payload_json, status, notified_at) "
+        "VALUES('ALERT', ?, 'pending', CURRENT_TIMESTAMP)",
         (json.dumps({"level": "warning", "text": "stage1 giveup"}),),
     )
     client = TestClient(build_app(conn))
@@ -714,8 +717,8 @@ def test_events_recent_clamps_limit(tmp_path):
     rows or sweep the whole table."""
     conn = _setup(tmp_path)
     conn.execute(
-        "INSERT INTO actions(action_type, payload_json, status) "
-        "VALUES('ALERT', '{}', 'pending')"
+        "INSERT INTO actions(action_type, payload_json, status, notified_at) "
+        "VALUES('ALERT', '{}', 'pending', CURRENT_TIMESTAMP)"
     )
     client = TestClient(build_app(conn))
     assert client.get("/events/recent?limit=0").json()["events"] != []

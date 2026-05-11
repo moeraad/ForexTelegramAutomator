@@ -25,7 +25,9 @@ Inputs (all read from the live DB at evaluation time):
     /market/snapshot — extended with d1/d1_prev/adr20/adx_h1/h1_recent_closes)
   - Macro snapshot (from settings, written by Step-2 macro feed loop —
     optional; reduced mode while absent)
-  - Recent precedent (last few trades on the symbol today)
+  - (Recent precedent intentionally NOT included — the evaluator should
+    judge the signal on market state alone, independent of today's prior
+    trades or their outcomes.)
 
 Output: a dict suitable for json.dumps that gets written back into the
 action's payload_json under the 'evaluation' key. Shape (preserved across
@@ -39,9 +41,10 @@ keep working unchanged):
       "summary": "...",                         # 2-3 sentence rationale
       "factors": {                              # per-axis breakdown
          "T1": "...", "T2": "...", "T3": "...", "T4": "...",
+         "L1": "...", "L2": "...", "L3": "...",
          "M1": "...", "M2": "...", "M3": "...",
          "G1": "...", "G2": "...", "G3": "...",
-         "C1": "...", "C2": "...", "C3": "..."
+         "C1": "...", "C2": "..."
       },
       "data_quality": "full" | "reduced",       # 'reduced' = inputs missing/stale
       "missing": ["d1_snapshot", "macro_snapshot", ...],
@@ -78,36 +81,45 @@ INPUTS YOU WILL RECEIVE:
   1. SIGNAL DIRECTION: BUY or SELL (the only signal field you use)
   2. CURRENT MARKET: bid/ask/mid (with age) — may be stale or missing
   3. MULTI-TIMEFRAME OHLC + ATR(14): m15, h1, h4 (always), plus d1 + d1_prev + adr20 + adx_h1 + h1_recent_closes (when EA pushes the extended snapshot)
-  4. MACRO: DXY, US 10Y yield, VIX, JPY, oil — current values + today's % change. May be unavailable (Step-2 feed not yet shipped or feed down).
+  3a. PRE-COMPUTED TRENDS: d1_trend / h4_trend / h1_trend / alignment labels derived from the snapshot — read these in preference to re-deriving from raw OHLC.
+  3b. H1 SHORT MOMENTUM: a short RSI-like oscillator (n_deltas = count of h1_recent_closes − 1, typically 4). NOT classic 14-period RSI. Useful for spotting overbought/oversold conditions on the H1 timeframe.
+  3c. KEY LEVELS: today_open, today_high, today_low, prior_day_high, prior_day_low (each with signed distance from mid), plus nearest_resistance and nearest_support pre-picked from the set above.
+  4. MACRO: DXY, US 10Y nominal, US 10Y REAL yield (FRED DFII10), VIX — current values + today's % change. May be unavailable or partial (real_yield is on a separate feed and can be missing independently of the yfinance fields).
   5. SESSION + TIME: current trading session, time of day, day of week
-  6. RECENT PRECEDENT: last few trades on XAUUSD today + their outcomes
 
-EVALUATION FRAMEWORK — judge along 13 axes grouped into 4 families:
+You will NOT receive today's prior trades or their outcomes. Evaluate the
+signal on market state alone — past P&L is not a directional-bias input.
 
-  TREND ALIGNMENT (40% weight) — does the direction agree with the market's actual trend?
-    T1. D1 trend: price vs SMA50/SMA200 + slope. BUY against a falling D1 50-SMA = structural headwind.
-    T2. H4 trend: close vs open + position vs recent swing. The intermediate-timeframe regime.
-    T3. H1 trend: tactical timing. H1 against H4 against D1 = three-way mismatch = avoid.
-    T4. Structural integrity on H1: are the recent H1 closes trending in the signal direction (HH/HL for BUY, LL/LH for SELL), or have they reversed?
+EVALUATION FRAMEWORK — judge along 15 axes grouped into 5 families. Weights below sum to 100%:
 
-  MARKET STATE (30% weight) — is the market regime supportive of a directional bet?
+  TREND ALIGNMENT (35% weight) — does the direction agree with the market's actual trend?
+    T1. D1 trend: price vs SMA50/SMA200 + slope. The PRE-COMPUTED TRENDS block surfaces a one-line label — start there. BUY against a falling D1 SMA50 = structural headwind.
+    T2. H4 trend: close vs open + recent swing position. Intermediate timeframe.
+    T3. H1 trend: tactical timing. H1 against H4 against D1 = three-way mismatch = avoid. Read PRE-COMPUTED TRENDS.alignment first.
+    T4. H1 structural integrity: are the recent H1 closes trending in the signal direction (HH/HL for BUY, LL/LH for SELL), or have they reversed? Combine H1 closes with H1 SHORT MOMENTUM.
+
+  LEVELS (25% weight) — where is price sitting relative to the levels gold respects?
+    L1. Nearest resistance distance. BUY right under prior_day_high (≤10pts) = high reversal probability; SELL right under it = momentum continuation entry. Distance to today_high is similarly important.
+    L2. Nearest support distance. SELL right above prior_day_low = high reversal probability; BUY right above it = bounce entry. Use signed distances from KEY LEVELS.
+    L3. Position relative to today's open and yesterday's range. Mid above prior_day_high = trend day extending; below prior_day_low = trend day reversing; inside prior_day_range = chop. BUY at the top of yesterday's range is statistically different from BUY at the bottom.
+
+  MARKET STATE (20% weight) — is the regime supportive of a directional bet?
     M1. Range exhaustion: today's range used / ADR20. After 1.5x ADR consumed in one direction, mean-reversion probability rises sharply. Buying near today's high after a big up day is a poor direction signal.
     M2. Volatility regime: current H1 ATR vs 20-day-avg H1 ATR (use atr14 across the m15/h1/h4 fields as a proxy). Compressed-vol days produce false breakouts. Expansion days reward trend-following but punish counter-trend.
     M3. Trend vs chop: ADX H1. <20 = ranging (directional bets weak regardless of direction). 20-25 = transitional. >25 = trend present.
 
-  MACRO (20% weight) — gold-specific cross-asset alignment
+  MACRO (10% weight) — gold-specific cross-asset alignment
     G1. DXY direction today. Gold is dollar-inverse. BUY needs DXY ↓; SELL needs DXY ↑. DXY +0.5%/day on a BUY signal is a structural headwind.
-    G2. US 10Y yield direction today. Gold is yield-inverse (gold pays no yield). Yields ↑ = headwind for BUY.
+    G2. US yields direction today. Gold is yield-inverse (gold pays no yield). PREFER 10Y REAL YIELD (FRED DFII10) when present — empirically the strongest macro driver for gold (R^2 ~2-3x nominal on daily horizon). Fall back to 10Y nominal only if real yield is missing. Real yield ↑ = direct opportunity-cost headwind for BUY; ↓ = tailwind for BUY.
     G3. Risk regime (VIX level + intraday change). Risk-off (VIX up sharp) supports gold. Compressed VIX in sustained risk-on = gold drifts.
 
   CONTEXT (10% weight, mostly veto) — non-direction-specific filters
     C1. News window proximity. The NEWS block below tells you `next_event` (event name + impact + minutes) and `last_event` (most recent past). HARD VETO: if `next_event.impact == "high"` AND `next_event.minutes < 30`, cap your score at 50 regardless of other factors and call it out in `key_factor`. SOFT GUIDANCE: within 15 min AFTER a high-impact release the tape is whipsaw — do NOT score >60 even if trend looks aligned. Outside those windows, news has no effect.
     C2. Session fit: London-NY overlap (12:00-16:00 UTC) favours directional follow-through. Asian session moves often reverse during London. Late session (post-21:00 UTC) tends to range.
-    C3. Recent precedent: re-entering the same direction within 30 min of a SL hit on that direction is statistically poor. Three consecutive losses in a direction today = that direction has been wrong in this regime.
 
 REDUCED-CONTEXT MODE:
 The MACRO block is only available once Step 2 (macro feed loop) ships. Until then it will say "(unavailable)". When that's the case:
-  - Compute T1-T4, M1-M3, C1-C3 normally.
+  - Compute T1-T4, L1-L3, M1-M3, C1-C2 normally.
   - Set G1/G2/G3 each to "data_quality_limited: macro feed unavailable" in the factors dict.
   - Add "macro_snapshot" to the missing list.
   - Set "data_quality": "reduced".
@@ -121,7 +133,7 @@ OUTPUT RULES:
       80-100 strong | 60-79 moderate | 40-59 weak | 0-39 avoid
   - "key_factor" is a single short sentence — the dominant reason for the score.
   - "summary" is 1-3 sentences walking through the dominant trend / state / macro / context decision.
-  - "factors" must include all 13 axis keys (T1, T2, T3, T4, M1, M2, M3, G1, G2, G3, C1, C2, C3) with one short string per axis. If an axis is impossible to judge from the data, write "data_quality_limited: <why>" rather than omit.
+  - "factors" must include all 15 axis keys (T1, T2, T3, T4, L1, L2, L3, M1, M2, M3, G1, G2, G3, C1, C2) with one short string per axis. If an axis is impossible to judge from the data, write "data_quality_limited: <why>" rather than omit.
   - "missing" is a list of what data was unavailable. Empty list if everything was present.
   - "data_quality" is "full" if you had all inputs; "reduced" otherwise.
 
@@ -347,6 +359,153 @@ def _get_recent_precedent(
     }
 
 
+def _compute_h1_momentum(closes: list[float] | None) -> dict | None:
+    """Short momentum RSI derived from h1_recent_closes (typically 5 bars,
+    so n=4 deltas). NOT classic 14-period RSI — labeled accordingly so the
+    LLM doesn't over-interpret it. Returns None when <2 closes available.
+
+    Output:
+        {"rsi_short": float (0-100),
+         "n_deltas": int,
+         "direction": "up"|"down"|"flat",
+         "label": "overbought"|"bullish"|"neutral"|"bearish"|"oversold"}
+    """
+    if not closes or len(closes) < 2:
+        return None
+    n = len(closes) - 1
+    gains = sum(max(0.0, closes[i] - closes[i - 1]) for i in range(1, len(closes)))
+    losses = sum(max(0.0, closes[i - 1] - closes[i]) for i in range(1, len(closes)))
+    avg_gain = gains / n
+    avg_loss = losses / n
+    if avg_loss == 0 and avg_gain == 0:
+        rsi = 50.0
+    elif avg_loss == 0:
+        rsi = 100.0
+    elif avg_gain == 0:
+        rsi = 0.0
+    else:
+        rs = avg_gain / avg_loss
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+    if closes[-1] > closes[0]:
+        direction = "up"
+    elif closes[-1] < closes[0]:
+        direction = "down"
+    else:
+        direction = "flat"
+    if rsi >= 70:
+        label = "overbought"
+    elif rsi >= 55:
+        label = "bullish"
+    elif rsi <= 30:
+        label = "oversold"
+    elif rsi <= 45:
+        label = "bearish"
+    else:
+        label = "neutral"
+    return {"rsi_short": rsi, "n_deltas": n, "direction": direction, "label": label}
+
+
+def _compute_trend_labels(snapshot: dict | None) -> dict:
+    """Pre-compute trend direction labels per timeframe so the LLM doesn't
+    have to re-derive them from raw OHLC. Labels are short strings; the
+    LLM combines them across timeframes for the alignment axis.
+
+    Output keys (only those derivable from the snapshot are present):
+        {"d1_trend": "UP (close>SMA50, +0.4% slope)" | "DOWN (...)" | "FLAT (...)",
+         "h4_trend": "UP (bullish bar)" | "DOWN (...)",
+         "h1_trend": "UP (5/4 up bars, last>first by +5.2)" | "DOWN (...)",
+         "alignment": "ALIGNED_UP" | "ALIGNED_DOWN" | "MIXED" | "FLAT"}
+    """
+    if not snapshot:
+        return {}
+    out: dict[str, str] = {}
+    d1 = snapshot.get("d1") or {}
+    d1_close = d1.get("close")
+    sma50 = d1.get("sma50")
+    if d1_close is not None and sma50 is not None and sma50 > 0:
+        diff_pct = (d1_close - sma50) / sma50 * 100.0
+        if diff_pct > 0.1:
+            out["d1_trend"] = f"UP (close>SMA50 by {diff_pct:+.2f}%)"
+        elif diff_pct < -0.1:
+            out["d1_trend"] = f"DOWN (close<SMA50 by {diff_pct:+.2f}%)"
+        else:
+            out["d1_trend"] = f"FLAT (close≈SMA50, {diff_pct:+.2f}%)"
+    h4 = snapshot.get("h4") or {}
+    h4_o, h4_c = h4.get("open"), h4.get("close")
+    if h4_o is not None and h4_c is not None and h4_o > 0:
+        body_pct = (h4_c - h4_o) / h4_o * 100.0
+        if h4_c > h4_o:
+            out["h4_trend"] = f"UP (bullish bar, body {body_pct:+.2f}%)"
+        elif h4_c < h4_o:
+            out["h4_trend"] = f"DOWN (bearish bar, body {body_pct:+.2f}%)"
+        else:
+            out["h4_trend"] = "FLAT (doji)"
+    closes = snapshot.get("h1_recent_closes") or []
+    if len(closes) >= 2:
+        up_steps = sum(1 for i in range(1, len(closes)) if closes[i] > closes[i - 1])
+        n = len(closes) - 1
+        delta = closes[-1] - closes[0]
+        if delta > 0 and up_steps > n / 2:
+            out["h1_trend"] = f"UP ({up_steps}/{n} up steps, net {delta:+.2f})"
+        elif delta < 0 and up_steps < n / 2:
+            out["h1_trend"] = f"DOWN ({n - up_steps}/{n} down steps, net {delta:+.2f})"
+        else:
+            out["h1_trend"] = f"CHOPPY ({up_steps}/{n} up steps, net {delta:+.2f})"
+    # Alignment: combine d1+h1 (the two genuinely useful trend signals).
+    d1t = out.get("d1_trend", "")
+    h1t = out.get("h1_trend", "")
+    if d1t.startswith("UP") and h1t.startswith("UP"):
+        out["alignment"] = "ALIGNED_UP"
+    elif d1t.startswith("DOWN") and h1t.startswith("DOWN"):
+        out["alignment"] = "ALIGNED_DOWN"
+    elif d1t and h1t:
+        out["alignment"] = "MIXED"
+    return out
+
+
+def _compute_key_levels(
+    d1: dict | None, d1_prev: dict | None, mid: float | None
+) -> dict | None:
+    """Build a key-levels block from D1 OHLC. Distances are signed: positive
+    = level is above mid; negative = level is below mid.
+
+    Output:
+        {"prior_day_high": float, "prior_day_high_dist": float,
+         "prior_day_low":  float, "prior_day_low_dist":  float,
+         "today_open":     float, "today_open_dist":     float,
+         "today_high":     float, "today_high_dist":     float,
+         "today_low":      float, "today_low_dist":      float,
+         "nearest_resistance": (level, dist) | None,   # any level ABOVE mid
+         "nearest_support":    (level, dist) | None}    # any level BELOW mid
+    """
+    if mid is None or mid <= 0:
+        return None
+    out: dict = {}
+    if d1:
+        for key, label in (("open", "today_open"), ("high", "today_high"),
+                           ("low", "today_low")):
+            v = d1.get(key)
+            if v is not None:
+                out[label] = v
+                out[f"{label}_dist"] = v - mid
+    if d1_prev:
+        for key, label in (("high", "prior_day_high"), ("low", "prior_day_low")):
+            v = d1_prev.get(key)
+            if v is not None:
+                out[label] = v
+                out[f"{label}_dist"] = v - mid
+    # Nearest resistance/support — smallest absolute distance on each side.
+    candidates = [(out[k], out[f"{k}_dist"]) for k in (
+        "today_open", "today_high", "today_low",
+        "prior_day_high", "prior_day_low",
+    ) if k in out]
+    above = [(lvl, d) for lvl, d in candidates if d > 0]
+    below = [(lvl, d) for lvl, d in candidates if d < 0]
+    out["nearest_resistance"] = min(above, key=lambda p: p[1]) if above else None
+    out["nearest_support"] = max(below, key=lambda p: p[1]) if below else None
+    return out if out else None
+
+
 def _fmt_tf_block(tf_name: str, row: dict) -> str:
     """Format one timeframe row from the snapshot for the prompt. Includes
     sma50/sma200 only when populated (D1 today, possibly more later)."""
@@ -380,7 +539,9 @@ def build_evaluator_input(
     mid, mid_age = _get_market_mid(conn, symbol)
     snapshot, snap_age = _get_market_snapshot(conn, symbol)
     macro, macro_age = _get_macro_snapshot(conn)
-    precedent = _get_recent_precedent(conn, symbol)
+    # Today's prior trades + outcomes are intentionally NOT fetched here:
+    # the evaluator judges the signal on market state alone, not on the
+    # session's running P&L. See module docstring.
     now = datetime.now(timezone.utc)
     session = _session_label(now)
 
@@ -446,7 +607,67 @@ def build_evaluator_input(
             )
     parts.append("")
 
-    # 4. Macro
+    # 3a. Pre-computed trend labels — reduces LLM error reading raw OHLC.
+    parts.append("PRE-COMPUTED TRENDS:")
+    trends = _compute_trend_labels(snapshot) if snapshot else {}
+    if trends:
+        for key in ("d1_trend", "h4_trend", "h1_trend", "alignment"):
+            if key in trends:
+                parts.append(f"  {key}: {trends[key]}")
+    else:
+        parts.append("  (snapshot missing — cannot derive)")
+    parts.append("")
+
+    # 3b. H1 short-momentum oscillator from h1_recent_closes.
+    parts.append("H1 SHORT MOMENTUM (RSI-like, n_deltas=count(closes)-1):")
+    if snapshot:
+        mom = _compute_h1_momentum(snapshot.get("h1_recent_closes") or [])
+        if mom:
+            parts.append(
+                f"  rsi_short={mom['rsi_short']:.1f} ({mom['label']})  "
+                f"direction={mom['direction']}  n_deltas={mom['n_deltas']}"
+            )
+        else:
+            parts.append("  (insufficient h1_recent_closes to compute)")
+    else:
+        parts.append("  (snapshot missing)")
+    parts.append("")
+
+    # 3c. KEY LEVELS — distances from mid to PDH/PDL and today's open/H/L.
+    # Distance sign convention: positive = level is ABOVE mid (resistance);
+    # negative = level is BELOW mid (support). Nearest_resistance and
+    # nearest_support pre-pick the closest level on each side.
+    parts.append("KEY LEVELS (XAUUSD):")
+    snap_d1 = snapshot.get("d1") if snapshot else None
+    snap_d1_prev = snapshot.get("d1_prev") if snapshot else None
+    levels = _compute_key_levels(snap_d1, snap_d1_prev, mid)
+    if levels:
+        line_keys = [
+            ("today_open", "today_open"),
+            ("today_high", "today_high"),
+            ("today_low", "today_low"),
+            ("prior_day_high", "prior_day_high"),
+            ("prior_day_low", "prior_day_low"),
+        ]
+        for k, label in line_keys:
+            if k in levels:
+                lvl = levels[k]
+                dist = levels[f"{k}_dist"]
+                side = "above" if dist > 0 else ("below" if dist < 0 else "AT")
+                parts.append(f"  {label}={lvl:.2f}  (dist={dist:+.2f}, {side} mid)")
+        nr = levels.get("nearest_resistance")
+        ns = levels.get("nearest_support")
+        if nr:
+            parts.append(f"  nearest_resistance={nr[0]:.2f} (+{nr[1]:.2f})")
+        if ns:
+            parts.append(f"  nearest_support={ns[0]:.2f} ({ns[1]:+.2f})")
+    else:
+        parts.append("  (no D1 data — cannot compute levels)")
+    parts.append("")
+
+    # 4. Macro — DXY / 10Y / VIX only. JPY and oil were dropped 2026-05-11:
+    # JPY is largely redundant with DXY for gold; oil-gold intraday
+    # correlation is near zero, so both added prompt noise without signal.
     parts.append("MACRO (cross-asset, today's daily change):")
     if macro is None:
         parts.append("  (unavailable — Step 2 macro feed not running)")
@@ -454,14 +675,15 @@ def build_evaluator_input(
     elif macro_age is not None and macro_age > _MACRO_STALE_SECONDS:
         parts.append(f"  STALE: age={macro_age}s > {_MACRO_STALE_SECONDS}s — macro factors are last-known, treat with care")
         missing.append("macro_snapshot_stale")
-        for k, label in (("dxy", "DXY"), ("tnx", "10Y"), ("vix", "VIX"),
-                         ("jpy", "JPY"), ("oil", "Oil")):
+        for k, label in (("dxy", "DXY"), ("tnx", "10Y nominal"),
+                         ("real_yield", "10Y REAL yield"), ("vix", "VIX")):
             v = macro.get(k); chg = macro.get(f"{k}_chg_pct")
             if v is not None and chg is not None:
                 parts.append(f"  {label}={v:.2f} ({chg:+.2f}%)")
     else:
-        for k, label in (("dxy", "DXY"), ("tnx", "10Y yield"), ("vix", "VIX"),
-                         ("jpy", "JPY"), ("oil", "Oil")):
+        for k, label in (("dxy", "DXY"), ("tnx", "10Y nominal"),
+                         ("real_yield", "10Y REAL yield (FRED DFII10)"),
+                         ("vix", "VIX")):
             v = macro.get(k); chg = macro.get(f"{k}_chg_pct")
             if v is not None and chg is not None:
                 arrow = "↑" if chg > 0 else ("↓" if chg < 0 else "→")
@@ -498,19 +720,6 @@ def build_evaluator_input(
                 f"  last_event={last['event']!r} impact={last['impact']} "
                 f"({last['minutes']} min ago)"
             )
-    parts.append("")
-
-    # 7. Recent precedent
-    parts.append("RECENT PRECEDENT (XAUUSD, last 12h):")
-    if precedent["trades_today"] == 0:
-        parts.append("  (no recent trades)")
-    else:
-        parts.append(
-            f"  trades={precedent['trades_today']}  "
-            f"last_close={precedent['last_close_reason']!r} ({precedent['last_close_side']}, "
-            f"{precedent['minutes_since_last_close']}min ago)  "
-            f"consecutive_sl_hits_at_head={precedent['consecutive_losses']}"
-        )
     parts.append("")
 
     parts.append("Output JSON only.")

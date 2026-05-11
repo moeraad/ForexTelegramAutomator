@@ -288,7 +288,7 @@ def test_build_evaluator_input_includes_macro_when_present(tmp_path):
     text, missing = build_evaluator_input(signal, conn, "XAUUSD")
     assert "macro_snapshot" not in missing
     assert "DXY=102.45" in text
-    assert "10Y yield=4.21" in text
+    assert "10Y nominal=4.21" in text
     assert "VIX=16.80" in text
 
 

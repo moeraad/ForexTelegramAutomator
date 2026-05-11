@@ -3008,7 +3008,6 @@ void ManageNakedPlans() {
 
 void LoadPersistedNaked() {
    int total = GlobalVariablesTotal();
-   string scanned[];
    for(int i = 0; i < total; i++) {
       string name = GlobalVariableName(i);
       if(StringFind(name, "ct_naked_") != 0) continue;
