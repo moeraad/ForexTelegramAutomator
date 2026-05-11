@@ -335,6 +335,12 @@ void CDashboard::DrawOpenTrades(const DashboardStats &s) {
 
       int n = s.open_trades[i].tpCount;
       int stage = s.open_trades[i].stage;
+      bool isBuy = s.open_trades[i].isBuy;
+      // Live price for distance-to-TP. BUY targets are above (compare to
+      // bid = close-side for a long); SELL targets are below (compare to
+      // ask = close-side for a short).
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       for(int k = 0; k < n; k++) {
          string glyph = "- ";
          uint   col   = DSH_TEXT;
@@ -342,23 +348,29 @@ void CDashboard::DrawOpenTrades(const DashboardStats &s) {
          else if(k == stage) { glyph = "> "; col = DSH_ACCENT; }  // next target
          string lbl = glyph + "TP" + IntegerToString(k + 1) + " "
                     + DoubleToString(s.open_trades[i].tps[k], 2);
-         string val = FmtSigned(s.open_trades[i].profit_per_stage[k], 2)
-                    + " " + s.account_ccy;
+         // Right-column: distance from current price to this TP.
+         //   Hit (k < stage)      → "hit" in DSH_OK colour
+         //   Pending (k >= stage) → signed price distance in price units
+         //                          (e.g. "+5.30" = TP is 5.30 above mid).
+         //                          Negative = price already overshot but
+         //                          stage hasn't advanced yet (rare race).
+         string val;
+         uint   valCol = DSH_TEXT;
+         if(k < stage) {
+            val = "hit";
+            valCol = DSH_OK;
+         } else {
+            double tpPrice = s.open_trades[i].tps[k];
+            double dist = isBuy ? (tpPrice - bid) : (ask - tpPrice);
+            val = FmtSigned(dist, 2);
+            valCol = (dist >= 0 ? DSH_MUTED : DSH_OK);  // overshoot tinted OK
+         }
          m_canvas.TextOut(24, m_cursor_y, lbl, col, TA_LEFT | TA_TOP);
-         m_canvas.TextOut(m_width - 12, m_cursor_y, val,
-                          PnlColor(s.open_trades[i].profit_per_stage[k]),
+         m_canvas.TextOut(m_width - 12, m_cursor_y, val, valCol,
                           TA_RIGHT | TA_TOP);
          m_cursor_y += 16;
       }
-      // Total if all TPs hit.
-      m_canvas.TextOut(24, m_cursor_y, "Total if all hit",
-                       DSH_MUTED, TA_LEFT | TA_TOP);
-      string tot = FmtSigned(s.open_trades[i].profit_total, 2)
-                 + " " + s.account_ccy;
-      m_canvas.TextOut(m_width - 12, m_cursor_y, tot,
-                       PnlColor(s.open_trades[i].profit_total),
-                       TA_RIGHT | TA_TOP);
-      m_cursor_y += 18;
+      m_cursor_y += 2;  // tiny gap before the next trade or section
    }
    if(s.open_trades_count > DSH_MAX_TRADES) {
       m_canvas.TextOut(12, m_cursor_y,
