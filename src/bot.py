@@ -214,23 +214,32 @@ async def notification_dispatcher(app: Application):
                 except (TypeError, ValueError):
                     payload = {}
                 # For executed OPEN actions, look up the broker fill price
-                # from the resulting position row so the DM shows both the
-                # channel signal's entry zone and the actual entry — lets
-                # the operator see chase deltas at a glance.
+                # AND the filled lot size from the resulting position row
+                # so the DM shows both the channel signal's entry zone /
+                # the actual entry / the filled lots. Prefer original_volume
+                # so a fast TP1-partial doesn't shrink the reported lot
+                # size on the OPEN notification.
                 actual_entry: float | None = None
+                actual_volume: float | None = None
                 if r["action_type"] == "OPEN" and r["status"] == "executed":
                     pos_row = conn.execute(
-                        "SELECT entry_price FROM positions "
+                        "SELECT entry_price, "
+                        "       COALESCE(original_volume, volume) AS vol "
+                        "FROM positions "
                         "WHERE action_id = ? "
                         "ORDER BY id DESC LIMIT 1",
                         (r["id"],),
                     ).fetchone()
-                    if pos_row is not None and pos_row["entry_price"] is not None:
-                        actual_entry = float(pos_row["entry_price"])
+                    if pos_row is not None:
+                        if pos_row["entry_price"] is not None:
+                            actual_entry = float(pos_row["entry_price"])
+                        if pos_row["vol"] is not None:
+                            actual_volume = float(pos_row["vol"])
                 text = render_action_terminal(
                     r["id"], r["action_type"], r["status"],
                     payload, r["ea_response"] or "",
                     actual_entry=actual_entry,
+                    actual_volume=actual_volume,
                 )
                 await app.bot.send_message(
                     chat_id=config.TG_BOT_OWNER_USER_ID,

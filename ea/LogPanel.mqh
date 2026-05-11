@@ -60,7 +60,7 @@ private:
    int      WrapText(string text, int max_chars, string &out_lines[]);
 
 public:
-   CLogPanel() : m_name("CT_LogPanel"), m_width(1120), m_height(900),
+   CLogPanel() : m_name("CT_LogPanel"), m_width(560), m_height(900),
                  m_x(420), m_y(20), m_font("Tahoma"),
                  m_font_size(10), m_cursor_y(0), m_last_hash(0),
                  m_visible(true) {}

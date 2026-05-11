@@ -54,7 +54,9 @@ _STATUS_GLYPH = {
 
 
 def _payload_summary(
-    action_type: str, payload: dict, *, actual_entry: float | None = None
+    action_type: str, payload: dict, *,
+    actual_entry: float | None = None,
+    actual_volume: float | None = None,
 ) -> str:
     """One-line summary of an action's payload for terminal notifications.
 
@@ -62,16 +64,25 @@ def _payload_summary(
     for the position created by this action. When supplied, the OPEN
     summary shows BOTH the channel signal's entry zone (intent) and the
     actual fill price (reality), so the operator can see at a glance how
-    far the chase landed from the analyst's plan. Format:
-        "BUY XAUUSD signal-entry 4555-4553 actual 4554.20 sl 4540 ..."
+    far the chase landed from the analyst's plan.
+
+    `actual_volume` (optional, OPEN only): broker-reported filled lot
+    size. EA computes it at fill time via LotsPer100Balance / risk cap,
+    so it's only known after execution. Surfaced in the OPEN summary as
+    "lots 0.61". Combined format:
+        "BUY XAUUSD lots 0.61 signal-entry 4555-4553 actual 4554.20 sl ..."
     """
     if action_type == "OPEN":
         tps = ",".join(str(t) for t in payload.get("tps", []))
         actual_part = (
             f" actual {actual_entry:.2f}" if actual_entry is not None else ""
         )
+        lots_part = (
+            f" lots {actual_volume:.2f}" if actual_volume is not None else ""
+        )
         return (
-            f"{payload.get('side','?')} {payload.get('symbol','XAUUSD')} "
+            f"{payload.get('side','?')} {payload.get('symbol','XAUUSD')}"
+            f"{lots_part} "
             f"signal-entry {payload.get('entry_low')}-{payload.get('entry_high')}"
             f"{actual_part} "
             f"sl {payload.get('sl')} tps [{tps}]"
@@ -104,7 +115,9 @@ def _payload_summary(
 def render_action_terminal(
     action_id: int, action_type: str, status: str,
     payload: dict, ea_response: str,
-    *, actual_entry: float | None = None,
+    *,
+    actual_entry: float | None = None,
+    actual_volume: float | None = None,
 ) -> str:
     """One-line DM for an action that just reached a terminal state.
 
@@ -112,13 +125,18 @@ def render_action_terminal(
     Examples:
       "✅ #42 MOVE_SL_BE executed"
       "🚫 #43 CLOSE_PARTIAL rejected — fraction=0.5 (no_open_position)"
-      "✅ #137 OPEN executed — BUY XAUUSD signal-entry 4575-4577 actual 4576.42 sl 4566 tps [4588,4600,4610]"
+      "✅ #137 OPEN executed — BUY XAUUSD lots 0.61 signal-entry 4575-4577 actual 4576.42 sl 4566 tps [4588,4600,4610]"
 
-    `actual_entry`: optional broker fill price; surfaced for OPEN actions
-    so the operator sees signal-vs-reality entry deltas at a glance.
+    `actual_entry`: optional broker fill price (OPEN only).
+    `actual_volume`: optional broker-filled lot size (OPEN only).
+    Both surface signal-vs-reality deltas in the DM.
     """
     glyph = _STATUS_GLYPH.get(status, "•")
-    body = _payload_summary(action_type, payload, actual_entry=actual_entry)
+    body = _payload_summary(
+        action_type, payload,
+        actual_entry=actual_entry,
+        actual_volume=actual_volume,
+    )
     parts = [f"{glyph} #{action_id} {action_type} {status}"]
     if body:
         parts.append(f"— {body}")
