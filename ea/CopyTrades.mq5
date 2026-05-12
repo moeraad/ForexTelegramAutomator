@@ -1557,6 +1557,56 @@ bool IsRecentlyOpened(long ticket) {
 //     original SL (would *increase* risk vs current SL).
 //   - Falls back to p.entry if the anchor is on the wrong side of current
 //     price (would trigger an immediate stop-out).
+// Clamp a requested SL price to the broker's minimum-stop-distance rule
+// (SYMBOL_TRADE_STOPS_LEVEL) and reject if the SL is on the wrong side of
+// price entirely.
+//
+//   isBuy        = position side
+//   requestedSl  = the SL the caller wants (from AI payload, anchor, etc.)
+//   currentExit  = bid for BUY / ask for SELL (close-side price)
+//   finalSl  (out) = the SL to pass to PositionModify
+//   wasClamped (out) = true when finalSl != requestedSl because of clamping
+//
+// Returns true when the modify should proceed with finalSl. Returns false
+// when the SL is on the wrong side of price (BUY SL >= bid, SELL SL <= ask)
+// — caller should respond with "invalid_stop" and skip the modify, because
+// (a) the broker would reject anyway with retcode 10016 and (b) a
+// wrong-side SL is almost always an AI mis-read of side or price, not a
+// near-miss that should be silently corrected.
+//
+// When the SL is on the correct side but inside the no-modify zone
+// (distance < minDist), we nudge it to the just-outside-minDist edge plus
+// a 1-point buffer (some brokers reject at minDist exactly).
+bool ClampStopForBroker(bool isBuy, double requestedSl, double currentExit,
+                        double &finalSl, bool &wasClamped) {
+   wasClamped = false;
+   finalSl = requestedSl;
+   if(requestedSl <= 0 || currentExit <= 0) return false;
+   long stopsLevel = SymbolInfoInteger(Symbol_Override, SYMBOL_TRADE_STOPS_LEVEL);
+   double pointSize = SymbolInfoDouble(Symbol_Override, SYMBOL_POINT);
+   if(pointSize <= 0) pointSize = 0.01;
+   double minDist = (double)stopsLevel * pointSize;
+   double buffer = pointSize;  // 1 point past minDist
+   int digits = (int)SymbolInfoInteger(Symbol_Override, SYMBOL_DIGITS);
+   if(isBuy) {
+      if(requestedSl >= currentExit) return false;  // wrong side
+      double maxAllowed = currentExit - minDist - buffer;
+      if(requestedSl > maxAllowed) {
+         finalSl = NormalizeDouble(maxAllowed, digits);
+         wasClamped = (MathAbs(finalSl - requestedSl) > pointSize / 2.0);
+      }
+   } else {
+      if(requestedSl <= currentExit) return false;  // wrong side
+      double minAllowed = currentExit + minDist + buffer;
+      if(requestedSl < minAllowed) {
+         finalSl = NormalizeDouble(minAllowed, digits);
+         wasClamped = (MathAbs(finalSl - requestedSl) > pointSize / 2.0);
+      }
+   }
+   return true;
+}
+
+
 double SignalAnchorSl(const TradePlan &p, double currentExit) {
    double anchor = p.isBuy ? p.entryLow : p.entryHigh;
    if(anchor <= 0.0) return p.entry;  // legacy plan, no zone persisted
@@ -2073,6 +2123,23 @@ void DoMoveSlBe(long id, string payload) {
                        : SymbolInfoDouble(Symbol_Override, SYMBOL_ASK);
       beSl = SignalAnchorSl(g_plans[planIdxBe], curExit);
    }
+   // Broker minDist clamp (BE often lands close to current price by design;
+   // some brokers reject SL inside SYMBOL_TRADE_STOPS_LEVEL).
+   bool isBuyBe = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+   double curExitBe = isBuyBe ? SymbolInfoDouble(Symbol_Override, SYMBOL_BID)
+                              : SymbolInfoDouble(Symbol_Override, SYMBOL_ASK);
+   double clampedBeSl;
+   bool wasClampedBe;
+   if(!ClampStopForBroker(isBuyBe, beSl, curExitBe, clampedBeSl, wasClampedBe)) {
+      // BE SL on the wrong side of price → trade is already in significant
+      // profit, BE move is moot. Report and skip the modify rather than
+      // letting the broker reject with retcode 10016.
+      PostResult(id, "rejected", ticket,
+                 StringFormat("invalid_stop_be: sl=%.2f vs price=%.2f",
+                              beSl, curExitBe));
+      return;
+   }
+   beSl = clampedBeSl;
    if(trade.PositionModify(ticket, beSl, curTp)) {
       // For 3-TP plans still in stage 0: keep the plan armed and advance
       // stage 0 -> 1 instead of dropping it. This lets ManagePlans fire
@@ -2105,13 +2172,27 @@ void DoMoveSl(long id, string payload) {
    long ticket = FindSingletonOpenTicket(Symbol_Override);
    if(ticket <= 0) { PostResult(id, "rejected", 0, "no_open_position"); return; }
    if(!PositionSelectByTicket(ticket)) { PostResult(id, "failed", ticket, "no_position"); return; }
-   double newSl = StringToDouble(JsonField(payload, "price"));
-   if(newSl <= 0) { PostResult(id, "failed", ticket, "invalid_price"); return; }
+   double requestedSl = StringToDouble(JsonField(payload, "price"));
+   if(requestedSl <= 0) { PostResult(id, "failed", ticket, "invalid_price"); return; }
    double curTp = PositionGetDouble(POSITION_TP);
-   if(trade.PositionModify(ticket, newSl, curTp)) {
+   bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+   double curExit = isBuy ? SymbolInfoDouble(Symbol_Override, SYMBOL_BID)
+                          : SymbolInfoDouble(Symbol_Override, SYMBOL_ASK);
+   double finalSl;
+   bool wasClamped;
+   if(!ClampStopForBroker(isBuy, requestedSl, curExit, finalSl, wasClamped)) {
+      PostResult(id, "rejected", ticket,
+                 StringFormat("invalid_stop: sl=%.2f wrong side of price=%.2f",
+                              requestedSl, curExit));
+      return;
+   }
+   if(trade.PositionModify(ticket, finalSl, curTp)) {
       RemovePlanByTicket(ticket);
-      PostPositionUpdate(ticket, 0, newSl);
-      PostResult(id, "executed", ticket, "");
+      PostPositionUpdate(ticket, 0, finalSl);
+      string note = wasClamped
+         ? StringFormat("clamped %.2f->%.2f (broker minDist)", requestedSl, finalSl)
+         : "";
+      PostResult(id, "executed", ticket, note);
    } else {
       PostResult(id, "failed", ticket,
                  "modify_failed:" + IntegerToString(trade.ResultRetcode()));
@@ -2338,11 +2419,28 @@ void DoTightenSl(long id, string payload) {
       if(dist <= 0) { PostResult(id, "rejected", ticket, "sl_already_below_entry"); return; }
       newSl = entry + dist * (1.0 - byFrac);
    }
+   // Broker minDist clamp. Tightening can land the SL close to price.
+   double curExitT = isBuy ? SymbolInfoDouble(Symbol_Override, SYMBOL_BID)
+                           : SymbolInfoDouble(Symbol_Override, SYMBOL_ASK);
+   double clampedT;
+   bool wasClampedT;
+   double requestedT = newSl;
+   if(!ClampStopForBroker(isBuy, newSl, curExitT, clampedT, wasClampedT)) {
+      PostResult(id, "rejected", ticket,
+                 StringFormat("invalid_stop_tighten: sl=%.2f vs price=%.2f",
+                              newSl, curExitT));
+      return;
+   }
+   newSl = clampedT;
    if(trade.PositionModify(ticket, newSl, curTp)) {
       RemovePlanByTicket(ticket);
       PostPositionUpdate(ticket, 0, newSl);
+      string clampNote = wasClampedT
+         ? StringFormat(" clamped %.2f->%.2f", requestedT, newSl)
+         : "";
       PostResult(id, "executed", ticket,
-                 StringFormat("sl_was=%.2f sl_now=%.2f", curSl, newSl));
+                 StringFormat("sl_was=%.2f sl_now=%.2f%s",
+                              curSl, newSl, clampNote));
    } else {
       PostResult(id, "failed", ticket,
                  "modify_failed:" + IntegerToString(trade.ResultRetcode()));
@@ -2806,8 +2904,14 @@ void DoOpenInstant(long id, string payload) {
                  "instant_open_failed:" + IntegerToString(trade.ResultRetcode()));
       return;
    }
-   long ticket = (long)trade.ResultDeal();
-   if(ticket == 0) ticket = (long)trade.ResultOrder();
+   // Position ticket (hedging mode) == opening ORDER ticket, NOT the deal
+   // ticket. `ResultDeal()` returns a deal-event id that PositionSelectByTicket
+   // doesn't recognize, which made ReconcileClosedPositions immediately mark
+   // the freshly-opened naked row mt5_not_found, dropping the naked flag and
+   // breaking the subsequent ATTACH_SIGNAL flow. Same precedence as DoOpen.
+   long ticket = (long)trade.ResultOrder() != 0
+                 ? (long)trade.ResultOrder()
+                 : (long)trade.ResultDeal();
    // Fall back to scanning open positions for a freshly-opened ticket.
    if(ticket == 0) {
       for(int i = PositionsTotal() - 1; i >= 0; i--) {
@@ -2906,6 +3010,22 @@ void DoAttachSignal(long id, string payload) {
    double tpFinal = tps[tpCount - 1];
    double entry = g_naked[idx].entry;
 
+   // Broker minDist clamp on the signal SL. The signal can specify an SL
+   // very close to (or past) the chased fill on fast markets; pass through
+   // ClampStopForBroker so we don't get retcode 10016 here.
+   double curExitA = isBuy ? SymbolInfoDouble(Symbol_Override, SYMBOL_BID)
+                           : SymbolInfoDouble(Symbol_Override, SYMBOL_ASK);
+   double clampedSl;
+   bool wasClampedA;
+   double requestedA = sl;
+   if(!ClampStopForBroker(isBuy, sl, curExitA, clampedSl, wasClampedA)) {
+      PostResult(id, "rejected", ticket,
+                 StringFormat("invalid_stop_attach: sl=%.2f vs price=%.2f",
+                              sl, curExitA));
+      return;
+   }
+   sl = clampedSl;
+
    if(!trade.PositionModify(ticket, sl, tpFinal)) {
       PostResult(id, "failed", ticket,
                  "attach_modify_failed:" + IntegerToString(trade.ResultRetcode()));
@@ -2927,9 +3047,13 @@ void DoAttachSignal(long id, string payload) {
                 + "/attach_signal", body, resp);
 
    RemoveNaked(idx);
-   PostResult(id, "executed", ticket, "");
+   string attachNote = wasClampedA
+      ? StringFormat("clamped sl %.2f->%.2f (broker minDist)", requestedA, sl)
+      : "";
+   PostResult(id, "executed", ticket, attachNote);
    Print("CT ATTACH_SIGNAL id=", id, " ticket=", ticket, " side=", side,
-         " sl=", sl, " tpFinal=", tpFinal, " tpCount=", tpCount);
+         " sl=", sl, " tpFinal=", tpFinal, " tpCount=", tpCount,
+         (wasClampedA ? " (sl clamped)" : ""));
 }
 
 void ManageNakedPlans() {

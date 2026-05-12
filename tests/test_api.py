@@ -904,3 +904,138 @@ def test_attach_signal_409_when_already_closed(tmp_path):
     r = client.post("/positions/77003/attach_signal",
                     json={"sl": 4685.0, "tp": 4720.0})
     assert r.status_code == 409
+
+
+# ---- naked-lineage walk-forward: /positions/last_closed + /by_ticket --
+
+def _seed_naked_lineage(conn, ticket: int, side: str = "BUY") -> tuple[int, int]:
+    """Insert OPEN_INSTANT action + matching naked position + the
+    ATTACH_SIGNAL action that wired the signal in. Returns
+    (open_instant_id, attach_signal_id). Mirrors the production sequence:
+    OPEN_INSTANT fires first, position row gets is_naked=1, then
+    ATTACH_SIGNAL runs 1-2 min later with full entry/SL/TPs.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status, created_at) "
+        "VALUES('OPEN_INSTANT', ?, 'executed', ?)",
+        (json.dumps({"symbol": "XAUUSD", "side": side, "comment": "directional"}),
+         now_iso),
+    )
+    open_id = cur.lastrowid
+    conn.execute(
+        "INSERT INTO positions(action_id, mt5_ticket, symbol, side, volume, "
+        "original_volume, entry_price, sl, tp, status, is_naked, naked_opened_at, "
+        "opened_at) "
+        "VALUES(?,?, 'XAUUSD', ?, 1.00, 1.00, 4700.0, 4690.0, 0.0, 'open', 1, ?, ?)",
+        (open_id, ticket, side, now_iso, now_iso),
+    )
+    cur2 = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status, created_at) "
+        "VALUES('ATTACH_SIGNAL', ?, 'executed', ?)",
+        (json.dumps({
+            "symbol": "XAUUSD", "side": side,
+            "entry_low": 4699.0, "entry_high": 4701.0,
+            "sl": 4694.0, "tps": [4710.0, 4720.0, 4730.0],
+            "comment": "FXENGIN",
+        }), now_iso),
+    )
+    attach_id = cur2.lastrowid
+    conn.execute(
+        "UPDATE positions SET is_naked=0, naked_opened_at=NULL, sl=4694.0, tp=4730.0 "
+        "WHERE mt5_ticket=?", (ticket,),
+    )
+    return open_id, attach_id
+
+
+def test_last_closed_walks_forward_to_attach_signal_for_naked_lineage(tmp_path):
+    """Position opened via OPEN_INSTANT then ATTACH_SIGNAL — the joined
+    action payload (OPEN_INSTANT) lacks entry/SL/TPs, so the endpoint
+    must walk forward to the ATTACH_SIGNAL action and surface those
+    fields in the `signal` block. Without this, the EA's
+    BuildOpenPayloadFromLastClosed fails with last_closed_unparseable."""
+    conn = _setup(tmp_path)
+    _seed_naked_lineage(conn, 88001)
+    conn.execute(
+        "UPDATE positions SET status='closed', closed_at=?, close_reason='mt5_sl', "
+        "volume=0.50 WHERE mt5_ticket=88001",
+        (datetime.now(timezone.utc).isoformat(),),
+    )
+    client = TestClient(build_app(conn))
+    r = client.get("/positions/last_closed?symbol=XAUUSD&within_hours=24")
+    assert r.status_code == 200
+    body = r.json()
+    sig = body["signal"]
+    assert sig is not None
+    assert sig["entry_low"] == 4699.0
+    assert sig["entry_high"] == 4701.0
+    assert sig["sl"] == 4694.0
+    assert sig["tps"] == [4710.0, 4720.0, 4730.0]
+    assert sig["side"] == "BUY"
+
+
+def test_by_ticket_walks_forward_to_attach_signal_for_naked_lineage(tmp_path):
+    """REINFORCE path: GET /positions/by_ticket/{n} on a live naked-lineage
+    position must also surface the ATTACH_SIGNAL params."""
+    conn = _setup(tmp_path)
+    _seed_naked_lineage(conn, 88002)
+    client = TestClient(build_app(conn))
+    r = client.get("/positions/by_ticket/88002")
+    assert r.status_code == 200
+    body = r.json()
+    sig = body["signal"]
+    assert sig is not None
+    assert sig["entry_low"] == 4699.0
+    assert sig["entry_high"] == 4701.0
+    assert sig["sl"] == 4694.0
+    assert sig["tps"] == [4710.0, 4720.0, 4730.0]
+
+
+def test_last_closed_legacy_open_lineage_unchanged(tmp_path):
+    """Regression: plain OPEN lineage must still resolve directly from
+    the joined action without walking to ATTACH_SIGNAL."""
+    conn = _setup(tmp_path)
+    payload = json.dumps({
+        "type": "OPEN", "symbol": "XAUUSD", "side": "BUY",
+        "entry_low": 4699, "entry_high": 4701,
+        "sl": 4690, "tps": [4710, 4720, 4735],
+    })
+    _open_position(conn, 88003, payload=payload)
+    conn.execute(
+        "UPDATE positions SET status='closed', closed_at=?, close_reason='mt5_sl' "
+        "WHERE mt5_ticket=88003",
+        (datetime.now(timezone.utc).isoformat(),),
+    )
+    client = TestClient(build_app(conn))
+    r = client.get("/positions/last_closed?symbol=XAUUSD&within_hours=24")
+    assert r.status_code == 200
+    sig = r.json()["signal"]
+    assert sig["sl"] == 4690
+    assert sig["tps"] == [4710, 4720, 4735]
+
+
+def test_last_closed_no_attach_signal_falls_back_to_sparse_payload(tmp_path):
+    """Defensive: naked position whose ATTACH_SIGNAL never fired (orphan
+    from before the bugfix) — the endpoint shouldn't 500. It returns the
+    sparse OPEN_INSTANT payload so the EA can decide cleanly."""
+    conn = _setup(tmp_path)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status, created_at) "
+        "VALUES('OPEN_INSTANT', ?, 'executed', ?)",
+        (json.dumps({"symbol": "XAUUSD", "side": "BUY", "comment": "x"}), now_iso),
+    )
+    aid = cur.lastrowid
+    conn.execute(
+        "INSERT INTO positions(action_id, mt5_ticket, symbol, side, volume, "
+        "entry_price, status, opened_at, closed_at, close_reason) "
+        "VALUES(?, 88004, 'XAUUSD', 'BUY', 1.0, 4700, 'closed', ?, ?, 'mt5_not_found')",
+        (aid, now_iso, now_iso),
+    )
+    client = TestClient(build_app(conn))
+    r = client.get("/positions/last_closed?symbol=XAUUSD&within_hours=24")
+    assert r.status_code == 200
+    sig = r.json()["signal"]
+    assert sig is not None
+    assert "entry_low" not in sig
+    assert sig["side"] == "BUY"

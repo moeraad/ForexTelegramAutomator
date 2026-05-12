@@ -19,7 +19,14 @@ from src.config import (
 from src.fingerprint import signal_fingerprint
 from src.logging_setup import trades_log
 from src.state_summary import render_open_positions
-from src.validators import Action, AlertAction, OpenAction, validate_action
+from src.validators import (
+    Action,
+    AlertAction,
+    AttachSignalAction,
+    OpenAction,
+    OpenInstantAction,
+    validate_action,
+)
 
 log = logging.getLogger(__name__)
 trades = trades_log()
@@ -265,7 +272,7 @@ def process_message(
             "action_inserted msg_id=%s action_id=%s type=%s status=pending",
             msg_id, cur.lastrowid, _action_type(action),
         )
-        if isinstance(action, OpenAction):
+        if isinstance(action, (OpenAction, OpenInstantAction)):
             open_persisted = True
             # Async signal-quality evaluation. Doesn't block this function;
             # the action is already 'pending' and will be promoted on the
@@ -273,7 +280,20 @@ def process_message(
             # worker writes its result back into actions.payload_json under
             # the 'evaluation' key, which the EA dashboard reads via
             # GET /actions/latest_open_evaluation. See src/ai_evaluator.py.
+            #
+            # OPEN_INSTANT is included because the evaluator only reads
+            # `signal["side"]` (it deliberately ignores entry/SL/TPs — see
+            # ai_evaluator.py module docstring). Direction is the only
+            # input it needs, and OPEN_INSTANT carries that. Firing here
+            # gives the dashboard a score within seconds of the naked
+            # open, instead of waiting for ATTACH_SIGNAL.
             _kick_evaluator_for_open(cur.lastrowid, _payload_for(action))
+        elif isinstance(action, AttachSignalAction):
+            # ATTACH_SIGNAL is a "trade became fully actionable" event —
+            # clear the chat's signal-memory buffer like we do on OPEN.
+            # No evaluator kick: the evaluator already ran on the
+            # preceding OPEN_INSTANT (same `side`, no new information).
+            open_persisted = True
 
     if SIGNAL_MEMORY_ENABLED and open_persisted:
         signal_memory.clear_on_open(conn, chat_id)
