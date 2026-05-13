@@ -6,7 +6,7 @@ from src.validators import (
     AIResponse, parse_ai_response,
     MoveSlBeAction, MoveSlAction, ClosePartialAction, CloseFullAction,
     ReopenLastAction, ReinforceAction, TightenSlAction, ModifyTpsAction,
-    OpenInstantAction, AttachSignalAction,
+    OpenInstantAction, AttachSignalAction, CancelPendingAction,
 )
 from src.validators import validate_action, ValidationResult
 from src.db import connect, init_schema
@@ -515,3 +515,77 @@ def test_positions_table_has_is_naked_column(tmp_path):
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(positions)").fetchall()}
     assert "is_naked" in cols
     assert "naked_opened_at" in cols
+
+
+# ---- Phase 5: pending-limit flow (OPEN.pending + CANCEL_PENDING) -------
+
+def test_open_action_pending_defaults_false():
+    a = OpenAction(symbol="XAUUSD", side="BUY",
+                   entry_low=4666, entry_high=4666, tps=[4690], sl=4662)
+    assert a.pending is False
+
+
+def test_open_action_pending_true_accepted():
+    a = OpenAction(symbol="XAUUSD", side="BUY",
+                   entry_low=4666, entry_high=4666, tps=[4690], sl=4662,
+                   pending=True)
+    assert a.pending is True
+
+
+def test_parse_ai_response_dispatches_open_with_pending():
+    raw = (
+        '{"actions":[{"type":"OPEN","symbol":"XAUUSD","side":"BUY",'
+        '"entry_low":4666,"entry_high":4666,"tps":[4690],"sl":4662,'
+        '"pending":true}]}'
+    )
+    resp = parse_ai_response(raw)
+    assert len(resp.actions) == 1
+    assert isinstance(resp.actions[0], OpenAction)
+    assert resp.actions[0].pending is True
+
+
+def test_cancel_pending_action_valid():
+    a = CancelPendingAction(symbol="XAUUSD")
+    assert a.type == "CANCEL_PENDING"
+    assert a.symbol == "XAUUSD"
+
+
+def test_cancel_pending_rejects_unsupported_symbol():
+    with pytest.raises(ValidationError):
+        CancelPendingAction(symbol="EURUSD")
+
+
+def test_parse_ai_response_dispatches_cancel_pending():
+    raw = '{"actions":[{"type":"CANCEL_PENDING","symbol":"XAUUSD"}]}'
+    resp = parse_ai_response(raw)
+    assert len(resp.actions) == 1
+    assert isinstance(resp.actions[0], CancelPendingAction)
+
+
+def test_db_accepts_cancel_pending_action_type(tmp_path):
+    """Phase-5 migration widens action_type CHECK to include CANCEL_PENDING."""
+    conn = connect(str(tmp_path / "v.db"))
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO actions(action_type, payload_json) VALUES('CANCEL_PENDING', '{}')"
+    )
+    row = conn.execute(
+        "SELECT action_type FROM actions WHERE action_type='CANCEL_PENDING'"
+    ).fetchone()
+    assert row is not None
+
+
+def test_db_accepts_watching_status_for_pending_limit(tmp_path):
+    """Phase-5 migration re-adds 'watching' to the status CHECK so the EA
+    can POST status='watching' when a broker BuyLimit/SellLimit is placed
+    and awaiting a fill."""
+    conn = connect(str(tmp_path / "v.db"))
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', '{}', 'watching')"
+    )
+    row = conn.execute(
+        "SELECT id FROM actions WHERE status='watching'"
+    ).fetchone()
+    assert row is not None

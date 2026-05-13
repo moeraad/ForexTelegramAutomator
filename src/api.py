@@ -27,7 +27,13 @@ class ResultBody(BaseModel):
     # (returns 422). Without this, the schema's CHECK constraint was the
     # last line of defense against an EA bug or attacker pushing the
     # action into an unconstrained state.
-    status: Literal["executed", "failed", "rejected"]
+    #
+    # 'watching' is for the Phase-5 pending-limit flow: EA places a
+    # broker-side BuyLimit/SellLimit on an OPEN action with pending=true,
+    # then POSTs status='watching'. The action stays in that state until
+    # either the limit fires (EA POSTs 'executed' with a position
+    # snapshot) or a CANCEL_PENDING flips it to 'rejected' server-side.
+    status: Literal["executed", "failed", "rejected", "watching"]
     mt5_ticket: int | None = None
     error: str | None = None
     snapshot: dict | None = None
@@ -729,6 +735,32 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             "source_msg_id": row["source_msg_id"],
             "created_at": row["created_at"],
             "evaluation": evaluation,
+        }
+
+    # Registered AFTER the literal /actions/latest_open_evaluation so
+    # FastAPI doesn't match "latest_open_evaluation" against the int
+    # path-param. EA's ManagePendingOrders() polls this to detect
+    # server-side cancellation of a pending limit (watching -> rejected).
+    @app.get("/actions/{action_id}")
+    def get_action(action_id: int):
+        """Return a single action row by id. 404 when the id doesn't
+        exist; the EA treats that the same as a cancellation."""
+        row = conn.execute(
+            "SELECT id, action_type, payload_json, status, ea_response, "
+            "       created_at, executed_at "
+            "FROM actions WHERE id=?",
+            (action_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404)
+        return {
+            "id": row["id"],
+            "action_type": row["action_type"],
+            "payload": json.loads(row["payload_json"]) if row["payload_json"] else {},
+            "status": row["status"],
+            "ea_response": row["ea_response"] or "",
+            "created_at": row["created_at"],
+            "executed_at": row["executed_at"],
         }
 
     @app.get("/events/recent")

@@ -1,0 +1,3589 @@
+{
+  "name": "SMC",
+  "tg_chat_id": -1002455414433,
+  "tg_chat_name": "SMC_XAUUSD™(paid)",
+  "symbol": "XAUUSD",
+  "language": "en",
+  "messages_analysed": 497,
+  "generated_at": "2026-05-12T21:09:30.992832+00:00",
+  "model": "gpt-5-mini",
+  "review_instructions": [
+    "Edit `clusters` to refine the dictionary:",
+    "  - rename keys to be more specific or merge similar clusters",
+    "  - change `action` when the AI guessed wrong",
+    "  - move sample phrases between clusters as needed",
+    "  - delete clusters whose action should be IGNORE entirely",
+    "Use `raw_classifications` to find the source message for any sample",
+    "by its `tg_id`. When the dictionary looks right, run the compile",
+    "step (TBD) to produce the production channels/<name>.json the AI",
+    "prompt loads at runtime."
+  ],
+  "clusters": {
+    "open_buy_limit_with_prices": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 23,
+      "samples": [
+        "https://www.tradingview.com/x/fy5Q0bwu/ \n\nXAUUSD BUY LIMIT 4708.21\nSL  4705.17\nTP  4736.10",
+        "https://www.tradingview.com/x/oiwuBI0V/ \n\nXAUUSD buy limit 4841.715\nSL 4837.190\nTp 4891.970",
+        "https://www.tradingview.com/x/j0xJCbU3/ \n\nXAUUSD** buy limit 4855.985\nSL 4851.410\nTp 4888.610**",
+        "https://www.tradingview.com/x/JNXWOPms/. \n\nXAUUSD buy limit 4821.380\nSL 4815.290\nTp 4888.000",
+        "https://www.tradingview.com/x/s3RjCRG2/ \n**XAUUSD BUY LIMIT 5034.960\nSL      5027.790\nTP      5111.100**",
+        "https://www.tradingview.com/x/PGEYUB7h/ \n\n**XAUUSD buy limit 5165.950\nSL  5153.430\nTP  5333.920**"
+      ],
+      "notes_samples": [
+        "Structured BUY LIMIT signal for XAUUSD with SL and one TP.",
+        "XAUUSD buy limit signal with SL and TP.",
+        "XAUUSD buy limit signal with SL and TP."
+      ]
+    },
+    "open_sell_limit_with_prices": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 17,
+      "samples": [
+        "https://www.tradingview.com/x/q5rO60EJ/ \n\n**XAUUSD sell limit 5097.040\nSL 5107.080\nTp 4990**.400",
+        "https://www.tradingview.com/x/heY6bARc/ \n\nXAUUSD sell limit 5291.530\nSL  5298.570\nTp  5207.660",
+        "https://www.tradingview.com/x/XkECnUlJ/ \n\nXAUUSD sell limit 5105.970\nSL 5120.900\nTp 4888.390",
+        "https://www.tradingview.com/x/RjWMYZTa/ \n\n**XAUUSD sell limit 5042.685\nSL   5047.590\nTp   4957.750**",
+        "https://www.tradingview.com/x/ocFGr8st/ \n\nXAUUSD Sell Limit 5393.280\nSL. 5401.335\nTp  5259.750",
+        "https://www.tradingview.com/x/xmrdkrnu/ \n\n**XAUUSD sell limit 5341.740\nSL 5365.765\nTp 5130.00**0"
+      ],
+      "notes_samples": [
+        "Sell limit order with specified entry, SL, and TP.",
+        "Sell limit order with specified entry, SL, and TP.",
+        "Sell limit structured signal with SL and one TP."
+      ]
+    },
+    "uncertain": {
+      "action": "UNCERTAIN",
+      "side": null,
+      "sample_count": 16,
+      "samples": [
+        "Use small lot size",
+        "Half close use be",
+        "https://www.tradingview.com/x/LAbE5f4O\n\n\nXAUUSD ✔️\nTrigger entry running in 163+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/BKyLmuRK/\n\nXauusd buy limit 4513.133\n\nSL    4471.612\n\nTp    4784.970",
+        "https://www.tradingview.com/x/M8j5LvGo/\n\nXauusd buy limit 4550.78\n\nSL  4531.04\nTp  4705.01",
+        "https://www.tradingview.com/x/ZmNjaiux\n\nXauusd sell now@4580.37\n\nSL        4692.25\n\nTp.       4591.77"
+      ],
+      "notes_samples": [
+        "json decode error: Expecting value: line 6 column 17 (char 95)",
+        "json decode error: Expecting value: line 6 column 17 (char 95)",
+        "json decode error: Expecting value: line 6 column 17 (char 95)"
+      ]
+    },
+    "performance_ping_trigger_entry_running": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 11,
+      "samples": [
+        "https://www.tradingview.com/x/ytrS9aMS/ \n\n**XAUUSD ****✔️**** \nTrigger entry running in 360+Green pips profit check our accuracy setup always shere Best setup**",
+        "https://www.tradingview.com/x/oRtThFUk/ \n**XAUUSD ****🔥****\nTrigger entry running 180+Green pips profit check our accuracy setup always shere Best setup **🔥🔥",
+        "https://www.tradingview.com/x/lY1T1SBY/ \n\n**XAUUSD ****✔️**** \nTrigger entry running in **170+green** pips Profit check our accuracy setup always shere Best setup**",
+        "https://www.tradingview.com/x/Laeuy33z/ \n\n**XAUUSD ****✔️****\ntrigger entry running in 140+Green pips profit check our accuracy setup always shere Best setup ****✔️****✔️**",
+        "https://www.tradingview.com/x/ttDNz2Yc/\nXAUUSD ✔️\nTriger entry running in 310+Green pips profit check our accrusy setup",
+        "https://www.tradingview.com/x/zSxulZYg/ \n\n**XAUUSD ****✔️**** \nTrigger entry running in 180+Green pips profit check our accuracy setup always shere Best setup**"
+      ],
+      "notes_samples": [
+        "Performance/marketing message reporting trigger entry running and profit, no actionable trade parameters.",
+        "Performance/marketing message reporting trigger entry running and profit, no actionable trade parameters.",
+        "Performance/marketing message reporting trigger entry running and profit, no actionable trade parameters."
+      ]
+    },
+    "alert_info_performance_ping_with_symbol": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 7,
+      "samples": [
+        "https://www.tradingview.com/x/AUTdlvcC/ \n\n**XAUUSD ****✔️**** \nTrigger entry running in 157+Green pips profit check our accuracy setup always shere Best setup**",
+        "**XAUUSD 185+green pips running **✔️✔️",
+        "https://www.tradingview.com/x/T1fi9hmp/ \n\n**XAUUSD ****✔️****\nTrigger entry running in 270+Green pips profit check our accuracy setup always shere Best setup**",
+        "https://www.tradingview.com/x/kp2vNrvc/ \n \n**XAUUSD ****✔️****\nTrigger entry running in 480+Green pips profit check our accuracy setup always shere Best setup**",
+        "https://www.tradingview.com/x/HSkqifuh\nXAUUSD\nTrigger entry running in 435+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/e75noReG\n\nXAUUSD ✔️\nTrigger entry running in 200+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Performance/marketing message reporting XAUUSD trigger entry running +157 pips, includes link but no actionable trade parameters.",
+        "Performance/marketing message reporting XAUUSD running +185 pips, no actionable trade params.",
+        "Performance/marketing message reporting XAUUSD running +270 pips, includes link but no trade parameters."
+      ]
+    },
+    "weekly_performance_report": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 6,
+      "samples": [
+        "📊** WEEKLY PERFORMANCE REPORT – XAUUSD ****📊****\n\nThis week delivered solid consistency with controlled risk and strong RR execution ****🔥****\n\n****✔️****Trade Breakdown \n ****✅**** XAUUSD → +1006 pips | +18 RR\n****✅**** XAUUSD → +287 pips | +7 RR\n****✅**** XAUUSD → +108 pips | +3 RR\n****❌**** XAUUSD → -60 pips | -1 RR\n****❌**** XAUUSD → -47 pips | -1 RR\n\n****📈**** WEEKLY SUMMARY: \n****🔺**** Total Pips: +1294 Green Pips\n****🔺**** Total RR: +26 RR\n****🔺**** Win Rate: Strong with disciplined risk management\n****🔺**** Pair Focus: XAUUSD only (precision over quantity)\n\n****📌**** One pair. One strategy. Consistent execution.\nFirst check the performance — results speak louder than promises **💯🔥",
+        "📊** Weekly Performance Report – XAUUSD****✔️****\n\nTotal Trades: 5\nWinning Trades: 3\n\n130+ pips\n480+ pips\n130+ pips\nTotal Profit: +740 pips ****🗣****\n\nLosing Trades: 2\n30- pips\n62- pips\nTotal Loss: -92 pips ****🔴****\n\n****✅**** Net Weekly Result:\n****🔥**** +648 Pips Overall\nConsistent execution with strong recovery and solid pip management on XAUUSD. ****💪**📈",
+        "📊** Weekly Performance Report\n\nXAUUSD  +130 pips ****✅**** Closed\nXAUUSD  +390 pips ****✅**** Closed\nXAUUSD  -80 pips    ****❌**** SL Hit\nXAUUSD  +360 pips ****✅**** Closed\nXAUUSD  +140 pips ****✅**** Closed\nXAUUSD  +170 pips ****✅**** Closed\nXAUUSD  +135 pips ****✅**** Closed\nXAUUSD  +310 pips ****✅**** Closed\n\n****📈**** Total Weekly Result: +1,555 Pips Profit ****🔥****\n\nStrong and consistent performance throughout the week with proper Risk Management, Clear SL & TP Targets, and High Probability Setups. ****🔥****🔥****\n\nQuality over quantity — Professional XAUUSD trading results. 🔥**",
+        "📊** Weekly Performance Report – XAUUSD\n\n****❌**** Trade 1: -70 pips (SL Hit)\n****✅**** Trade 2: +296 pips (TP Hit)\n****🔒**** Trade 3: +1730 pips (Closed Profit)\n****❌**** Trade 4: -60 pips (SL Hit)\n****🗣**** Total Green Pips: +2026 pips\n\n****🔴**** Total Red Pips: -130 pips\n****📈**** Net Result: +1896 pips profit\n\n****💡**** Summary:\nA highly profitable week with strong risk management. Losses were minimal and controlled, while winning trades delivered exceptional returns — especially the high-impact runner.\n🚀 Consistency + Discipline = Profit**",
+        "📊** Weekly Performance – XAUUSD **💔\n**\n****✅****XAUUSD    +330 pips TP HITT \n****✅****XAUUSD    +320 pips TP HITT \n****✅****XAUUSD    +440 pips TP HITT \n****❌****XAUUSD    -70 pips SL HITT \n****✅****XAUUSD    +255 pips CLOSED \n****✅****XAUUSD    +456 pips CLOSED \n****✅****XAUUSD    +890 pips TP HITT \n****❌****XAUUSD    -80 pips SL HITT \n****✅****BTCUSD     160+ CLOSE \n\n****📈**** Summary\n\n****✅**** Total Positive Pips: +2851 pips\n****❌**** Total Negative Pips: -150 pips\n****🔥**** Net Profit: +2701 pips**\n**\n📌 Performance Insight\n\nExcellent performance with strong TP hits and solid closed profits.\nLosses remained minimal while overall weekly gain stayed powerful. **🚀",
+        "📊** This Week’s Paid Group Performance Report ****📊****\n\n****❤️**** Our Sniper Accuracy Dominated the Market Once Again! ****🤜****\n\n****🔺**** Winning Trades (TP Hit):\n****✔️**** XAUUSD +175 pips ****✅****\n****✔️**** XAUUSD +233 pips ****✅****\n****✔️**** XAUUSD +452 pips ****✅****\n****✔️**** XAUUSD +267 pips ****✅****\n****✔️**** XAUUSD +440 pips ****✅****\n****✔️**** XAUUSD +318 pips ****✅****\n\n****🔺**** Losing Trades (SL Hit):\n****❌**** XAUSAD -30 pips\n****❌**** XAUSAD -60 pips\n****❌**** XAUUSD -60 pips\n\n****📈**** Weekly Summary:\n****🔥**** Total Profit: +1,885 pips\n****⚠️**** Total Loss: -150 pips\n****🚀**** Net Result: +1,735 pips\n\n****✅**** High accuracy & controlled risk\n****✅**** Strong risk-to-reward execution\n****✅**** Consistent profitability throughout the week**"
+      ],
+      "notes_samples": [
+        "Summary performance report showing weekly P&L and RR metrics for XAUUSD.",
+        "Weekly performance summary with wins/losses and net pips (informational).",
+        "Weekly closed trades summary with total pips and commentary."
+      ]
+    },
+    "move_sl_to_be_shorthand": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 6,
+      "samples": [
+        "hAff closed use BE",
+        "Haff Closed USE BE be safe",
+        "Haff closed use BE"
+      ],
+      "notes_samples": [
+        "Instruction to close and use break-even (move SL to entry).",
+        "Duplicate instruction to close and use break-even.",
+        "Instruction to move stop-loss to break-even for a recently closed/active trade (shorthand 'BE')."
+      ]
+    },
+    "open_sell_limit_with_full_params": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 6,
+      "samples": [
+        "https://www.tradingview.com/x/Ybah329v/\nXauusd sell limit.4600.67\nSL 4622.89\nTp 4487.08",
+        "https://www.tradingview.com/x/8hv0MlTw\nXauusd sell limit 4774.678\nSL 4781.411\nTp 4705.263",
+        "https://www.tradingview.com/x/E3s935Ff/\nXauusd sell limit.4774.02\n\nSL 4788.58\n\nTp 4693.60",
+        "https://www.tradingview.com/x/8EhjY8q0/\nXauusd sell limit.4715.11\n\nSL 4721.03\nTp 4682.40",
+        "https://www.tradingview.com/x/1F3O5ZMi/ \n\nXAUUSD sell limit 4713.93\nSL 4718.97\nTp 4668.82",
+        "https://www.tradingview.com/x/mA2Fh5EK\nXauusd sell limit 4636.62\n\nSL 4650.50\nTp 4544.03"
+      ],
+      "notes_samples": [
+        "Sell limit order with SL and one TP provided.",
+        "Sell limit order with SL and TP.",
+        "Sell limit order with SL and one TP."
+      ]
+    },
+    "open_sell_instant_with_prices": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 5,
+      "samples": [
+        "https://www.tradingview.com/x/Q09i7KW6/ \n\nXAUUSD SELL NOW@5094.000\nSL  5099.780\nTP  5035.000",
+        "https://www.tradingview.com/x/O0VkvOSY/ \n\n**XAUUSD SELL NOW@5028.000\nSL  5031.81\nTP  4997.78**",
+        "https://www.tradingview.com/x/rNPSfbKc/ \n\nXAUUSD SELL NOW@5173.000\nSL   5178.340\nTP   5115.580",
+        "https://www.tradingview.com/x/TMTe5YzW/ \n\n**XAUUSD sell now ****@5011****.00\nSL      5031.94\nTp      4840.64**",
+        "https://www.tradingview.com/x/NZpQjvVq/ \n\n**XAUUSD sell now@4550.000 \nSL  4556.070\nTp 4512.580**"
+      ],
+      "notes_samples": [
+        "XAUUSD SELL NOW signal with entry, SL and TP.",
+        "Immediate sell signal with SL and one TP.",
+        "Immediate sell (market) signal with SL and one TP."
+      ]
+    },
+    "open_sell_limit_with_sl_tps": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 5,
+      "samples": [
+        "https://www.tradingview.com/x/36E8BuIU/ \n\n**XAUUSD sell limit 4922.58\nSL  4943.54\nTp  4655.49**",
+        "https://www.tradingview.com/x/Z48IuJbn/ \n\n**XAUUSD sell limit 4957.525\nSL 4972.775\nTp 4842.600**",
+        "https://www.tradingview.com/x/0FVzv8t3/ \n\n**XAUUSD SELL LIMIT 5154.39\nSL  5159.98\nTP  5128.68**",
+        "XAUUSD sell limit 5358.170\nSL 5368.250\nTp 5283.000",
+        "https://www.tradingview.com/x/83Yu47dn/\nXauusd sell limit.4822.19\nSl 4813.87\nTp4752.66"
+      ],
+      "notes_samples": [
+        "Sell limit order for XAUUSD with SL and one TP.",
+        "Sell limit order for XAUUSD with SL and one TP.",
+        "Sell limit order for XAUUSD with SL and one TP."
+      ]
+    },
+    "open_buy_limit_with_full_params": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 5,
+      "samples": [
+        "https://www.tradingview.com/x/BnIjTuTF/\nXauusd buy limit 4699.72\nSL 4691.65\nTp 4754.29",
+        "https://www.tradingview.com/x/mExez5wC/\nXauusd buy limit 4708.861\nSL 4703.098\nTp 4745.351",
+        "https://www.tradingview.com/x/w8EPDHWI/\nXauusd buy limit.4719.118\nSL 4713.929\nTp 4762.341",
+        "https://www.tradingview.com/x/Rua3wpsK/\n\nXauusd buy limit 4667.02\n\nSL 4649.61\nTp 4771.54",
+        "https://www.tradingview.com/x/vBCHCaX2\nXauusd buy limit.4552.15\n\nSL 4534.92\nTp 4646.26"
+      ],
+      "notes_samples": [
+        "Buy limit order with SL and TP.",
+        "Buy limit order with SL and TP.",
+        "Buy limit order with SL and TP."
+      ]
+    },
+    "open_buy_limit_with_sl_tp": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 4,
+      "samples": [
+        "https://www.tradingview.com/x/Tp9i2U8r/ \n\nXAUUSD BUY LIMIT 5017.660\nSL 5005.540\nTP 5145.660",
+        "https://www.tradingview.com/x/rolVlqff/\nXauusd buy limit now @4719.477\n\nSL@4708.486\nTp@4786.431",
+        "https://www.tradingview.com/x/nzTTKhMT/\nXauusd buy limit 4562.10\n\nSL 4559.73\nTp 4579.89",
+        "https://www.tradingview.com/x/qwbFqf2c/\nXauusd buy limit now.4562.71\n\nSL 4559.74\nTp 4586.12"
+      ],
+      "notes_samples": [
+        "Buy limit signal including entry, SL and TP.",
+        "Clear buy limit signal for XAUUSD with entry, SL and one TP.",
+        "Structured buy limit signal with SL and one TP."
+      ]
+    },
+    "open_sell_limit_with_sl_tp": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 4,
+      "samples": [
+        "https://www.tradingview.com/x/850KHllB/ \n\nXAUUSD SELL LIMIT 5037.465\nSL. 5042.630\nTP  4992.830",
+        "https://www.tradingview.com/x/JcSy67QG/\nXauusd sell limit 4761.92\n\nSL 4777.33\nTp.4682.96",
+        "SMC_XAUUSD™(paid):\nhttps://www.tradingview.com/x/7nfMNP7o/\nXauusd sell limit.4598.10\n\nSL 4603.18\nTp 4571.36",
+        "https://www.tradingview.com/x/AA1iY6kW\nXauusd sell limit 4575.161\n\nSL 4581.590\nTp 4540.014"
+      ],
+      "notes_samples": [
+        "Sell limit signal for XAUUSD with entry, SL and TP.",
+        "Sell limit signal for XAUUSD with entry, SL and one TP.",
+        "Structured sell limit signal with SL and one TP."
+      ]
+    },
+    "open_buy_limit_with_sl_and_tp": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 4,
+      "samples": [
+        "https://www.tradingview.com/x/1Rofhjsw/ \n\nXAUUSD buy limit 5128.13\nSL 5121.00\nTp 5223.71",
+        "https://www.tradingview.com/x/0gSY8x1w/ \n\nXAUUSD BUY LIMIT 5146.74\nSL    5134.89\nTp    5249.23",
+        "https://www.tradingview.com/x/sXLROcp0\nXauusd buy limit 4779.29\n\nSL 4774.74\nTp 4806.69",
+        "https://www.tradingview.com/x/wUEkYpVr\nXauusd buy limit now 4884.69\n\nSL 4847.65\nTp 4958.36"
+      ],
+      "notes_samples": [
+        "Buy limit order for XAUUSD with SL and one TP.",
+        "Buy limit order for XAUUSD with SL and one TP.",
+        "Buy limit order for XAUUSD with explicit SL and one TP."
+      ]
+    },
+    "open_buy_limit_with_sl_tps_and_link": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 4,
+      "samples": [
+        "https://www.tradingview.com/x/SfdFWRrn/\n\nXAUUSD BUY LIMIT 5377.435\nSL 5373.150\nTP 5417.450",
+        "https://www.tradingview.com/x/yHaDZP05/ \n\nXAUUSD buy limit 5348.170\nSL  5339.890\nTp  5398.000",
+        "https://www.tradingview.com/x/2h9V77yI/\nXAUUSD BUY LIMIT 5324.200\nSL 5320.920\nTp 5375.840",
+        "https://www.tradingview.com/x/661LVQge/ \n\nXAUUSD BUY LIMIT 5190.815\nSL 5167.065\nTP 5419.890"
+      ],
+      "notes_samples": [
+        "Structured buy-limit signal with SL and TP, includes chart link.",
+        "Structured buy-limit signal with SL and TP, includes chart link.",
+        "Structured buy-limit signal with SL and TP, includes chart link."
+      ]
+    },
+    "open_sell_market_now_with_prices": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 4,
+      "samples": [
+        "https://www.tradingview.com/x/LMmzxc5W/ \n\nXAUUSD sell now@5160.450\nSL  5170.560\nTp  5105.730",
+        "https://www.tradingview.com/x/ESX1gLE6\nXauusd sell now.4522.68\n\nSL 4529.09\nTp 4488.15",
+        "https://www.tradingview.com/x/PPHmDnSE\nXauusd sell now.4745.67\n\nSL 4755.49\nTp.4694.61",
+        "https://www.tradingview.com/x/J793CS0r\nXauusd sell now. 4761.045\n\nSL 4778.098\nTp 4662.696"
+      ],
+      "notes_samples": [
+        "Immediate sell market signal with SL and TP.",
+        "Immediate sell market signal with SL and TP.",
+        "Immediate sell signal (sell now) with SL and TP."
+      ]
+    },
+    "alert_info_performance_ping": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 4,
+      "samples": [
+        "https://www.tradingview.com/x/pCNF3HVz/\n\nXAUUSD ✔️\nTrigger entry running in 210+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/R8ptTFXY/\n\n\nXAUUSD ✔️\nTrigger entry running in 300+Green pips profit check our accuracy setup always shere Best setup",
+        "490 green pip profit runing",
+        "750 green pip profit y"
+      ],
+      "notes_samples": [
+        "Performance/marketing message claiming entry running and profit; no actionable trade params.",
+        "Performance/marketing message claiming entry running and profit; no actionable trade params.",
+        "Performance update claiming 490 green pips running."
+      ]
+    },
+    "open_sell_market_now_with_sl_tp": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 4,
+      "samples": [
+        "https://www.tradingview.com/x/oDLbw7N4/\nXauusd sell now@.4711.62\nSL 4716.25\nTp 4683.19",
+        "https://www.tradingview.com/x/lpSp8L7a\nXauusd sell now@4571.58\n\nSL 4581.39\nTp 4526.25",
+        "https://www.tradingview.com/x/9dAHygFj\nXauusd sell now.4600.04\n\nSL 4610.09\nTp 4542.23",
+        "https://www.tradingview.com/x/izOacLDt\nXauusd sell now 4615.22\n\nSL 4621.87\nTp 4581.17"
+      ],
+      "notes_samples": [
+        "Immediate sell (market) instruction for XAUUSD with SL and TP provided.",
+        "Immediate sell (market) signal with SL and TP.",
+        "Immediate sell signal with SL and TP."
+      ]
+    },
+    "post_image_promo_entry_running": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 4,
+      "samples": [
+        "https://www.tradingview.com/x/tJXl16fC/\n\n\nXAUUSD ✔️\nTrigger entry running in 70+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/cAGoXpTE\n\n\nXAUUSD ✔️\nTrigger entry running in 200+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/6xVTO9JN\n\nXAUUSD ✔️\nTrigger entry running in 185+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/2eHnhBf6/\n\nXAUUSD ✔️\nTrigger entry running in 110+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Promotional/status post showing an entry running in profit for XAUUSD (no actionable params).",
+        "Promotional/status post showing an entry running in profit for XAUUSD (no actionable params).",
+        "Promotional/status post showing an entry running in profit for XAUUSD (no actionable params)."
+      ]
+    },
+    "context_performance_ping_with_link": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 4,
+      "samples": [
+        "https://www.tradingview.com/x/fVLIMeli/\nXAUUSD ✔️\nTrigger entry running in 160+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/gVzmufwn/\nXAUUSD ✔️\nTrigger entry running in 120+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/ir1ppQLn\nXAUUSD ✔️\nTrigger entry running in 220+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/o3lt9GLU/\nXAUUSD ✔️\nTrigger entry running in 300+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Promotional/performance message showing triggered profit, no trading parameters.",
+        "Performance/confirmation message (triggered entry and profit), no actionable params.",
+        "Performance/confirmation message (triggered entry and profit), no actionable params."
+      ]
+    },
+    "buy_limit_with_prices": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 4,
+      "samples": [
+        "https://www.tradingview.com/x/tH8JX3tn\nXauusd buy limit4540.90\n\nSL 4533.71\nTp 4579.77",
+        "https://www.tradingview.com/x/FxySlrTr\nXauusd buy limit.4692.38\n\nSL 4683.02\nTp 4738.37",
+        "https://www.tradingview.com/x/9swVRC07\nXauusd buy limit.4666.41\n\nSL 4649.79\nTp 4777.95",
+        "https://www.tradingview.com/x/AgldChqy\nXauusd buy limit.4666.03\nSL 4662.03\nTp 4690.03"
+      ],
+      "notes_samples": [
+        "Buy limit order specified with SL and TP.",
+        "Buy limit order with entry price, SL and TP.",
+        "Buy limit order with entry, SL and TP prices."
+      ]
+    },
+    "alert_info_trigger_entry_running_profit": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 4,
+      "samples": [
+        "https://www.tradingview.com/x/Innnsnvy\n\nXAUUSD ✔️\nTrigger entry running in 386+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/KscqqoD4\n\nXAUUSD ✔️\nTrigger entry running in 250+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/NGdPYYZy\nXAUUSD\nTrigger entry running in 170+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/Ghg8JxaY\nXAUUSD\nTrigger entry running in 370+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Promotional/info message: trigger entry running and ~386 pips profit.",
+        "Promotional/info message: trigger entry running and ~250 pips profit.",
+        "Promotional/info message: trigger entry running and ~170 pips profit."
+      ]
+    },
+    "delete_limit_instruction": {
+      "action": "CLOSE_FULL",
+      "side": null,
+      "sample_count": 3,
+      "samples": [
+        "Delete Limit",
+        "Delete this limit"
+      ],
+      "notes_samples": [
+        "User instructs to delete a limit order (close/cancel the limit).",
+        "Instruction to delete a previously posted limit order.",
+        "Instruction to delete/remove a previously placed limit order."
+      ]
+    },
+    "performance_ping_with_chart_link": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 3,
+      "samples": [
+        "https://www.tradingview.com/x/d8cZTaKp/ \n**XAUUSD****✔️****\n trigger entry running in 130+Green pips profit check our accuracy setup always shere Best setup**",
+        "https://www.tradingview.com/x/5JLM7ugr\nXAUUSD\nTrigger entry running in 750+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/DtuTtV2T/\nXAUUSD\nTrigger entry running in 106+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Announcement of a running trade with chart link and profit brag (no actionable trade parameters).",
+        "Performance/marketing ping with chart link claiming running profit; no actionable trade parameters.",
+        "Another performance/marketing ping claiming running profit with chart link; no trade parameters."
+      ]
+    },
+    "buy_limit_with_entry_sl_tp": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 3,
+      "samples": [
+        "https://www.tradingview.com/x/uSXKJAdW/ \n\n**XAUUSD buy limit 5033.45\nSL 5030.39\nTp 5055.93**",
+        "https://www.tradingview.com/x/VNbEie1c/ \n\n**XAUUSD buy limit 5013.200\nSL  5001.145\nTp  5111.900**",
+        "https://www.tradingview.com/x/Rj4VSzWz/ \n\nXAUUSD BUY LIMIT 5054.480\nSL  5050.350\nTP  5090.720"
+      ],
+      "notes_samples": [
+        "Buy limit order specified with SL and TP.",
+        "Buy limit signal with SL and TP.",
+        "Buy limit order with SL and TP."
+      ]
+    },
+    "move_sl_to_break_even_shorthand": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 3,
+      "samples": [
+        "100+pips hAff closed use BE",
+        "hAff closed use BE"
+      ],
+      "notes_samples": [
+        "Instruction that 100+ pips trade closed and to use break-even (move SL to entry).",
+        "Indicates position closed (hAff) and SL moved to break-even.",
+        "Indicates position closed (hAff) and SL moved to break-even."
+      ]
+    },
+    "command_delete_limit": {
+      "action": "REINFORCE",
+      "side": null,
+      "sample_count": 3,
+      "samples": [
+        "Delete Limit"
+      ],
+      "notes_samples": [
+        "Request to delete a pending limit order; indicates closing/removing and possibly reopening management (treated as reinforce/modify).",
+        "Request to delete a pending limit order.",
+        "Request to delete a pending limit order."
+      ]
+    },
+    "open_buy_limit_with_sl_tps": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 3,
+      "samples": [
+        "https://www.tradingview.com/x/FHmIJVWE/ \n\n**XAUUSD BUY LIMIT 4907.00\nSL  4901.93\nTP  4960.77**",
+        "https://www.tradingview.com/x/K2CeULB0\nxauusd buy limit.4817.40\n\nSL 4811.30\nTp 4877.46",
+        "https://www.tradingview.com/x/k1jyKIXc/ \n\nXAUUSD buy limit 4794.05\nSL 4786.09\nTp 4871.33"
+      ],
+      "notes_samples": [
+        "Buy limit order for XAUUSD with SL and one TP.",
+        "Buy limit signal with entry, SL and TP.",
+        "Buy limit signal with entry, SL and TP."
+      ]
+    },
+    "runner_update_with_pips": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 3,
+      "samples": [
+        "https://www.tradingview.com/x/N9uAEg0z/ \n\n**XAUUSD ****✔️**** \nTrigger entry running in 430+Green pips profit check our accuracy setup always shere Best setup** ✨",
+        "https://www.tradingview.com/x/aT1nYxlS/ \n\n**XAUUSD ****✔️****\nTrigger entry running in 815+Green pips profit check our accuracy setup always shere Best setup**  🔥",
+        "https://www.tradingview.com/x/OrnLcscA/ \n \n**XAUUSD ****✔️****\nTrigger entry running in 1118+Green pips profit check our accuracy setup always shere Best setup for **✔️"
+      ],
+      "notes_samples": [
+        "Announcement that a trigger entry is running and in profit (no new actionable prices).",
+        "Announcement of an active profit runner for XAUUSD (no new trade params).",
+        "Announcement that trigger entry is running with profit (no actionable prices)."
+      ]
+    },
+    "half_close_move_sl_to_be_shorthand": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 3,
+      "samples": [
+        "Haff closed use BE",
+        "Half close use be"
+      ],
+      "notes_samples": [
+        "Shorthand instruction to half close and move SL to break-even.",
+        "Repeat shorthand instruction to half close and move SL to break-even.",
+        "Instruction to half close and move SL to break-even (shorthand)."
+      ]
+    },
+    "performance_ping_trigger_entry": {
+      "action": "ALERT_INFO",
+      "side": "BUY/SELL",
+      "sample_count": 3,
+      "samples": [
+        "https://www.tradingview.com/x/IQeZsIJT\nXAUUSD ✔️\nTrigger entry running in 185+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/oWhclgNd\n\nXAUUSD ✔️\nTrigger entry running in 100+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/MQLJRkFp\n\nXAUUSD ✔️\nTrigger entry running in 120+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Performance/status update indicating a trigger entry running and profit — informational rather than new instruction.",
+        "Status message noting trigger entry running and profit — informational.",
+        "Trigger entry running with profit — informational update."
+      ]
+    },
+    "chart_image_promo_trigger_entry_running": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 3,
+      "samples": [
+        "https://www.tradingview.com/x/hkRpV6rn/ \n\n**XAUUSD \nTrigger entry running in 145+Green pips profit check our accuracy setup always shere Best setup**",
+        "https://www.tradingview.com/x/1NET6Gjv/ \n\n**XAUUSD ✨\nTrigger entry running in 190+Green pips profit check our accuracy setup always shere Best setup**",
+        "https://www.tradingview.com/x/ZT0QpZt6\n\nXAUUSD ✔️\nTrigger entry running in 295+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Promotional update with chart link claiming trigger entry running and profit metrics.",
+        "Promotional chart link claiming trigger entry running and profit metrics.",
+        "Chart link with message that trigger entry is running and profit metrics."
+      ]
+    },
+    "sl_hit_short": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 3,
+      "samples": [
+        "SL HITT",
+        "SL hit"
+      ],
+      "notes_samples": [
+        "Short notification that stop-loss was hit.",
+        "Short notification that stop-loss was hit.",
+        "Notification that stop-loss was hit."
+      ]
+    },
+    "close_partial_instruction_half_lot": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 3,
+      "samples": [
+        "70++ pip profit runing \n\nUse be half lot close",
+        "https://www.tradingview.com/x/vzXm7PoO\n120 green pip profit runing \n\nUse be half lot close",
+        "Use be half lot close"
+      ],
+      "notes_samples": [
+        "Advises to close half the lot to lock profit after 70+ pips.",
+        "Advises to close half the lot to lock profit after 120 pips.",
+        "Repeated instruction to close half the lot to secure profits."
+      ]
+    },
+    "sell_limit_with_prices": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 3,
+      "samples": [
+        "https://www.tradingview.com/x/qUB7DN2i\nXauusd sell limit.4519.46\n\nSL 4527.63\nTp 4478.24",
+        "https://www.tradingview.com/x/12z5TBls\nXauusd sell limit.4575.29\n\nSL 4584.05\nTp 4532.52",
+        "https://www.tradingview.com/x/54VVoEnv/\n\nXauusd sell limit.4566.23\n\nSL 4574.40\nTp 4540.47"
+      ],
+      "notes_samples": [
+        "XAUUSD sell limit order given with SL and TP.",
+        "Sell limit order with SL and TP.",
+        "Sell limit order with SL and TP."
+      ]
+    },
+    "context_chart_link_profit_update": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 3,
+      "samples": [
+        "https://www.tradingview.com/x/tqZa8GdT\n\n50 green pip ++ profitable running",
+        "https://www.tradingview.com/x/KQrc3Eqo\n\n155 green pip profit runing",
+        "https://www.tradingview.com/x/3YAHOMck\nXAUUSD\nTrigger entry running in 176+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Shared chart link with statement of profitable running trade (50+ pips).",
+        "Shared chart link with statement of profitable running trade (155 pips).",
+        "Shared chart link and update: trigger entry running with 176+ pips profit."
+      ]
+    },
+    "context_profit_update_running": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 3,
+      "samples": [
+        "140++ green pip profit runing",
+        "Xauusd update \n\nSaniper shot 60 + green pip profit runing",
+        "Xauusd update \n\nSaniper entry trigger shot 125 green pip profit runing"
+      ],
+      "notes_samples": [
+        "Informational update: 140++ pips profit running.",
+        "Update: sniper shot, 60+ pips profit running.",
+        "Update: sniper entry trigger shot, 125 pips profit running."
+      ]
+    },
+    "risk_size_instruction_generic": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "Use small lot size"
+      ],
+      "notes_samples": [
+        "Advises using a small lot size, no trade parameters.",
+        "Repeats advice to use small lot size, no trade parameters."
+      ]
+    },
+    "report_running_trade_positive": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/G5D7AkaG/ \n \n**XAUUSD ****✔️****\nTrigger entry running in 108+Green pips profit check our accuracy setup always shere Best setup**",
+        "https://www.tradingview.com/x/hBgGeKtt/ \n\n**XAUUSD ****✔️**** \nTrigger entry running in 233+Green pips profit check our accuracy setup always shere Best setup**"
+      ],
+      "notes_samples": [
+        "Announces an XAUUSD trigger entry running ~108 pips in profit, promotional message.",
+        "Announces an XAUUSD trigger entry running ~233 pips in profit, promotional message."
+      ]
+    },
+    "open_buy_market_now_with_prices": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/8mIVfAYR/ \n\n**XAUUSD buy now@5511.000\nSL  5507.240\nTp  5558.000**",
+        "https://www.tradingview.com/x/Sg58DUY7/\nXauusd buy now.4665.301\n\nSL 4661.614\nTp 4690.246"
+      ],
+      "notes_samples": [
+        "Immediate buy market order ('buy now') with entry, SL, and TP.",
+        "Immediate buy (buy now) with entry, SL and one TP."
+      ]
+    },
+    "noise_greeting_motivational": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "**Good Morning  ****☄️****☄️****\nWelcome Back to a new Week!\nReady To crush some trades?☄️ Tap Tap If you Ready This Week! Let Do This\n\n****👀****Pin this Channel to stay on top of the game 🕯\n****🙂****Unmute to get instant trade alreat ****🔔****🔔****\n\nLet's Make This Week a profitable One **😮"
+      ],
+      "notes_samples": [
+        "Channel greeting/motivational post with no trading parameters.",
+        "Duplicate greeting/motivational post with no trade details."
+      ]
+    },
+    "context_performance_ping_with_chart_link": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/ItpRgyXc/ \n\n**XAUUSD ****✔️**** \nTrigger entry running in 120+Green pips profit check our accuracy setup always shere Best setup**",
+        "https://www.tradingview.com/x/mwHCcwaa/ \n**XAUUSD ****✔️**** \nTrigger entry running in 100+Green pips profit check our accuracy setup always shere Best setup **✨"
+      ],
+      "notes_samples": [
+        "Promotional/performance message with chart link indicating buy signal context but no actionable prices.",
+        "Promotional/performance message with chart link indicating buy context but no actionable prices."
+      ]
+    },
+    "trade_result_promo_no_action": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 2,
+      "samples": [
+        "Share profit screen shot",
+        "**XAUUSD ****✔️**** \nTrigger entry now smashed TP LEVEL we booked 290+Green pips profit 1:5.81 RR TRADE DONE \nCheck our accuracy setup always shere Best setup **🔥"
+      ],
+      "notes_samples": [
+        "Claim of profit achieved; informational/promo message, no actionable instruction.",
+        "Claim of profit achieved; informational/promo message, no actionable instruction."
+      ]
+    },
+    "risk_advice_use_small_lot": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/JIaRSnk4/\n🔥XAUUSD** sell limit 5034.540\n****❌****SL 5042.765\n****✅****Tp  4946.000**",
+        "https://www.tradingview.com/x/mNVpgzBC/ \n\n**XAUUSD BUY NOW@5022.000\nSL 5015.50\nTP 5083.09**"
+      ],
+      "notes_samples": [
+        "Risk sizing advice to use small lot; no trade parameters.",
+        "Repeated risk sizing advice to use small lot; no trade parameters."
+      ]
+    },
+    "open_buy_now_with_prices": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 2,
+      "samples": [
+        "Haff Closed",
+        "https://www.tradingview.com/x/EjYJkzlu\nXauusd buy now.4662.14\n\nSL 4656.75\nTp 4687.14"
+      ],
+      "notes_samples": [
+        "Immediate buy signal with SL and one TP and chart link.",
+        "Immediate buy signal with entry, SL and one TP."
+      ]
+    },
+    "risk_advice_small_lot": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "Use small lot size"
+      ],
+      "notes_samples": [
+        "Advises using small lot size.",
+        "Risk-management advice to use small lot size; informational only."
+      ]
+    },
+    "open_buy_with_explicit_prices": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/Bnti3YR5/ \n\n**XAUUSD buy now@5050.00\nSL 5046.950\nTp  5090.720**",
+        "https://www.tradingview.com/x/kK1yIWKx\nXauusd buy now 6562.06\n\nSL 4554.33\nTp 4598.68"
+      ],
+      "notes_samples": [
+        "Structured buy signal with entry, SL and one TP.",
+        "Explicit XAUUSD buy signal with entry, SL and one TP."
+      ]
+    },
+    "risk_instruction_small_lots": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "Use small lot size"
+      ],
+      "notes_samples": [
+        "Risk management advice to use small lot size.",
+        "Repeated risk management advice to use small lot size."
+      ]
+    },
+    "performance_statement_pips_running": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "**250+Green pips running **✔️",
+        "**800+Pips running **✔️"
+      ],
+      "notes_samples": [
+        "Announcement of 250+ running pips (performance update).",
+        "Announcement of 800+ running pips (performance update)."
+      ]
+    },
+    "context_trigger_entry_running_performance_ping": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/glPHVsRG/ \n\n**XAUUSD \nTrigger entry running in 180+Green pips profit check our accuracy setup always shere Best setup**",
+        "https://www.tradingview.com/x/wW9bJPWB/ \n\n**XAUUSD ****✔️****\nTrigger entry running in 285+Green pips profit check our accuracy setup always shere Best setup**"
+      ],
+      "notes_samples": [
+        "Promotional/performance message stating trigger entry is running and showing ~180 pips profit.",
+        "Promotional/performance message stating trigger entry is running and showing ~285 pips profit."
+      ]
+    },
+    "context_sniper_entry_running_performance_ping": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "**XAUUSD ****✔️**** \nSniper entry running in 322+Green pips profit check our accuracy setup always shere Best setup**✔️✔️✔️",
+        "https://www.tradingview.com/x/Coo3ODLk/ \n\n**XAUUSD ****✔️**** \nSniper entry running in 519+Green pips profit check our accuracy setup always shere Best setup**"
+      ],
+      "notes_samples": [
+        "Promotional/performance message showing sniper entry running with ~322 pips.",
+        "Promotional/performance message showing sniper entry running with ~519 pips."
+      ]
+    },
+    "noise_link_only": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/xBA8cpH2/",
+        "https://www.tradingview.com/x/VGCRg0iR"
+      ],
+      "notes_samples": [
+        "Message contains only a link (no trading parameters or commentary).",
+        "Only a TradingView link with no trade text."
+      ]
+    },
+    "open_sell_instant_with_sl_tp": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/xoGJWE05/  \n\n**XAUUSD Sell Now ****@5133****.150\nSL  5141.130\nTp  5055.300**",
+        "https://www.tradingview.com/x/NGTgwHZw\nXauusd sell now.4591.67\n\nSL 4599.92\nTp 4558.10"
+      ],
+      "notes_samples": [
+        "Immediate sell signal with SL and one TP.",
+        "Sell-now signal with entry price, SL and TP provided."
+      ]
+    },
+    "tp_booked_runner_announcement": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 2,
+      "samples": [
+        "**XAUUSD tp smashed 1700+green pips booked**",
+        "`XAUUSD tp smashed 2137+Green pips profit booked `**✔️**"
+      ],
+      "notes_samples": [
+        "Message announcing TP was hit and profit booked (no trade instructions).",
+        "TP hit announcement with pips booked (informational)."
+      ]
+    },
+    "chart_link_only": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/Z2ygr9tk/",
+        "https://www.tradingview.com/x/hzxLIa8G/"
+      ],
+      "notes_samples": [
+        "Shared chart link only, no message text or actionable instructions.",
+        "Shared chart link only with no actionable trade details."
+      ]
+    },
+    "alert_info_recovery_message": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "SL HITT recover soon Inshallah 💝"
+      ],
+      "notes_samples": [
+        "Informational/reassuring message that SL was hit and recovery expected.",
+        "Repeat informational message that SL was hit and recovery expected."
+      ]
+    },
+    "alert_info_entry_running_performance_share": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/Yt5XLhdJ/\n\nXauusd ✔️\nTrigger entry running in 110+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/eHMBNQVw\n\nXauusd ✔️\nTrigger entry running in 120+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Performance/status update claiming trigger entry running and profit; no actionable trade parameters.",
+        "Performance/status update claiming trigger entry running and profit; no actionable trade parameters."
+      ]
+    },
+    "alert_info_running_profit_numeric": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "150++ profit runing",
+        "320 green pip runing profit"
+      ],
+      "notes_samples": [
+        "Informational message about ~150 pips running profit.",
+        "Informational message about ~320 pips running profit."
+      ]
+    },
+    "performance_screenshot_confirmation": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/hYBmQNAi\n\nXauusd ✔️\nTrigger entry running in 255+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/2iPeUPyg\n\nXauusd ✔️\nTrigger entry running in 200+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Shares a TradingView image and states a running profitable trigger for XAUUSD; informational performance ping.",
+        "Shares a TradingView image and reports a running profitable trigger for XAUUSD; informational."
+      ]
+    },
+    "running_profit_ping": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "Currently running 130 green pip in profit",
+        "https://www.tradingview.com/x/aKr1lvb4/\n\nCurrently running 190 green pip in profit"
+      ],
+      "notes_samples": [
+        "Simple running profit update stating +130 pips; informational.",
+        "Text-only running profit update stating +190 pips; informational."
+      ]
+    },
+    "open_buy_with_limit_prices": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/pUhqlZS1\nXauusd buy limit.4720.65\n\nSL 4696.23\nTp 4850.48",
+        "https://www.tradingview.com/x/Qwal61kp/\n\nXauusd buy limit.4719.79\n\nSL  4698.99\nTp. 4856.33"
+      ],
+      "notes_samples": [
+        "Buy limit order with explicit entry, SL and one TP for XAUUSD.",
+        "Buy limit order with explicit entry, SL and one TP for XAUUSD."
+      ]
+    },
+    "open_buy_instant_with_prices": {
+      "action": "OPEN_INSTANT",
+      "side": "BUY",
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/zl8SQxOG\nXauusd buy now.4773.54\n\nSL 4767.82\n\nTp 4807.69",
+        "https://www.tradingview.com/x/bSJJPk0t\nBuy now.4797.04\nSL            4786.80\nTp.           4852.04"
+      ],
+      "notes_samples": [
+        "Immediate buy call with current price, SL and one TP (treated as instantaneous entry).",
+        "Immediate buy call with current price, SL and TP provided."
+      ]
+    },
+    "alert_info_trigger_entry_running": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/XRMryLi5\n\nXAUUSD ✔️\nTrigger entry running in 80+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/vhvPm9nt/ \n\n**XAUUSD ****✔️****\nTrigger entry running in 120+Green pips profit check our accuracy setup always shere Best setup**"
+      ],
+      "notes_samples": [
+        "Informational message claiming running profit and accuracy; no actionable prices provided.",
+        "Informational runing-profit message claiming 120+ pips; no actionable parameters."
+      ]
+    },
+    "open_buy_with_sl_tps": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/tJPO7Msg/ \n\n**XAUUSD buy now@4794.00\nSL 4742.450\nTp 5239.000**",
+        "https://www.tradingview.com/x/2nB6014R/\nXauusd buy now@.4793.30\n\nSL @4791.39\nTp @4807.46"
+      ],
+      "notes_samples": [
+        "Full buy signal for XAUUSD with explicit entry, SL and single TP.",
+        "Immediate buy now signal with tight SL and small TP."
+      ]
+    },
+    "status_update_trigger_entry_running_large_profit": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 2,
+      "samples": [
+        "XAUUSD\nTrigger entry running in 300+Green pips profit check our accuracy setup always shere Best setup",
+        "https://www.tradingview.com/x/EsLFeDla\n\nXAUUSD ✔️\nTrigger entry running in 450+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Announcement that a trigger entry is running with ~300 pips profit and promotional text.",
+        "Announcement that a trigger entry is running with ~450 pips profit and promotional text."
+      ]
+    },
+    "open_sell_market_now_with_sl_and_tp": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/zJuaaZyu\nXauusd sell now@4793.45\n\nSL @4798.86\nTp @4761.00",
+        "https://www.tradingview.com/x/aSBNtBVT/ \nXAUUSD sell now @4787.000\nSL 4796.13\nTp 4737.20"
+      ],
+      "notes_samples": [
+        "Sell now (market) order for XAUUSD with SL and one TP.",
+        "Sell now (market) order for XAUUSD with SL and one TP."
+      ]
+    },
+    "open_sell_limit_with_sl_and_tp": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/P9DD6yQS\nXauusd sell limit.4863.064\n\nSL 4881.980\nTp 4754.513",
+        "https://www.tradingview.com/x/g2lCStio/\nXauusd sell limit 4776.97\n\nSL 4784.49\nTp 4723.91"
+      ],
+      "notes_samples": [
+        "Sell limit order for XAUUSD with explicit SL and TP.",
+        "Sell limit order for XAUUSD with explicit SL and TP."
+      ]
+    },
+    "report_running_profit_with_close_be_instruction": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "150++ green pip runing profit \n\nUse be half lot close",
+        "240 green pip runing profit \n\nUs half lot close use be"
+      ],
+      "notes_samples": [
+        "Reporting profit and instruction to close half and use break-even.",
+        "Reporting profit and instruction to close half and use break-even."
+      ]
+    },
+    "open_sell_with_prices": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/QZcwdvV4\nXauusd sell now.@\n4693.99\nSL 4701.00\nTp4655.36",
+        "https://www.tradingview.com/x/BUwdGrvI\nXauusd sell now.4759.47\n\nSL 4765.89\nTp 4730.69"
+      ],
+      "notes_samples": [
+        "Structured sell signal with entry, SL and one TP.",
+        "Explicit sell signal with entry, SL and TP prices."
+      ]
+    },
+    "performance_summary_profit_and_sl": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/b6Yovgwv/\n\n**🚀Trade Details:\n\n   🗣 Trigger Entry Executed\n   🗣Profit: 175+ pips\n   🗣Stop Loss: 24pips\n     R/R 1.9\n🚀Performance Highlights:\n\n   💫Strong predictive accuracy\n   💫Consistent high-probability trade setups\n\n🚀Join our VIP community for expert trading insights and market analysis😮.**",
+        "https://www.tradingview.com/x/9sPVCTRy/\n🌌🌌🌌🌌🌌🌌\n\n🚀Trade Details:\n\n   🗣 Trigger Entry Executed\n   🗣Profit: 233+ pips\n   🗣Stop Loss: 30pips\n     R/R 1/8\n\n🚀Performance Highlights:\n\n   💫Strong predictive accuracy\n   💫Consistent high-probability trade setups\n\n🚀Join our VIP community for expert trading insights and market analysis😮."
+      ],
+      "notes_samples": [
+        "Post-trade performance summary promoting predictive accuracy (no actionable trade).",
+        "Post-trade performance summary (R/R noted as 1/8) promoting results."
+      ]
+    },
+    "reassurance_after_sl_hit": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "SL hit don't worry I will recover your lose"
+      ],
+      "notes_samples": [
+        "Message reassuring followers after SL was hit, promising recovery — informational/supportive.",
+        "Reassuring message after stop loss hit; no trade instructions."
+      ]
+    },
+    "open_sell_with_prices_sl_tp": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/VbvbPpbv/\nXauusd sell now.4562.10\n\nSL 4577.95\nTp 4542.37",
+        "https://www.tradingview.com/x/qJQpNhCr\nXauusd sell now.4704.12\n\nSL 4714.38\nTp 4657.36"
+      ],
+      "notes_samples": [
+        "Structured sell signal for XAUUSD with entry, SL and one TP.",
+        "Structured sell signal for XAUUSD with entry, SL and one TP."
+      ]
+    },
+    "alert_info_running_profit_amount": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 2,
+      "samples": [
+        "150++ running profit",
+        "70++ green pip profit runing"
+      ],
+      "notes_samples": [
+        "Informational message reporting ~150 pips running profit.",
+        "Informational message reporting ~70 pips running profit."
+      ]
+    },
+    "post_trade_report_TP_hit_with_stats": {
+      "action": "ALERT_INFO",
+      "side": "SELL",
+      "sample_count": 2,
+      "samples": [
+        "https://www.tradingview.com/x/zJTpSdys\nXAUUSD ✔️\nTrigger entry now smashed TP LEVEL we booked 248+Green pips profit 1:5RR TRADE DONE \nJust 51 pips SL and 248pips tp",
+        "https://www.tradingview.com/x/AWS8icg9\nXAUUSD ✔️\nTrigger entry now smashed TP LEVEL we booked 288+Green pips profit 1:4.5RR TRADE DONE \nJust 60pips SL and 288pips tp"
+      ],
+      "notes_samples": [
+        "Reports trade hit TP: 248 pips profit, 51 pips SL; trade done.",
+        "Reports trade hit TP: 288 pips profit, 60 pips SL; trade done."
+      ]
+    },
+    "report_trade_result_with_stats": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**XAUUSD ****✔️**** \nTrigger entry now smashed TP LEVEL we booked 287+Green** 🔥** pips profit check our accuracy setup always shere Best setup \nJust 40 pips SL and 287 pips TP** 🔥"
+      ],
+      "notes_samples": [
+        "Announces a filled XAUUSD trade that hit TP with profit and mentions SL size."
+      ]
+    },
+    "open_buy_instant_with_commas_in_numbers": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/tW00vcY3/. \n\n**BTCUSD BUY NOW@90743.00\nSL  89,952.60\nTP  97,952.89**"
+      ],
+      "notes_samples": [
+        "BTCUSD BUY NOW signal with entry, SL and TP (numbers contain commas)."
+      ]
+    },
+    "partial_close_then_move_sl_to_be_shorthand": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "108+Green pips running \nHaff closed USE BE"
+      ],
+      "notes_samples": [
+        "Reports 108 pips running/profit and instructs 'USE BE' (move SL to break-even); mentions 'Haff closed' implying a partial close."
+      ]
+    },
+    "noise_greeting_and_channel_promo": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**Good Morning  ****☄️****☄️****\nWelcome Back to a new Week!\nReady To crush some trades?☄️ Tap Tap If you Ready This Week! Let Do This\n\n****👀****Pin this Channel to stay on top of the game 🕯\n****🙂****Unmute to get instant trade alreat ****🔔****🔔****\n\nLet's Make This Week a profitable One **😮"
+      ],
+      "notes_samples": [
+        "Greeting and channel promotion, no trade instructions."
+      ]
+    },
+    "move_sl_to_entry_after_running_profit": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "130+pips running haff close SL move to entry"
+      ],
+      "notes_samples": [
+        "Instruction to move stop-loss to entry (break-even) after running ~130 pips profit."
+      ]
+    },
+    "noise_single_word": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Point"
+      ],
+      "notes_samples": [
+        "Single word 'Point' with no trading intent or parameters."
+      ]
+    },
+    "noise_risk_management_advice": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Use small lot size"
+      ],
+      "notes_samples": [
+        "Advisory to use small lot size (risk management), no trade parameters."
+      ]
+    },
+    "close_partial_and_move_sl_to_be_shorthand": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "100+pips running \nclosed 🔐 50% USE BE"
+      ],
+      "notes_samples": [
+        "Message indicates 100+ pips running, closed 50% and moved SL to break-even (USE BE)."
+      ]
+    },
+    "noise_emotion_reaction": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Badluck 🥲"
+      ],
+      "notes_samples": [
+        "Emotional reaction / commentary ('Badluck') with emoji, no trading instruction."
+      ]
+    },
+    "personal_commentary_waiting_move": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "I was waiting for this exact move."
+      ],
+      "notes_samples": [
+        "User comment expressing they awaited a market move (contextual, no trade action)."
+      ]
+    },
+    "monthly_performance_report": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**MONTHLY PERFORMANCE – XAUUSD ****🔥****\n\n****🗓**** 02 January to 30 January\n\n• Week 1: 1,488+ pips\n• Week 2: 4,198+ pips\n• Week 3: 1,296+ pips\n• Week 4: 740+ pips\n\n****📊**** Total Monthly Pips: 7,722+ ****🔥****\n\nConsistent execution, disciplined\n risk management, and strong market structure understanding delivered solid results throughout the month.****🔥****\nQuality over quantity — focus on high-probability setups only** 🔥"
+      ],
+      "notes_samples": [
+        "Monthly performance summary by week and total pips (informational)."
+      ]
+    },
+    "open_buy_with_limit_and_sl_tps": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/duBWUANe/ \n\nXAUUSD buy limit 4672.560\nSL 4645.690\nTp 4926.760"
+      ],
+      "notes_samples": [
+        "Buy limit signal for XAUUSD with entry, SL and one TP."
+      ]
+    },
+    "open_buy_limit_short_srl_tp": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/BvKoTvSr/ \nXAUUSD BUY LIMIT 4856.360\nSL 4847.718\nTP 4911.870"
+      ],
+      "notes_samples": [
+        "Buy limit signal with entry, SL and TP."
+      ]
+    },
+    "open_buy_limit_with_near_sl": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/ylihovN0/ \n\nXAUUSD BUY LIMIT 4889.140\nSL  4882.960\nTP  4936.870"
+      ],
+      "notes_samples": [
+        "Buy limit signal specifying entry, SL and TP."
+      ]
+    },
+    "performance_ping_tp_hit_chart_link": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/fsCVBtNt/ \n\n**XAUUSD ****✔️**** \nTrigger entry and smashed TP LEVEL we booked 555+Green** ** pips profit check our accuracy setup always shere Best setup **🔥🔥"
+      ],
+      "notes_samples": [
+        "Announcement that TP was hit with profit and chart link (informational)."
+      ]
+    },
+    "performance_ping_large_running_profit": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/NRJUpbBY/ \n\n**XAUUSD ****✔️**** \nTrigger entry running in 1470+Green pips profit check our accuracy setup always shere Best setup **✔️✔️"
+      ],
+      "notes_samples": [
+        "Running trade profit shout with chart link (informational)."
+      ]
+    },
+    "performance_ping_tp_hit_large_profit": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**XAUUSD ****✔️**** \nTrigger entry now smashed TP LEVEL we booked 2540+green pips profit booked ****✔️**** \nCheck our accuracy setup always shere Best setup always **✔️"
+      ],
+      "notes_samples": [
+        "Announcement TP hit with large profit (informational)."
+      ]
+    },
+    "post_trade_explanation_sl_hit": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "After 250+pips Sl hit I was bussy 👀"
+      ],
+      "notes_samples": [
+        "User explaining they were busy after SL hit (contextual comment about trade outcome)."
+      ]
+    },
+    "noise_delete_command": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Delete this"
+      ],
+      "notes_samples": [
+        "Administrative/noise message asking to delete."
+      ]
+    },
+    "open_sell_limit_with_prices_and_chart": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "**XAUUSD ****✔️**** \nTrigger entry now smashed TP LEVEL we booked 446+Green pips profit 1:8.63 RR TRADE DONE \nCheck our accuracy setup always shere Best setup **✨✨"
+      ],
+      "notes_samples": [
+        "Sell-limit signal with SL and one TP, includes chart link."
+      ]
+    },
+    "open_sell_now_with_prices": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "Use small lot"
+      ],
+      "notes_samples": [
+        "Immediate sell signal with SL and one TP and chart link."
+      ]
+    },
+    "trade_status_sl_hit": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/7pAGmJLO/ \n\n**XAUUSD sell now@5013\nSL  5019.40\nTp  4968.65**"
+      ],
+      "notes_samples": [
+        "Notification that stop-loss was hit; informational."
+      ]
+    },
+    "noise_partial_close_shorthand": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "SL HITT"
+      ],
+      "notes_samples": [
+        "Short informal message 'Haff Closed' likely meaning half closed but ambiguous; treated as noise."
+      ]
+    },
+    "post_trade_summary_sl_and_profit_commentary": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**Yesterday this trade haff closed in 90+Green pips and then SL HITT 60-pips \n\nMean we are safe no loss no profit**"
+      ],
+      "notes_samples": [
+        "Reporting past trade outcome: closed in profit then SL hit; stating no net loss/no profit."
+      ]
+    },
+    "sl_hit_notification_emoji": {
+      "action": "ALERT_WARN",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "XAUUSD SL HITT 😶"
+      ],
+      "notes_samples": [
+        "Notifies that XAUUSD stop-loss was hit (emoji), signals a trade-related event but lacks actionable params."
+      ]
+    },
+    "open_sell_with_entry_sl_tp_prices": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/pa2KHpRI/ \n\n**XAUUSD sell Now@5027.29\nSL 5033.28\nTp 4968.57**"
+      ],
+      "notes_samples": [
+        "Direct sell signal for XAUUSD with entry, SL and one TP."
+      ]
+    },
+    "exit_confirmation_simple": {
+      "action": "CLOSE_FULL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Exit ✔️"
+      ],
+      "notes_samples": [
+        "Simple exit confirmation; suggests closing position."
+      ]
+    },
+    "sell_limit_with_entry_sl_tp": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/B6cDBf2c/ \n\nXAUUSD SELL LIMIT 5049.61\nSL  5055.68\nTP  5008.57"
+      ],
+      "notes_samples": [
+        "Sell limit order specified with SL and TP."
+      ]
+    },
+    "post_trade_summary_sl_hit": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "After 100+pip SL HITT 😗"
+      ],
+      "notes_samples": [
+        "Reports that stop-loss was hit after +100 pips; informational."
+      ]
+    },
+    "open_buy_instant_with_entry_sl_tp": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/P1kN7bTW/ \n\n**XAUUSD BUY NOW@5096.00\nSL 5071.140\nTP 5390.320**"
+      ],
+      "notes_samples": [
+        "Immediate buy signal with entry, SL and TP."
+      ]
+    },
+    "risk_advice_small_lot_big_sl": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Use small lot size big sl"
+      ],
+      "notes_samples": [
+        "Risk management advice to use smaller lot size and larger stop-loss."
+      ]
+    },
+    "profit_protection_use_be_instruction": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**100+pips safe your 50% Profit** \n\nUSE BE"
+      ],
+      "notes_samples": [
+        "Advises securing 50% profit and to use break-even (move SL to entry)."
+      ]
+    },
+    "running_trade_pips_update": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**XAUUSD 200+Pips running **✔️"
+      ],
+      "notes_samples": [
+        "Status update reporting a running trade with 200+ pips."
+      ]
+    },
+    "sl_hit_plain_text": {
+      "action": "ALERT_WARN",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "SL hit"
+      ],
+      "notes_samples": [
+        "Short notification that stop-loss was hit; no further parameters."
+      ]
+    },
+    "open_buy_running_profit_announcement": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/c7TlVegl/ \n\n**XAUUSD ****✔️**** \nTrigger entry running in 105+Green pips profit check our accuracy setup always shere Best setup**"
+      ],
+      "notes_samples": [
+        "Announcement that a buy entry is running and currently profitable (no new trade params)."
+      ]
+    },
+    "open_buy_running_profit_announcement_large": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/gzzEMmQY/ \n\n**XAUUSD ****✔️**** \nTrigger entry running in 230+Green pips profit check our accuracy setup always shere Best setup**"
+      ],
+      "notes_samples": [
+        "Announcement that a buy entry is running and currently profitable (no new trade params)."
+      ]
+    },
+    "performance_report_weekly": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "🔥** WEEKLY PERFORMANCE REPORT – XAUUSD ****🔥****\n━━━━━━━━━━━━━━━━━━\n****✅**** +290 Pips — TP HITT\n****✅**** +446 Pips — TP HITT\n****✅**** +250 Pips — Closed in Profit\n****✅**** +100 Pips — Closed in Profit\n****✅**** +100 Pips — Closed in Profit\n****❌**** -40 Pips — SL HITT\n━━━━━━━━━━━━━━━━━━\n****📊**** Total Trades: 6\n****🏆**** Winning Trades: 5\n****📉**** Losing Trades: 1\n****📈**** Win Rate: 83%\n****💵**** Total Pips Gained: +1,186 Pips\n🔻 Total Pips Lost: -40 Pips\n****🚀**** Net Weekly Profit: +1,146 Pips ****🚀****\nHigh RR trades.\nControlled risk.\nStrong execution on XAUUSD.\nOne small SL cannot compete with disciplined trading and proper structure-based analysis.\nConsistency is the real power in this market.**"
+      ],
+      "notes_samples": [
+        "Weekly performance summary showing wins, losses and net pips."
+      ]
+    },
+    "noise_motivational_greeting": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**Good Morning  ****☄️****☄️****\nWelcome Back to a new Week!\nReady To crush some trades?☄️ Tap Tap If you Ready This Week! Let Do This\n\n****👀****Pin this Channel to stay on top of the game 🕯\n****🙂****Unmute to get instant trade alreat ****🔔****🔔****\n\nLet's Make This Week a profitable One **😮"
+      ],
+      "notes_samples": [
+        "Channel greeting/motivational message, no trade action."
+      ]
+    },
+    "open_sell_limit_with_long_term_tp": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/Hfe0AI9i/ \n\n**XAUUSD sell limit 4935.240\nSL 4978.080\nTp 4402.00**"
+      ],
+      "notes_samples": [
+        "Sell limit structured signal with SL and a distant TP (large move target)."
+      ]
+    },
+    "user_feedback_no_action": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "If I had closed this trade partially at 170+ pips, your SL wouldn’t have been hit.\nBut honestly, it doesn’t make a difference to me whether your SL gets hit or your TP gets hit.\nWhen I don’t receive any feedback, it stops making a difference to me if your SL gets hit."
+      ],
+      "notes_samples": [
+        "User feedback/complaint about trade management and lack of responses."
+      ]
+    },
+    "performance_closed_statement": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "630+pips hAff closed 🔐"
+      ],
+      "notes_samples": [
+        "Announcement that a trade closed with 630+ pips."
+      ]
+    },
+    "chart_ping_with_performance_comment": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/F3yguteT/ \n\n**XAUUSD ****✔️**** \ndraction wise trade \nTrigger entry running in 630+Green pips profit check our accuracy setup always shere Best setup**"
+      ],
+      "notes_samples": [
+        "TradingView chart link and promotional message claiming 630+ running pips."
+      ]
+    },
+    "move_sl_to_be_instruction_shorthand": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Use BE"
+      ],
+      "notes_samples": [
+        "Single-line instruction telling traders to use break-even."
+      ]
+    },
+    "performance_tp_hit_statement": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**XAUUSD ****✔️**** \nTrigger entry now smashed TP LEVEL we booked 537+Green pips profit check our accuracy setup always shere Best setup \nJust 50 pips SL and 537 pips TP**"
+      ],
+      "notes_samples": [
+        "Announcement that TP was hit for 537 pips with a 50-pip SL."
+      ]
+    },
+    "closed_tag_with_be_instruction": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "hAff closed use BE"
+      ],
+      "notes_samples": [
+        "Message states a closed trade and instructs to use break-even."
+      ]
+    },
+    "weekly_performance_summary": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "🔥**Weekly Performance****🔥****\n\n****✅**** XAUUSD   800+\n****✅**** XAUUSD   537+\n****✅**** XAUUSD   130+\n****❌**** XAUUSD   70-\n****🔥****XAUUSD   miss entry\n\nTotal: +1,397 Pips ****📈****\n\nAnother profitable week with strong momentum.\nHigh RR trades and disciplined execution.\nConsistency is the key to long-term success.**✨"
+      ],
+      "notes_samples": [
+        "Weekly performance summary listing wins/losses and total pips."
+      ]
+    },
+    "channel_greeting_and_promotion": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**Good Morning  ****☄️****☄️****\nWelcome Back to a new Week!\nReady To crush some trades?☄️ Tap Tap If you Ready This Week! Let Do This\n\n****👀****Pin this Channel to stay on top of the game 🕯\n****🙂****Unmute to get instant trade alreat ****🔔****🔔****\n\nLet's Make This Week a profitable One **😮"
+      ],
+      "notes_samples": [
+        "Greeting and channel promotion message with no trade info."
+      ]
+    },
+    "sl_hit_report": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "After 80+ pips SL HITT"
+      ],
+      "notes_samples": [
+        "Report that SL was hit after ~80+ pips."
+      ]
+    },
+    "open_sell_instant_with_sl_and_tp": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/075NgT40/ \n\n**XAUUSD SELL NOW@5193.000\nSL 5209.66\nTP 5054.34**"
+      ],
+      "notes_samples": [
+        "Immediate sell signal with SL and one TP."
+      ]
+    },
+    "risk_management_position_size_advice": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Use small lot size"
+      ],
+      "notes_samples": [
+        "General risk management suggestion to use small lot size."
+      ]
+    },
+    "move_sl_to_be_after_profit_shorthand": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "150+pips running \nhAff closed use BE"
+      ],
+      "notes_samples": [
+        "Indicates position had 150+ pips running and user closed and moved SL to break-even (hAff closed use BE)."
+      ]
+    },
+    "context_closed_more_in_pips": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "closed more in 300 pips"
+      ],
+      "notes_samples": [
+        "Announcement that a position was closed with ~300 pips profit."
+      ]
+    },
+    "move_sl_be_after_profit_shorthand": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "307+pips running \nhAff closed USE BE"
+      ],
+      "notes_samples": [
+        "Indicates 307+ pips running and instruction/statement that SL was moved to break-even."
+      ]
+    },
+    "noise_dark_humour_no_trade_action": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**I know that most of you have already died, so no feedback will be received.\nBut it’s okay ****🙂**"
+      ],
+      "notes_samples": [
+        "Non-trading comment (dark humor), no actionable content."
+      ]
+    },
+    "short_update_closed_more": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Closed more"
+      ],
+      "notes_samples": [
+        "Brief note that more positions were closed; no numeric detail."
+      ]
+    },
+    "weekly_performance_report_summary": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "📊** Weekly Performance Report – XAUUSD\n\n****❌**** -70 pips (SL Hit)\n****❌**** -70 pips (SL Hit)\n****✅**** +520 pips (Closed Profit)\n****✅**** +300 pips (Closed Profit)\n\n****📈**** Total Result: +680 Pips Profit\n\nLosses are part of trading, but strong recovery and discipline delivered a solid green week **✅"
+      ],
+      "notes_samples": [
+        "Weekly performance summary showing wins and losses and net +680 pips."
+      ]
+    },
+    "noise_greeting_weekly_motivation": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**Good Morning  ****☄️****☄️****\nWelcome Back to a new Week!\nReady To crush some trades?☄️ Tap Tap If you Ready This Week! Let Do This\n\n****👀****Pin this Channel to stay on top of the game 🕯\n****🙂****Unmute to get instant trade alreat ****🔔****🔔****\n\nLet's Make This Week a profitable One **😮"
+      ],
+      "notes_samples": [
+        "Greeting/motivational message and channel housekeeping; not a trade signal."
+      ]
+    },
+    "trade_size_advice": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Use small lot"
+      ],
+      "notes_samples": [
+        "Risk/position-sizing suggestion, no trade parameters."
+      ]
+    },
+    "h_aff_closed_use_be_shorthand": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "hAff closed use BE"
+      ],
+      "notes_samples": [
+        "Instruction to move stop to break-even after Haff closed (shorthand)."
+      ]
+    },
+    "post_trade_comment_reverse_after_pips": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "After 130+pips reverse"
+      ],
+      "notes_samples": [
+        "Commentary predicting reversal after reaching ~130 pips."
+      ]
+    },
+    "open_buy_limit_with_wide_sl_tps_and_link": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/cT0tP7xw/ \n\nXAUUSD buy limit 5238.51\nSL  5121.26\nTp  5433.10"
+      ],
+      "notes_samples": [
+        "Structured buy-limit signal with very wide SL and distant TP, includes chart link."
+      ]
+    },
+    "h_aff_closed_short": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "haff closd"
+      ],
+      "notes_samples": [
+        "Notification that 'haff' closed; likely informational about a previous trade."
+      ]
+    },
+    "promotion_trigger_running_profit_message": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/TVRqPCJT/ \n\n**XAUUSD ****🔥****\nTrigger entry running in the 190+green pips Profit check our accuracy setup always shere Best setup **✔️"
+      ],
+      "notes_samples": [
+        "Promotional/status message claiming a running profitable trade."
+      ]
+    },
+    "h_aff_closed_use_be_now": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "hAff closed use BE now"
+      ],
+      "notes_samples": [
+        "Instruction to immediately move stop to break-even after Haff closed."
+      ]
+    },
+    "missed_tp_reporting": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "10 pips miss tp 🥲"
+      ],
+      "notes_samples": [
+        "User reporting they missed TP by 10 pips; informational."
+      ]
+    },
+    "noise_delete": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Delete"
+      ],
+      "notes_samples": [
+        "Single-word non-actionable chat; ignore."
+      ]
+    },
+    "noise_typo_inviled": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Inviled"
+      ],
+      "notes_samples": [
+        "Garbled/typo message, non-actionable."
+      ]
+    },
+    "close_or_delete_limit_instruction": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Delete this limit"
+      ],
+      "notes_samples": [
+        "User instructs to delete a limit order but no specifics provided (likely administrative chat)."
+      ]
+    },
+    "post_trade_missed_entry_and_delete_request": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/Hyg1T2yx/\n\n**XAUUSD ****✔️**** \nMiss our entry few PIPs then smashed TP LEVEL 2117+Green pips ****✔️****\nPlease delete painding order \nCheck our accuracy setup always shere Best setup ** ✨✨"
+      ],
+      "notes_samples": [
+        "Post-trade performance message stating missed entry and TP hit, asks to delete pending order; informational."
+      ]
+    },
+    "close_partial_or_move_sl_be_shorthand": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "140+pips running \nhAff closed use BE"
+      ],
+      "notes_samples": [
+        "Short message indicating half closed and to use break-even (move SL to entry)."
+      ]
+    },
+    "breakeven_hit_report": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "After 425+pips BE HIT ✔️"
+      ],
+      "notes_samples": [
+        "Informational report that break-even was hit after large profit."
+      ]
+    },
+    "close_half_use_be_instruction_shorthand": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Haff Closed USE BE"
+      ],
+      "notes_samples": [
+        "Short instruction indicating half closed and to use break-even (move SL to entry)."
+      ]
+    },
+    "risk_instruction_small_lot": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Use small lot size"
+      ],
+      "notes_samples": [
+        "Advises using a small lot size (risk management guidance)."
+      ]
+    },
+    "open_buy_with_limit_sl_tp": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/xUedXB5D/ \n\n**XAUUSD buy limit 5151.14\nSL 5146.13\nTp 5180.50**"
+      ],
+      "notes_samples": [
+        "Structured buy-limit signal with SL and one TP."
+      ]
+    },
+    "open_buy_instant_with_sl_tp": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/lKCbUCpf/ \n\n**XAUUSD buy Now@5171.500\nSL 5165.500\nTp 5206.290**"
+      ],
+      "notes_samples": [
+        "Immediate buy signal with SL and one TP."
+      ]
+    },
+    "noise_greeting_channel_promo": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**Good Morning  ****☄️****☄️****\nWelcome Back to a new Week!\nReady To crush some trades?☄️ Tap Tap If you Ready This Week! Let Do This\n\n****👀****Pin this Channel to stay on top of the game 🕯\n****🙂****Unmute to get instant trade alreat ****🔔****🔔****\n\nLet's Make This Week a profitable One **😮"
+      ],
+      "notes_samples": [
+        "Greeting and channel promotion asking users to pin/unmute; no trade instructions."
+      ]
+    },
+    "open_sell_with_limit_sl_tp": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/pclTDTPc/ \n\n**XAUUSD sell limit 5169.490\nSL 5179.545\nTp 5028.800**"
+      ],
+      "notes_samples": [
+        "Structured sell-limit signal with SL and one TP."
+      ]
+    },
+    "noise_typo_or_unknown_word": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Inviled"
+      ],
+      "notes_samples": [
+        "Single-word message 'Inviled' appears to be noise/typo."
+      ]
+    },
+    "move_sl_to_break_even_short_hand": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "hAff closed use BE"
+      ],
+      "notes_samples": [
+        "Instruction indicating closed position and to move SL to break-even."
+      ]
+    },
+    "open_buy_limit_with_prices_small_tp_below_entry": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/BYHXRmq5/ \n\n**XAUUSD buy limit 5028.915\nSL  5011.780\nTp  5023.618**"
+      ],
+      "notes_samples": [
+        "Buy limit where TP is below entry (likely small/take-profit or mistaken)."
+      ]
+    },
+    "close_full_shorthand_locked_emoji": {
+      "action": "CLOSE_FULL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "CLOSED 🔐"
+      ],
+      "notes_samples": [
+        "Short message indicating position(s) closed."
+      ]
+    },
+    "close_full_then_move_sl_to_be_instruction": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "hAff closed 🔐 use BE"
+      ],
+      "notes_samples": [
+        "Indicates closed and instructs to use break-even."
+      ]
+    },
+    "alert_info_trade_running_claim": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**XAUUSD ****✔️**** \nTrigger entry running in 290+Green pips profit check our accuracy setup always shere Best setup**"
+      ],
+      "notes_samples": [
+        "Promotional/status message claiming a running profitable trade; no actionable params."
+      ]
+    },
+    "noise_greeting_promotional": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**Good Morning  ****☄️****☄️****\nWelcome Back to a new Week!\nReady To crush some trades?☄️ Tap Tap If you Ready This Week! Let Do This\n\n****👀****Pin this Channel to stay on top of the game 🕯\n****🙂****Unmute to get instant trade alreat ****🔔****🔔****\n\nLet's Make This Week a profitable One **😮"
+      ],
+      "notes_samples": [
+        "Channel welcome/greeting and promotional instructions, not a trade signal."
+      ]
+    },
+    "trade_risk_instruction_small_lot": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Use small lot size"
+      ],
+      "notes_samples": [
+        "Risk guidance advising small position size; informational only."
+      ]
+    },
+    "close_full_keyword_exit": {
+      "action": "CLOSE_FULL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "exit"
+      ],
+      "notes_samples": [
+        "User instructs to exit/close position(s) fully."
+      ]
+    },
+    "open_sell_limit_with_prices_markdown": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "**__XAUUSD sell limit 5028.14\nSL 5039.44\nTp 4970.0__0**"
+      ],
+      "notes_samples": [
+        "Sell limit order for XAUUSD with SL and TP (formatted)."
+      ]
+    },
+    "execution_risk_instruction_small_lot": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Use small lot"
+      ],
+      "notes_samples": [
+        "Instruction to use a small lot size (risk guidance), not a trade signal."
+      ]
+    },
+    "open_buy_limit_with_prices_gold_label": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/5hJF70zx/\n\nGold buy limit  4560.054\nSL 4531.525\nTp4705.178"
+      ],
+      "notes_samples": [
+        "Buy limit for Gold with SL and TP."
+      ]
+    },
+    "trade_report_missed_entry_booked_profit": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/IlzvDrbt/\n“The market missed my buy limit entry and moved straight up without giving an entry, and finally 1444 profit has been booked.”"
+      ],
+      "notes_samples": [
+        "Post-trade report: missed intended entry but profit of 1444 was booked."
+      ]
+    },
+    "open_sell_limit_with_now_keyword": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/j1wgTSAe/\nXauusd sell limit now 4684.01\nSL 4699.37\nTp 4600.76"
+      ],
+      "notes_samples": [
+        "Sell limit signalled with 'now' indicating immediate attention."
+      ]
+    },
+    "open_sell_limit_crypto_with_prices": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/LT9UqOJv/\nBtcusd sell limit now 73715.61\nSL 74550.84\nTp 69406.31"
+      ],
+      "notes_samples": [
+        "Sell limit for BTCUSD with SL and TP."
+      ]
+    },
+    "trade_celebration_ping_tp_hit": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/5WHFkh5S/\n\n\n\n❤️XAUUSD ❤️✨ \nTrigger entry now smashed TP LEVEL we booked 840++Green pips profit check our accuracy setup \nBelieve on our setup ✨✨"
+      ],
+      "notes_samples": [
+        "Announces TP hit and profit; no actionable trade instruction."
+      ]
+    },
+    "open_buy_limit_with_now_and_prices": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/2QhUjNP1/\nXauusd buy limit now 4574.496\n\nSL 4565.549\nTp 4632.736"
+      ],
+      "notes_samples": [
+        "Buy limit signalled 'now' with SL and TP."
+      ]
+    },
+    "trade_celebration_trigger_entry_running": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/lvcC0ufK/\n\n\nXAUUSD ✔️\nTrigger entry running in 100+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Status update celebrating a running profitable trade; no new order."
+      ]
+    },
+    "noise_greeting_channel_promotion": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**Good Morning  ****☄️****☄️****\nWelcome Back to a new Week!\nReady To crush some trades?☄️ Tap Tap If you Ready This Week! Let Do This\n\n****👀****Pin this Channel to stay on top of the game 🕯\n****🙂****Unmute to get instant trade alreat ****🔔****🔔****\n\nLet's Make This Week a profitable One **😮"
+      ],
+      "notes_samples": [
+        "Channel greeting / promotional message with no trade action."
+      ]
+    },
+    "open_buy_limit_with_prices_typo_tp": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/WGDU77Qs/ \n\nXAUUSD buy limit 4537.18\nSL 4532.33\nTp 45666.69"
+      ],
+      "notes_samples": [
+        "Buy limit signal but TP appears to be a typo/unrealistic (45666.69); includes SL."
+      ]
+    },
+    "trade_report_running_profit": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/ynb1MgB7/ \n\n**XAUUSD ****✔️****\nTrigger entry running in 270+Green pips profit check our accuracy setup always shere Best setup**"
+      ],
+      "notes_samples": [
+        "Performance update reporting ~270 pips running profit for XAUUSD (no action)."
+      ]
+    },
+    "trade_report_tp_hit": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "**XAUUSD ****✔️****\nTrigger entry now smashed TP LEVEL we booked 296+Green pips profit 1:6 RR TRADE DONE \nJust 48 pips SL and 296 pips tp**"
+      ],
+      "notes_samples": [
+        "Trade result announcing TP hit with pip details and RR; no action requested."
+      ]
+    },
+    "instruction_delete_limit_pending_order": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Delete Limit"
+      ],
+      "notes_samples": [
+        "Short instruction 'Delete Limit' ambiguous without context; treated as channel housekeeping noise."
+      ]
+    },
+    "trade_report_missed_entry_delete_pending": {
+      "action": "IGNORE",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/LexAEZyE/ \n\n**XAUUSD ****✔️**** \nJust 8 pips miss our entry and smashed TP LEVEL badluck \nPlease delete painding order \nCheck our accuracy setup always shere Best setup ****🔥****\nJust 55 pips SL and 361 pips tp**"
+      ],
+      "notes_samples": [
+        "Report of missed entry and TP hit; requests deleting pending order — informational/historical rather than a new actionable signal."
+      ]
+    },
+    "trade_report_closed_use_be_misformatted": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "250+pips running \nHaff closed US BE"
+      ],
+      "notes_samples": [
+        "Performance update stating 250+ pips running and 'Haff closed US BE' (informational)."
+      ]
+    },
+    "trade_report_running_profit_large": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/YTgjYhn4/\n\n**XAUUSD \nTrigger entry running in **600**+Green pips profit check our accuracy setup always shere Best setup**"
+      ],
+      "notes_samples": [
+        "Update reporting ~600+ pips running profit for XAUUSD; informational."
+      ]
+    },
+    "chart_link_with_performance_claim": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/Lf6Lp206/\n\n**XAUUSD \nTrigger entry running in 1730+Green pips profit check our accuracy setup always shere Best setup**"
+      ],
+      "notes_samples": [
+        "Shared chart link with a performance/runner announcement for XAUUSD (no actionable order)."
+      ]
+    },
+    "open_buy_with_prices_full": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/oofYO7pC/ \n\nXAUUSD BUY NOW@4432.000\nSL 4404.880\nTP 4602.780"
+      ],
+      "notes_samples": [
+        "Explicit BUY signal with entry, SL and one TP."
+      ]
+    },
+    "short_runner_update": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "hAff closed USE BE"
+      ],
+      "notes_samples": [
+        "Short message indicating a running trade with large profit (no actionable details)."
+      ]
+    },
+    "request_for_feedback_no_trade": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "NEXT trades depend on your feedback ☺️"
+      ],
+      "notes_samples": [
+        "Asking followers for feedback on next trades — no trading action."
+      ]
+    },
+    "tp_level_booked_report": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "**XAUUSD ****✔️****\nTrigger entry now smashed TP LEVEL we booked 1705+Green pips profit 1:6.23 RR TRADE DONE \nCheck our accuracy setup always shere Best setup **✨"
+      ],
+      "notes_samples": [
+        "Announcement that TP level was smashed and a large profit was booked (informational)."
+      ]
+    },
+    "tp_level_booked_report_with_note": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "**XAUUSD ****✔️****\nTrigger entry now smashed TP LEVEL we booked 2136+Green pips profit 1:6.18 RR TRADE DONE ****🔥****\nCheck our accuracy setup always shere Best setup ****🔥****\n\nBoth chart from deferent Gmail account don't woory **🔥"
+      ],
+      "notes_samples": [
+        "TP hit announcement with profit and RR statement; notes about charts/accounts (informational)."
+      ]
+    },
+    "buy_limit_with_prices_full": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/ogrEvgko/\nXauusd buy limit.4532.872\nSL 4515.342\nTp 4626.626"
+      ],
+      "notes_samples": [
+        "Explicit buy limit order with entry, SL and TP provided."
+      ]
+    },
+    "move_sl_to_break_even_short": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Break even sl"
+      ],
+      "notes_samples": [
+        "Instruction to move stop-loss to break-even."
+      ]
+    },
+    "open_sell_instant_with_full_params": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/SEUnaxft/\nXauusd sell now@4693.386\nSL 4703.854\nTp 4614.532"
+      ],
+      "notes_samples": [
+        "Immediate sell (market) entry with SL and TP."
+      ]
+    },
+    "open_buy_limit_with_full_params_high_reward_tp": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/yEdV6mas/ \n\nXAUUSD buy limit 4611.000\nSL 4590.000\nTp  4967.770"
+      ],
+      "notes_samples": [
+        "Buy limit with wide TP (high reward), includes SL."
+      ]
+    },
+    "modify_pending_delete_request": {
+      "action": "CLOSE_FULL",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/p2KqsQU9/\nIt is regrettable to say that the buy-side limit I placed was not touched by the market, and it moved directly upward and hit the target. Please delete my pending order."
+      ],
+      "notes_samples": [
+        "User requests deletion/cancellation of their pending buy-limit order that was not touched."
+      ]
+    },
+    "noise_shorthand_closed_use_be": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "hAff closed use BE"
+      ],
+      "notes_samples": [
+        "Short note saying position closed and use BE (unclear context)."
+      ]
+    },
+    "alert_info_setup_advertisement": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "✅ Low Risk – High Reward\n✅ Perfect Entry & Exit\n✅ Strong Market Confluence\n✅ Disciplined Trading\n\nSL 30  Pips \nTP 420 Pips \n\nRisk reward 1/13.5\n\nAlways follow A good Quality setup\n\nText me @@XAUGOLDowner"
+      ],
+      "notes_samples": [
+        "Promotional message describing a setup (SL and TP in pips) without specific instrument/entry."
+      ]
+    },
+    "closed_entry_statement": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Closed entry point"
+      ],
+      "notes_samples": [
+        "Informational note stating an entry was closed (no actionable trade details)."
+      ]
+    },
+    "performance_ping_xauusd_trigger_entry": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/e4MqFjtn\n\n\n\nXAUUSD ✔️\nTrigger entry running in 510+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Performance/marketing message reporting a running profitable XAUUSD trigger entry (~510 pips)."
+      ]
+    },
+    "open_sell_limit_with_sl_and_tps_gold": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/Q4O44vQT\n\nGold sell limit/4675.190\n\nSL.                  / 4682.795\n\nTp.                  /4617.807"
+      ],
+      "notes_samples": [
+        "Structured sell-limit signal for Gold with SL and one TP."
+      ]
+    },
+    "missed_entry_postmortem": {
+      "action": "ALERT_INFO",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/9A4rUvBr\nVery bad — as I placed a sell entry, the market missed my entry and went straight to hit the target. Bad luck, but no problem."
+      ],
+      "notes_samples": [
+        "Trader commentary describing a missed sell entry and hit target (no actionable params)."
+      ]
+    },
+    "open_sell_limit_btcusd_multiple_tps": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/K4qFarFS/\nBtcusd sell limit@72.065.1\n\nSL.       @72.860.7\nTp 1     @70.215.6\nTp 2     @68.322.4"
+      ],
+      "notes_samples": [
+        "Sell-limit BTCUSD signal with SL and two TP levels."
+      ]
+    },
+    "open_sell_limit_xauusd_multiple_tps": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/uAHo7vR7/\nXauusd sell limit@4816.29\n\nSL.                         @4820.71\nTp.1                       @4805.00\nTp 2.                      @4783.76"
+      ],
+      "notes_samples": [
+        "Sell-limit XAUUSD signal with SL and two TPs."
+      ]
+    },
+    "tp1_hit_report_pips": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Tp 1 hit 130 pip green"
+      ],
+      "notes_samples": [
+        "Notification that TP1 was hit for a 130-pip gain (no trade instruction)."
+      ]
+    },
+    "tp1_hit_xauusd_performance_ping": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/8Hz819Sm/\n\nXAUUSD ✔️\nTp 1@4805.00 hit\n\nTrigger entry running in 170+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Performance message reporting TP1 hit and running trigger entry (~170 pips)."
+      ]
+    },
+    "tp_level_smashed_xauusd_result": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/YF1q14VN/\n**XAUUSD ✔️\nTrigger entry now smashed TP LEVEL we booked 330+Green pips profit 1:8.18 RR TRADE DONE 🔥\nCheck our accuracy setup always shere Best setup**"
+      ],
+      "notes_samples": [
+        "Announcement that TP level was hit for XAUUSD with reported profit and RR (informational)."
+      ]
+    },
+    "open_sell_limit_xauusd_two_tps": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/yCIcIhe2/\n\nXauusd sell limit @4799.04\n\nSL.  @4809.11\nTp.1@4768.00\nTp.2@4748.20"
+      ],
+      "notes_samples": [
+        "Sell-limit XAUUSD signal with SL and two TP levels."
+      ]
+    },
+    "open_buy_limit_xauusd_two_tps": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/fUMKEVAZ\nXauusd buy limit @4692.15\nSL @4677.53\nTp1@4727.00\nTp2@4784.27"
+      ],
+      "notes_samples": [
+        "Buy-limit XAUUSD signal with SL and two TPs."
+      ]
+    },
+    "open_sell_now_market_with_sl_and_tp": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/kMIMiEWq\nXauusd sell now@4731.12\nSL @4737.53\nTp @4699.28o"
+      ],
+      "notes_samples": [
+        "Immediate market sell for XAUUSD with SL and one TP."
+      ]
+    },
+    "performance_ping_xauusd_running_profit": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/2GrFH3YG\n\n\nXAUUSD ✔️\nTrigger entry running in 80+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Informational ping reporting running XAUUSD trigger entry profit (~80 pips)."
+      ]
+    },
+    "tp_hit_xauusd_result_with_rr": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/0MPvmkTm\nXAUUSD ✔️\nTrigger entry now smashed TP LEVEL we booked 320+Green pips profit 1:6 RR TRADE DONE \nJust 60 pips SL and 320 pips tp"
+      ],
+      "notes_samples": [
+        "Report that TP was hit for XAUUSD with profit, RR and SL size (informational)."
+      ]
+    },
+    "performance_ping_btcusd_running_profit": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/q6ZPjf59/\n\n\nBTCUSD ✔️\nTrigger entry running in 1600+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Performance message reporting running BTCUSD profit (~1600 pips)."
+      ]
+    },
+    "close_partial_fraction_text": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Us be half lot close"
+      ],
+      "notes_samples": [
+        "Request to close half a lot (close 50% of position)."
+      ]
+    },
+    "alert_info_tp_hit_running_profit": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/WMdWB7Z0\nXauusd \nTp 1/210 clearly hit \nVery good — one of my take profits has been hit, and I’m currently running a 210 green pip profit."
+      ],
+      "notes_samples": [
+        "TP1 hit and currently running ~210 pips profit; informational."
+      ]
+    },
+    "alert_info_tp_smashed_rr_summary": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/BRK1xexd/\nXAUUSD ✔️\nTrigger entry now smashed TP LEVEL we booked 320+Green pips profit 1:4.2 RR TRADE DONE \nJust 100 pips SL and 440 pips tp"
+      ],
+      "notes_samples": [
+        "Post-trade summary claiming TP hit and profit; informational."
+      ]
+    },
+    "open_buy_limit_with_prices_malformed_tp": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/0poxTGeL/\nXauusd buy limit@4761.80\n\nSL @4754.88\nTp @480156"
+      ],
+      "notes_samples": [
+        "Buy limit with SL and a malformed/unlikely TP value (480156) parsed as number."
+      ]
+    },
+    "alert_warn_recovery_promise_after_sl_hit": {
+      "action": "ALERT_WARN",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "SL hit don't worry I will recover your los"
+      ],
+      "notes_samples": [
+        "Message saying SL hit and reassurance to recover losses; no trade instructions."
+      ]
+    },
+    "open_buy_market_with_prices": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/GtgSoYjQ\nXauusd buy now@4768.37\nSL@ 4752.81\nTp@ 4843.46"
+      ],
+      "notes_samples": [
+        "Buy now (market) with SL and TP provided."
+      ]
+    },
+    "move_sl_to_break_even_shorthand_with_profit_note": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "180 pips hAff closed use BE"
+      ],
+      "notes_samples": [
+        "Indicates hAff closed and to use break-even after ~180 pips profit."
+      ]
+    },
+    "performance_text_ping": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/byN94SW2\n\n“Currently running +456 pips in profit"
+      ],
+      "notes_samples": [
+        "Text-only performance update reporting +456 pips running; informational."
+      ]
+    },
+    "performance_claim_with_sl_tp_summary": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/vcy0sI1A/\n\n\n❤️XAUUSD ❤️✨ \nTrigger entry now smashed TP LEVEL we booked 900++Green pips profit check our accuracy setup \n✅SL 120pip\n✅Tp. 900pip\nBelieve on our setup ✨✨"
+      ],
+      "notes_samples": [
+        "Promotional/performance claim that a trigger hit TP with claimed SL/TP pip values; informational."
+      ]
+    },
+    "close_partial_half_lot_and_move_be": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Half lot close  use be"
+      ],
+      "notes_samples": [
+        "Instruction to close half the lot and use break-even (partial close + move SL to BE implied)."
+      ]
+    },
+    "post_sl_loss_commentary": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "SL hit I will recover 😞 your lose"
+      ],
+      "notes_samples": [
+        "User comment apologizing/committing to recover after SL hit; not an actionable trade instruction."
+      ]
+    },
+    "open_sell_limit_with_sl_tp_large_range": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/SW3GOCOp/ \n\nXAUUSD sell limit 4718.700\nSL 4732.990\nTp 4607.810"
+      ],
+      "notes_samples": [
+        "Sell limit for XAUUSD with entry, SL and a distant TP; actionable structured signal."
+      ]
+    },
+    "post_sl_hit_report": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "After 140+pips SL HITT"
+      ],
+      "notes_samples": [
+        "Report that a SL was hit for 140+ pips; informational performance loss message."
+      ]
+    },
+    "close_partial_suggestion_half": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "120+ green pip profit runing \n\nYou can close half of the lot if you want."
+      ],
+      "notes_samples": [
+        "Suggestion to close half the position due to profit running."
+      ]
+    },
+    "alert_info_sl_hit_after_profit": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "After 220++profit revers SL hit"
+      ],
+      "notes_samples": [
+        "Post-trade note stating SL was hit after large profit; informational."
+      ]
+    },
+    "alert_info_after_profit_running": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/pmUnm3y5/\n\nAfter 200++ runing profit"
+      ],
+      "notes_samples": [
+        "Informational update about a 200+ pip running profit; no action or prices."
+      ]
+    },
+    "alert_info_profit_ping": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/8JJcpAJx\n\nCurrently 467++green pip profit runing"
+      ],
+      "notes_samples": [
+        "Status update claiming ~467 pips running profit; informational."
+      ]
+    },
+    "close_partial_instruction_half": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Close use be half lot"
+      ],
+      "notes_samples": [
+        "Instruction to close half the lot (partial close)."
+      ]
+    },
+    "alert_info_performance_summary": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/UDqltsNv\n\n\n❤️XAUUSD ❤️✨ \nTrigger entry now smashed TP LEVEL we booked 550++Green pips profit check our accuracy setup \n✅SL 100pip\n✅Tp. 550pip\nRisk Reward 1/5.5\nBelieve on our setup ✨✨"
+      ],
+      "notes_samples": [
+        "Promotional/performance message claiming TP and SL in pips and risk-reward; no explicit price levels."
+      ]
+    },
+    "open_sell_with_limit_prices": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/RhZAefYP/\n\n**XAUUSD sell limit 4824.47\nSL 4831.28\nTp 4773.93**"
+      ],
+      "notes_samples": [
+        "Sell limit order with explicit entry, SL and one TP for XAUUSD."
+      ]
+    },
+    "close_partial_then_move_to_be": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "115+pips running \nHaff closed use BE"
+      ],
+      "notes_samples": [
+        "Message indicates half closed and remaining position moved to break-even (BE)."
+      ]
+    },
+    "alert_info_trigger_entry_running_large": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/V4eOhsxk/ \n\n**XAUUSD ****✔️****\nTrigger entry running in 300+Green pips profit check our accuracy setup always shere Best setup **✔️✔️"
+      ],
+      "notes_samples": [
+        "Informational message claiming 300+ pips running profit; no actionable parameters."
+      ]
+    },
+    "risk_advice_high_sl_recommendation": {
+      "action": "ALERT_WARN",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Use small lot size 500+pips stop loss but trade is high problity"
+      ],
+      "notes_samples": [
+        "Advises risk sizing and mentions a very large stop loss and high probability trade but gives no actionable prices."
+      ]
+    },
+    "status_update_running_pips": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**200+pips running ****✔️**"
+      ],
+      "notes_samples": [
+        "Status update reporting ~200 pips running profit."
+      ]
+    },
+    "close_half_and_move_sl_to_be": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Close haff use BE 300+pips"
+      ],
+      "notes_samples": [
+        "Instruction to close half and move stop to break-even; mentions 300+pips."
+      ]
+    },
+    "noise_missed_entry_delete_pending_order_complaint": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/G4ee9bb5\n**XAUUSD ****🔥****\nMiss our entry and smashed TP LEVEL badluck \nPlease delete painding order \nVery bad ****🥲****\nThe market went completely out of control — it hit the target directly without respecting the limit or expected entry.** 🔥"
+      ],
+      "notes_samples": [
+        "Complaint about missed entry and request to delete pending order; mostly commentary/emotional."
+      ]
+    },
+    "status_update_trigger_entry_running": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/exVVoISz\n\n\nXAUUSD ✔️\nTrigger entry running in 120+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Announcement that a trigger entry is running with ~120 pips profit and promotional text."
+      ]
+    },
+    "post_tp_hit_report_rr_and_pips": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/bZ8oGH0r\nXAUUSD ✔️\nTrigger entry now smashed TP LEVEL we booked 270+Green pips profit 1:6 RR TRADE DONE \nJust 45 pips SL and 270 pips tp"
+      ],
+      "notes_samples": [
+        "Report that a TP was hit with stated SL and TP in pips and RR; no exact prices provided."
+      ]
+    },
+    "close_partial_shorthand": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Use be half lot close"
+      ],
+      "notes_samples": [
+        "Instruction to close half the lot (partial close ~50%)."
+      ]
+    },
+    "performance_report_promo": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**WEEKLY PERFORMANCE REPORT — PAID VIP GROUP ****🔥****\n\n****🔥**** Precision. Discipline. Results. Another dominant week in the market. ****🔥****\n\n****📊**** TRADE SUMMARY (XAUUSD / XAUSAD) ****✨****\n\n****✅**** Winning Trades: \n♦️ XAUUSD +900 pips (TP HIT)\n♦️ XAUUSD +550 pips (TP HIT)\n♦️ XAUUSD +467 pips (Closed)\n♦️ XAUUSD +300 pips (Closed)\n♦️ XAUUSD +450 pips (Closed)\n♦️ XAUUSD +270 pips (TP HIT)\n♦️ XAUUSD +185 pips (Closed)\n♦️ XAUUSD +70 pips (Closed)\n♦️ XAUSAD +120 pips (Closed)\n♦️ XAUSAD +300 pips (Closed)\n\n****❌**** Losing Trades: \n♦️ XAUSAD -70 pips (SL HIT)\n♦️ XAUUSD -50 pips (SL HIT)\n♦️ XAUSAD -70 pips (SL HIT)\n\n****📈**** WEEKLY STATS\n\n****✅**** Total Green Pips: +3612\n****❌****Total Red Pips: -190\n\n****🚀**** NET PROFIT: +3422 PIPS\n\n****⚡️**** PERFORMANCE HIGHLIGHTS\n\n****✔️**** High-probability sniper entries\n****✔️**** Strong risk-to-reward execution\n****✔️**** Consistent TP accuracy\n****✔️**** Controlled drawdown with minimal losses\n\n****🏆**** FINAL VERDICT\nAnother powerful week showcasing elite-level precision and disciplined execution. The consistency in delivering high RR trades continues to separate this group from the rest.**"
+      ],
+      "notes_samples": [
+        "Weekly performance report / advertisement for paid VIP group, no trade action."
+      ]
+    },
+    "trade_status_explained_reversal_sl_hit": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "It was running at 150+ pips, then reversed and hit the stop loss."
+      ],
+      "notes_samples": [
+        "Post-trade status explaining a run then reversal and SL hit; informational."
+      ]
+    },
+    "open_buy_market_now_with_sl_and_tp": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/k6Wupxln/\nXauusd buy now@.4761.15\n\nSL 4758.85\nTp 4783.50"
+      ],
+      "notes_samples": [
+        "Buy now (market) order for XAUUSD with SL and one TP."
+      ]
+    },
+    "close_partial_use_be": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Half lot close use be"
+      ],
+      "notes_samples": [
+        "Instruction to close half the position and use break-even (move SL to entry)."
+      ]
+    },
+    "status_sl_hit": {
+      "action": "CLOSE_FULL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "SL HITT"
+      ],
+      "notes_samples": [
+        "Short message indicating SL was hit; implies position closed."
+      ]
+    },
+    "missed_entry_delete_pending_order_request": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/beLNc6aL/\nXAUUSD 🔥\nMiss our entry and smashed TP LEVEL badluck \nPlease delete painding order \nVery bad 🥲\nThe market went completely out of control — it hit the target directly without respecting the limit or expected entry. 🔥"
+      ],
+      "notes_samples": [
+        "User says they missed entry and asks to delete pending order — operational/administrative, treated as noise for bot."
+      ]
+    },
+    "open_sell_market_now_with_full_params": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/3rIW0x7A\nXauusd sell now@.4741.27\n\nSL 4755.14\nTp 4666.48"
+      ],
+      "notes_samples": [
+        "Immediate sell with SL and TP provided."
+      ]
+    },
+    "post_trade_performance_summary_with_sl_tp": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/OQfpi3bz\n\n❤️XAUUSD ❤️✨ \nTrigger entry now smashed TP LEVEL we booked 752++Green pips profit check our accuracy setup \n✅SL  70. pip\n✅Tp. 752pip\nRisk Reward 1/5\nBelieve on our setup ✨✨"
+      ],
+      "notes_samples": [
+        "Performance summary claiming SL and TP in pips; informational rather than an actionable order."
+      ]
+    },
+    "close_option_suggestion": {
+      "action": "CLOSE_FULL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "You can close it here if you want."
+      ],
+      "notes_samples": [
+        "Suggests closing the position here (full close implied)."
+      ]
+    },
+    "link_only_screenshot_noise": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/eTBkVtX0/\n\n700 ++green pip runing profit"
+      ],
+      "notes_samples": [
+        "Only a TradingView image link and a brag about profit — no actionable instruction."
+      ]
+    },
+    "partial_close_instruction_shorthand": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Half close use be"
+      ],
+      "notes_samples": [
+        "Instruction to half-close position (shorthand 'Half close use be' meaning use break-even/half)."
+      ]
+    },
+    "performance_tp_hit_and_stats": {
+      "action": "ALERT_INFO",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/ehaqgpxY\n\n❤️XAUUSD ❤️✨ \nTrigger entry now smashed TP LEVEL we booked 318++Green pips profit check our accuracy setup \n✅SL  60. pip\n✅Tp. 318pip\nRisk Reward 1/5.2\nBelieve on our setup ✨✨"
+      ],
+      "notes_samples": [
+        "Announces TP hit and summarizes SL/TP in pips and risk-reward — promotional/status message."
+      ]
+    },
+    "open_buy_with_prices": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/ySjAKbWe\nXauusd buy now@4560.01\n\nSL 4551.86\nTp 4603.77"
+      ],
+      "notes_samples": [
+        "Structured buy signal with entry, SL and one TP."
+      ]
+    },
+    "partial_close_suggestion_half_at_be": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/HmgDJvXh\n\n290 green pip profit runing \n\nUse be half lot close"
+      ],
+      "notes_samples": [
+        "Advises to close half the lot and use break-even (suggested action during profit run)."
+      ]
+    },
+    "performance_bragg_profit": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Non stop fly 421 green pip profit runing"
+      ],
+      "notes_samples": [
+        "Boast about running profit (no trading instruction)."
+      ]
+    },
+    "performance_ping_trigger_entry_multiple_links": {
+      "action": "ALERT_INFO",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/AOEc0ZBz\nhttps://www.tradingview.com/x/MQLJRkFp\n\nXAUUSD ✔️\nTrigger entry running in 420+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Repeated trigger-entry profit/update with links — informational."
+      ]
+    },
+    "promotional_performance_summary": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/CkmBHvDu\n🌌🌌🌌🌌🌌🌌\n\n🚀Trade Details:\n\n   🗣 Trigger Entry Execute\n\n   🗣Profit: 440+ pips \n  \n   🗣Stop Loss: 40pips\n\n🚀Performance Highlights:\n\n   💫Strong predictive accuracy\n   💫Consistent high-probability trade setups\n\n🚀Join our VIP community for expert trading insights and market analysis😮."
+      ],
+      "notes_samples": [
+        "Promotional message summarizing trade performance and inviting VIP join — informational."
+      ]
+    },
+    "recovery_reassurance_after_sl_hit": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "SL hit don't mind I will recover your lose"
+      ],
+      "notes_samples": [
+        "Reassures users after SL hit that losses will be recovered — supportive/commentary."
+      ]
+    },
+    "noise_admission_removed_chart": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Old chart I have removed by mistake"
+      ],
+      "notes_samples": [
+        "User noting they removed an old chart by mistake (no trade info)."
+      ]
+    },
+    "promo_trade_result_trade_done": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**XAUUSD ✨\n\nTrigger entry now smashed TP LEVEL we 267+Green pips profit 1:5.26 RR TRADE DONE \nCheck our accuracy setup always shere Best setup **✨"
+      ],
+      "notes_samples": [
+        "Announcement that a trade hit TP with reported profit and RR; informational."
+      ]
+    },
+    "chart_images_promo_trigger_entry_running": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/cME5cnur\nhttps://www.tradingview.com/x/EsLFeDla\n\nXAUUSD ✔️\nTrigger entry running in 120+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Multiple chart links with message that trigger entry is running and reporting profit."
+      ]
+    },
+    "promo_profit_running_text_only": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Non stop fly 168 pip++ profit runing"
+      ],
+      "notes_samples": [
+        "Text-only update proclaiming ongoing profit run (no actionable trade parameters)."
+      ]
+    },
+    "performance_promo_join_vip": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "🌌🌌🌌🌌🌌🌌\n\n🚀Trade Details:\n\n   🗣 Trigger Entry Executed\n   🗣Profit: 452+ pips\n   🗣Stop Loss: 99pips\n\n🚀Performance Highlights:\n\n   💫Strong predictive accuracy\n   💫Consistent high-probability trade setups\n\n🚀Join our VIP community for expert trading insights and market analysis😮."
+      ],
+      "notes_samples": [
+        "Promotional performance summary and VIP invite; no trade action."
+      ]
+    },
+    "noise_recovery_assurance": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Very bad SL hit I will recover your lose"
+      ],
+      "notes_samples": [
+        "Emotional/assurance message about recovering losses; no trade parameters."
+      ]
+    },
+    "sl_hit_with_comment_recovery": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "60- pips SL HITT recover soon"
+      ],
+      "notes_samples": [
+        "Announces SL hit (60+ pips) and reassures recovery soon."
+      ]
+    },
+    "open_sell_with_full_params": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/cwn3uIkm\nXauusd sell now.4629.95\nSL 4633.95\nTp 4606.60"
+      ],
+      "notes_samples": [
+        "Structured sell signal with entry, SL and one TP."
+      ]
+    },
+    "open_buy_with_full_params": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/6nBrTUMU\nXauusd buy now.4633.10\nSL 4624.10\nTp 4674.16"
+      ],
+      "notes_samples": [
+        "Structured buy signal with entry, SL and one TP."
+      ]
+    },
+    "open_sell_with_full_params_missing_spacing": {
+      "action": "OPEN",
+      "side": "SELL",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/d4jK8mov\nXauusd sell now4619.90\n\nSL 4631.35\nTp 4547.44"
+      ],
+      "notes_samples": [
+        "Sell signal (entry concatenated in text) with SL and TP."
+      ]
+    },
+    "move_sl_to_be_short": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Haff closed use BE"
+      ],
+      "notes_samples": [
+        "Instruction that half (probably 'half') closed and to use break-even."
+      ]
+    },
+    "performance_update_profit_running": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "140++ green pip profit runing"
+      ],
+      "notes_samples": [
+        "Performance update claiming 140+ pips profit running."
+      ]
+    },
+    "instruction_delete_limit": {
+      "action": "ALERT_WARN",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Delete Limit"
+      ],
+      "notes_samples": [
+        "Instruction to delete a limit order but missing which one."
+      ]
+    },
+    "open_buy_with_full_params_high_precision": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/KryxWh0f\nXauusd buy now.4593.769\n\nSL 4590.686\nTp 4613.915"
+      ],
+      "notes_samples": [
+        "Buy now signal with precise prices, SL and TP."
+      ]
+    },
+    "sl_hit_with_reassurance": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "SL hit don't worry 😞 I will recover your lose"
+      ],
+      "notes_samples": [
+        "Reports SL hit and reassures followers recovery will follow."
+      ]
+    },
+    "share_chart_context_h4_timeframe": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/KRr0W6WK/\nH4\nOut look  free trade Idia share"
+      ],
+      "notes_samples": [
+        "Shared TradingView chart and H4 outlook offering a trade idea (no actionable params)."
+      ]
+    },
+    "complaint_missed_entry_delete_pending_order": {
+      "action": "ALERT_WARN",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/qr4aReYy\nXAUUSD 🔥\n\nJust 5pipMiss our entry and smashed TP LEVEL badluck \nPlease delete painding order \nVery bad 🥲\nThe market went completely out of control — it hit the target directly without respecting the limit or expected entry. 🔥"
+      ],
+      "notes_samples": [
+        "User complains order missed entry by ~5 pips and asks to delete a pending order; describes market behaving unexpectedly."
+      ]
+    },
+    "feedback_request_reminder": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "“Unfortunately brother, you are not giving the feedback.”"
+      ],
+      "notes_samples": [
+        "Reminder/request for feedback from a user."
+      ]
+    },
+    "performance_ping_profit_running": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "170++ green pip profit runing"
+      ],
+      "notes_samples": [
+        "Notification of ~170+ pips running profit (informational)."
+      ]
+    },
+    "signal_performance_image_promo": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/bZlN1TS2\n\nXAUUSD ✔️\nTrigger entry running in 180+Green pips profit check our accuracy setup always shere Best setup"
+      ],
+      "notes_samples": [
+        "Posting image link with claim that a triggered XAUUSD entry is running and profitable; promotional accuracy claim."
+      ]
+    },
+    "missed_entry_delete_pending_order_complaint": {
+      "action": "ALERT_WARN",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/xMSzaIb7\nXAUUSD 🔥\n\nJust 20pipMiss our entry and smashed TP LEVEL badluck \nPlease delete painding order \nVery bad 🥲\nThe market went completely out of control — it hit the target directly without respecting the limit or expected entry. 🔥"
+      ],
+      "notes_samples": [
+        "User complains they missed entry, requests deleting pending order and comments market moved erratically."
+      ]
+    },
+    "closed_trade_performance_report": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/ZI13yAns\nXAUUSD ✔️\nTrigger entry now smashed TP LEVEL we booked 335+Green pips profit 1:4RR TRADE DONE \nJust 90 pips SL and 335 pips tp"
+      ],
+      "notes_samples": [
+        "Reports XAUUSD trigger hit TP with 335 pips profit and 1:4 RR; mentions SL was 90 pips."
+      ]
+    },
+    "feedback_request_noise": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "“Unfortunately brother, you are not giving the feedback.”"
+      ],
+      "notes_samples": [
+        "Simple admonition asking for feedback — conversational, not trade instruction."
+      ]
+    },
+    "running_profit_half_close_instruction": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "120 + green pip profit runing \n\nUse bi half close"
+      ],
+      "notes_samples": [
+        "Notifies 120+ pips running and advises to half-close (take partial profit)."
+      ]
+    },
+    "running_profit_notification": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/5fmzeLg6\n\n125 ++ green pip profit runing"
+      ],
+      "notes_samples": [
+        "Image link with message that trade is running +125 pips — informational update."
+      ]
+    },
+    "post_trade_loss_report": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Market reversed after gaining 100 pips and hit my stop loss."
+      ],
+      "notes_samples": [
+        "User reports market reversed after +100 pips and hit stop loss — informational."
+      ]
+    },
+    "partial_close_and_move_sl_to_be": {
+      "action": "MOVE_SL_BE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "100+pips running \nHaff closed use BE"
+      ],
+      "notes_samples": [
+        "Says 100+ pips running, half closed and use BE — instructs to move SL to break-even after partial close."
+      ]
+    },
+    "open_buy_with_prices_sl_tp": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/ppIo3DO0\nXauusd buy now.8582.74\n\nSL 4576.68\nTp 4612.48"
+      ],
+      "notes_samples": [
+        "Structured buy signal for XAUUSD with entry, SL and one TP."
+      ]
+    },
+    "close_partial_profit_suggestion_half_lot": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "90++ green pip profit runing \n\nUse be half lot close"
+      ],
+      "notes_samples": [
+        "Instruction to close half the lot to secure running profit (~90+ pips)."
+      ]
+    },
+    "open_buy_limit_with_prices_sl_tp": {
+      "action": "OPEN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/F1KU6iCw\nXauusd buy limit.4552.92\n\nSL 4536.92\nTp 4623.97"
+      ],
+      "notes_samples": [
+        "Buy-limit signal for XAUUSD with SL and TP."
+      ]
+    },
+    "alert_info_performance_summary_with_risk_reward": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/ZMaO7gVC\n🌌🌌🌌🌌🌌🌌\n\n🚀Trade Details:\n\n   🗣 Trigger Entry Executed\n   🗣Profit: 714+ pips\n   🗣Stop Loss: 169pips\n     R/R 1/4.5\n\n🚀Performance Highlights:\n\n   💫Strong predictive accuracy\n   💫Consistent high-probability trade setups\n\n🚀Join our VIP community for expert trading insights and market analysis😮."
+      ],
+      "notes_samples": [
+        "Performance/marketing message reporting a trade executed with profits and R/R."
+      ]
+    },
+    "alert_warn_profit_then_reverse_sl_hit": {
+      "action": "ALERT_WARN",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "100 pip profit then reverse market SL hit"
+      ],
+      "notes_samples": [
+        "Report that price made 100 pips profit then reversed and hit SL; ambiguous for action."
+      ]
+    },
+    "close_partial_half_lot_shorthand": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Use Hal lot close use be"
+      ],
+      "notes_samples": [
+        "Instruction to use half-lot close and move SL to break-even (shorthand)."
+      ]
+    },
+    "alert_info_performance_and_sl_hit": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/4db4ycjW\nXAUUSD\n120 ++ green pip profit ande revers SL hit"
+      ],
+      "notes_samples": [
+        "Performance update: '120+ green pips' and note that reverse SL hit."
+      ]
+    },
+    "alert_reassurance_after_sl_hit": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "SL hit don't worry 😭 I will recover your lose"
+      ],
+      "notes_samples": [
+        "Reassurance message after SL hit claiming recovery attempt."
+      ]
+    },
+    "modify_order_delete_request": {
+      "action": "CLOSE_FULL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Please delete this order"
+      ],
+      "notes_samples": [
+        "User requests deletion of an order (close/cancel order)."
+      ]
+    },
+    "close_partial_fraction_instruction": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Use half lot close"
+      ],
+      "notes_samples": [
+        "Instruction to close half the lot (partial close ~50%)."
+      ]
+    },
+    "context_market_commentary": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "“I’m sharing some of my experience, and I can say with confidence and hope that the market will move like this.”"
+      ],
+      "notes_samples": [
+        "Personal commentary about market expectation (opinion), no actionable params."
+      ]
+    },
+    "market_commentary_performance_ping": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "The market respected my given support and reversed — it's currently running 600 pips."
+      ],
+      "notes_samples": [
+        "Commentary that market respected support and is running profit; informational only."
+      ]
+    },
+    "weekly_performance_recap": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "**WEEKLY VIP RESULTS RECAP \n\nAnother Powerful Week in the Market — Precision, Patience & Sniper Entries Delivered Massive Results on XAUUSD ****🔥****🔥****\n━━━━━━━━━━━━━━━\n\n****✅**** Winning Trades\n\nXAUUSD  +335 PIPS ✅ (TP HIT)\nXAUUSD  +125 PIPS ✅ (CLOSED)\nXAUUSD  +250 PIPS ✅ (CLOSED)\nXAUUSD  +714 PIPS ✅ (TP HIT)\nXAUUSD  +463 PIPS ✅ (TP HIT)\nXAUUSD  +200 PIPS ✅ (CLOSED)\nXAUUSD  +750 PIPS ✅ (CLOSED)\nXAUUSD  +600 PIPS ✅ (TP HIT)\n━━━━━━━━━━━━━━━\n****❌**** Losing Trades\n\nXAUUSD  -40 PIPS ❌ (SL HIT)\nXAUUSD  -30 PIPS ❌ (SL HIT)\nXAUUSD  -40 PIPS ❌ (SL HIT)\nXAUUSD  -50 PIPS ❌ (SL HIT)\n━━━━━━━━━━━━━━━\n****📈**** Weekly Performance Summary\n\n Total Green Pips: +3437 ****✅****\nTotal Red Pips: -160 ****❌****\nNet Profit: +3277 PIPS ****✅****🔥****\n━━━━━━━━━━━━━━\n****💥**** Consistency + Risk Management + Smart Money Concepts = Results ****✨**"
+      ],
+      "notes_samples": [
+        "Promotional weekly results recap listing wins/losses and aggregated pips; informational."
+      ]
+    },
+    "close_partial_fraction_command_shorthand": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Use half lot close"
+      ],
+      "notes_samples": [
+        "Instruction to close half the lot; partial close of 50% implied."
+      ]
+    },
+    "performance_promo_with_metrics": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/eTQd7t9t\n🌌🌌🌌🌌🌌🌌\n\n🚀Trade Details:\n\n   🗣 Trigger Entry Executed\n   🗣Profit: 990+ pips\n   🗣Stop Loss: 150pips\n     R/R 1/6.5\n\n🚀Performance Highlights:\n\n   💫Strong predictive accuracy\n   💫Consistent high-probability trade setups\n\n🚀Join our VIP community for expert trading insights and market analysis😮."
+      ],
+      "notes_samples": [
+        "Promotional performance post with profit/SL metrics and VIP invite; no actionable trade parameters."
+      ]
+    },
+    "performance_ping_numeric": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "155++ green pip profit runing"
+      ],
+      "notes_samples": [
+        "Short ping claiming running green pip amount; informational."
+      ]
+    },
+    "open_buy_now_with_inconsistent_sl": {
+      "action": "ALERT_WARN",
+      "side": "BUY",
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/SXN4Ykoe\nXauusd buy now.4661.22\n\nSL 4757.73\n\nTp4687.17"
+      ],
+      "notes_samples": [
+        "Buy now signal provided but SL (4757.73) is far above entry (likely erroneous); flagged as ambiguous."
+      ]
+    },
+    "noise_swear": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Shit hit"
+      ],
+      "notes_samples": [
+        "Single-word expletive, no trading content."
+      ]
+    },
+    "sl_hit_notification": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "SL hit"
+      ],
+      "notes_samples": [
+        "Notification that stop-loss was hit."
+      ]
+    },
+    "close_partial_half_move_sl_be": {
+      "action": "CLOSE_PARTIAL",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Half lot close use be"
+      ],
+      "notes_samples": [
+        "Instruction to close half lot and use break-even (implies partial close then move SL to BE)."
+      ]
+    },
+    "post_trade_report_profit_with_metrics": {
+      "action": "ALERT_INFO",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "https://www.tradingview.com/x/UEIh1gsE\nXAUUSD ✔️\nTrigger entry now smashed TP LEVEL we booked 242+Green pips profit 1:.6.5RR TRADE DONE \nJust 60pips SL and 288pips tp"
+      ],
+      "notes_samples": [
+        "Post-trade report announcing target hit and profit metrics for XAUUSD; not an actionable open signal."
+      ]
+    },
+    "request_to_feed_trade_social": {
+      "action": "IGNORE",
+      "side": null,
+      "sample_count": 1,
+      "samples": [
+        "Dear members 🙏 Please feed this trade."
+      ],
+      "notes_samples": [
+        "Social/request message asking members to 'feed this trade' with no trading parameters."
+      ]
+    }
+  },
+  "stats": {
+    "total_messages_fetched": 497,
+    "classified_ok": 497,
+    "classifier_errors": 0,
+    "uncertain": 16,
+    "distinct_clusters": 301
+  }
+}

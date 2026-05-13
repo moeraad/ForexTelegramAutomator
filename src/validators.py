@@ -18,6 +18,12 @@ class OpenAction(BaseModel):
     tps: list[float] = Field(min_length=1)
     sl: float
     comment: str = ""
+    # When true, the EA places a real broker-side pending limit order
+    # (trade.BuyLimit / trade.SellLimit) instead of trying to fill at
+    # market. The action stays in `status='watching'` until either the
+    # limit fires (->executed with a position) or a CANCEL_PENDING
+    # rejects it. Default False preserves existing market+chase behavior.
+    pending: bool = False
 
     @field_validator("symbol")
     @classmethod
@@ -198,11 +204,31 @@ class AttachSignalAction(BaseModel):
         return v
 
 
+class CancelPendingAction(BaseModel):
+    """Cancel the most recent OPEN action(s) in `status='watching'` for
+    `symbol` before they fill. Used when a channel posts "Delete Limit" /
+    "cancel the pending order" — the operator no longer wants the limit
+    to fire. Handled server-side (orchestrator flips matching watching
+    OPENs to 'rejected' with reason 'cancelled_by_channel'); the EA's
+    ManagePendingOrders() picks up the rejection on its next OnTimer
+    sweep and calls trade.OrderDelete on the broker-side ticket.
+    """
+    type: Literal["CANCEL_PENDING"] = "CANCEL_PENDING"
+    symbol: str
+
+    @field_validator("symbol")
+    @classmethod
+    def supported(cls, v: str) -> str:
+        if v not in SUPPORTED_SYMBOLS:
+            raise ValueError(f"unsupported symbol {v}")
+        return v
+
+
 Action = Union[
     OpenAction, ModifyAction, CloseAction, CloseAllAction, AlertAction,
     MoveSlBeAction, MoveSlAction, ClosePartialAction, CloseFullAction,
     ReopenLastAction, ReinforceAction, TightenSlAction, ModifyTpsAction,
-    OpenInstantAction, AttachSignalAction,
+    OpenInstantAction, AttachSignalAction, CancelPendingAction,
 ]
 
 _ACTION_BY_TYPE = {
@@ -221,6 +247,7 @@ _ACTION_BY_TYPE = {
     "MODIFY_TPS": ModifyTpsAction,
     "OPEN_INSTANT": OpenInstantAction,
     "ATTACH_SIGNAL": AttachSignalAction,
+    "CANCEL_PENDING": CancelPendingAction,
 }
 
 
@@ -346,7 +373,7 @@ def validate_action(
     if isinstance(action, (
         MoveSlBeAction, MoveSlAction, ClosePartialAction, CloseFullAction,
         ReopenLastAction, ReinforceAction, TightenSlAction, ModifyTpsAction,
-        OpenInstantAction, AttachSignalAction,
+        OpenInstantAction, AttachSignalAction, CancelPendingAction,
     )):
         return ValidationResult(True)
     # AlertAction

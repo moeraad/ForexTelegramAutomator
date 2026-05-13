@@ -32,6 +32,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_positions_add_pnl(conn)
     _migrate_actions_add_instant_types(conn)
     _migrate_positions_add_naked(conn)
+    _migrate_actions_add_cancel_pending(conn)
 
 
 def _migrate_actions_add_phase2_types(conn: sqlite3.Connection) -> None:
@@ -507,6 +508,77 @@ def _migrate_positions_add_naked(conn: sqlite3.Connection) -> None:
         )
     if "naked_opened_at" not in cols:
         conn.execute("ALTER TABLE positions ADD COLUMN naked_opened_at DATETIME")
+
+
+def _migrate_actions_add_cancel_pending(conn: sqlite3.Connection) -> None:
+    """Widen actions checks for the pending-limit flow:
+      - action_type adds CANCEL_PENDING
+      - status re-adds 'watching' (it was present in earlier migrations
+        but got dropped by _migrate_actions_add_modify_tps and
+        _migrate_actions_add_instant_types when they rebuilt the table)
+
+    Phase-5 SMC channel uses pending limit orders. The EA POSTs the OPEN
+    action's result as status='watching' while a broker-side BuyLimit /
+    SellLimit waits to fill. CANCEL_PENDING flips watching OPENs to
+    'rejected' with reason 'cancelled_by_channel' (server-side, in the
+    orchestrator) and the EA's ManagePendingOrders() picks up the
+    rejection on its next OnTimer sweep and OrderDelete's the broker
+    pending. Same table-rebuild pattern as the other action-type widenings.
+    """
+    sql_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='actions'"
+    ).fetchone()
+    if not sql_row:
+        return
+    sql_text = sql_row["sql"] or ""
+    if "'CANCEL_PENDING'" in sql_text and "'watching'" in sql_text:
+        return  # already migrated
+    conn.execute(
+        "UPDATE actions SET source_msg_id = NULL "
+        "WHERE source_msg_id IS NOT NULL "
+        "  AND source_msg_id NOT IN (SELECT id FROM messages)"
+    )
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.executescript(
+            "BEGIN;"
+            "CREATE TABLE actions_new ("
+            "  id              INTEGER PRIMARY KEY,"
+            "  source_msg_id   INTEGER REFERENCES messages(id),"
+            "  action_type     TEXT NOT NULL CHECK(action_type IN ("
+            "                    'OPEN','MODIFY','CLOSE','CLOSE_ALL','ALERT',"
+            "                    'MOVE_SL_BE','MOVE_SL','CLOSE_PARTIAL','CLOSE_FULL',"
+            "                    'REOPEN_LAST','REINFORCE','TIGHTEN_SL','MODIFY_TPS',"
+            "                    'OPEN_INSTANT','ATTACH_SIGNAL','CANCEL_PENDING'"
+            "                  )),"
+            "  payload_json    TEXT NOT NULL,"
+            "  status          TEXT NOT NULL DEFAULT 'pending'"
+            "                  CHECK(status IN ('pending','cancelled','sent','claimed','watching','executed','failed','rejected')),"
+            "  created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,"
+            "  notified_at     DATETIME,"
+            "  execute_after   DATETIME,"
+            "  claimed_at      DATETIME,"
+            "  executed_at     DATETIME,"
+            "  ea_response     TEXT,"
+            "  fingerprint     TEXT"
+            ");"
+            "INSERT INTO actions_new(id, source_msg_id, action_type, payload_json, status,"
+            "  created_at, notified_at, execute_after, claimed_at, executed_at, ea_response,"
+            "  fingerprint) "
+            "SELECT id, source_msg_id, action_type, payload_json, status,"
+            "  created_at, notified_at, execute_after, claimed_at, executed_at, ea_response,"
+            "  fingerprint "
+            "FROM actions;"
+            "DROP TABLE actions;"
+            "ALTER TABLE actions_new RENAME TO actions;"
+            "CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);"
+            "CREATE INDEX IF NOT EXISTS idx_actions_fingerprint "
+            "  ON actions(fingerprint, created_at) "
+            "  WHERE fingerprint IS NOT NULL;"
+            "COMMIT;"
+        )
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
 
 
 def get_setting(conn: sqlite3.Connection, key: str) -> str | None:

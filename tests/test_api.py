@@ -1039,3 +1039,99 @@ def test_last_closed_no_attach_signal_falls_back_to_sparse_payload(tmp_path):
     assert sig is not None
     assert "entry_low" not in sig
     assert sig["side"] == "BUY"
+
+
+# ---- Phase 5: GET /actions/{id} + ResultBody.status=watching ----------
+
+def test_get_action_returns_row_json(tmp_path):
+    """EA's ManagePendingOrders() polls this to detect server-side
+    cancellation of a pending limit (watching -> rejected). Returns
+    enough to inspect status + ea_response without fetching the
+    whole table."""
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'watching')",
+        (json.dumps({"symbol": "XAUUSD", "side": "BUY",
+                     "entry_low": 4666, "entry_high": 4666,
+                     "tps": [4690], "sl": 4662, "pending": True}),),
+    )
+    aid = cur.lastrowid
+    client = TestClient(build_app(conn))
+    r = client.get(f"/actions/{aid}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == aid
+    assert body["action_type"] == "OPEN"
+    assert body["status"] == "watching"
+    assert body["payload"]["pending"] is True
+
+
+def test_get_action_404_for_unknown(tmp_path):
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    assert client.get("/actions/99999").status_code == 404
+
+
+def test_post_result_accepts_watching_status(tmp_path):
+    """EA POSTs status='watching' after placing a broker BuyLimit. The
+    action transitions to watching without a position row."""
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'claimed')",
+        (json.dumps({"symbol": "XAUUSD", "side": "BUY",
+                     "entry_low": 4666, "entry_high": 4666,
+                     "tps": [4690], "sl": 4662, "pending": True}),),
+    )
+    aid = cur.lastrowid
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{aid}/result", json={
+        "status": "watching",
+        "error": "pending_order_ticket=987654321",
+    })
+    assert r.status_code == 200
+    row = conn.execute(
+        "SELECT status, ea_response FROM actions WHERE id=?", (aid,)
+    ).fetchone()
+    assert row["status"] == "watching"
+    assert "pending_order_ticket=987654321" in row["ea_response"]
+    n = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+    assert n == 0
+
+
+def test_post_result_watching_then_executed_creates_position(tmp_path):
+    """Limit fires later -> EA POSTs status='executed' with the position
+    snapshot. The action transitions watching->executed and the position
+    row gets created."""
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'watching')",
+        (json.dumps({"symbol": "XAUUSD", "side": "BUY",
+                     "entry_low": 4666, "entry_high": 4666,
+                     "tps": [4690], "sl": 4662, "pending": True}),),
+    )
+    aid = cur.lastrowid
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{aid}/result", json={
+        "status": "executed",
+        "mt5_ticket": 987654321,
+        "snapshot": {
+            "symbol": "XAUUSD", "side": "BUY", "volume": 0.5,
+            "entry_price": 4666.0, "sl": 4662.0, "tp": 4690.0,
+        },
+    })
+    assert r.status_code == 200
+    row = conn.execute(
+        "SELECT status FROM actions WHERE id=?", (aid,)
+    ).fetchone()
+    assert row["status"] == "executed"
+    pos = conn.execute(
+        "SELECT mt5_ticket, entry_price, sl, tp FROM positions "
+        "WHERE mt5_ticket=987654321"
+    ).fetchone()
+    assert pos is not None
+    assert pos["entry_price"] == 4666.0
+    assert pos["sl"] == 4662.0
+    assert pos["tp"] == 4690.0

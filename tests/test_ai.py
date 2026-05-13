@@ -50,3 +50,55 @@ def test_call_ai_retries_on_transient_error():
     result = client.call("", "", "hi")
     assert result.response.actions == []
     assert fake_client.messages.create.call_count == 3
+
+
+# ---- Phase 5: channel-profile rendering -------------------------------
+
+def test_default_profile_renders_fxengineer_gold():
+    """Default CHANNEL_PROFILE='fxengineer-gold' interpolates the Arabic
+    vocabulary, examples, and price-range hint into SYSTEM_PROMPT."""
+    from src.ai import SYSTEM_PROMPT
+    assert "Arabic-language gold (XAUUSD)" in SYSTEM_PROMPT
+    assert "أمن دخولك" in SYSTEM_PROMPT
+    assert "اشتري الذهب" in SYSTEM_PROMPT
+    assert "Gold trades roughly 4000-5500" in SYSTEM_PROMPT
+    # Universal blocks still present (NOT from profile):
+    assert "RULE A — SIDE FLIP" in SYSTEM_PROMPT
+    assert "CANCEL_PENDING" in SYSTEM_PROMPT
+    assert '"pending":<bool, default false>' in SYSTEM_PROMPT
+
+
+def test_smc_profile_renders_english_vocabulary():
+    """Switching CHANNEL_PROFILE to 'SMC' renders a different prompt
+    with English vocabulary and SMC-specific worked examples."""
+    from src.ai import _render_system_prompt
+    smc = _render_system_prompt("SMC")
+    assert "SMC_XAUUSD" in smc
+    assert "buy limit" in smc.lower()
+    assert "Delete Limit" in smc
+    assert "Half close use BE" in smc
+    # Arabic content is absent (no leakage from default):
+    assert "أمن دخولك" not in smc
+    # Universal blocks still present:
+    assert "RULE A — SIDE FLIP" in smc
+    assert "CANCEL_PENDING" in smc
+
+
+def test_unknown_profile_raises_clear_error():
+    """Mistyping the CHANNEL_PROFILE name should produce a clear
+    FileNotFoundError pointing at the missing channels/<name>.json."""
+    import pytest
+    from src.ai import _render_system_prompt
+    with pytest.raises(FileNotFoundError, match="does-not-exist"):
+        _render_system_prompt("does-not-exist")
+
+
+def test_triage_prompt_loads_channel_triggers():
+    """The triage prompt's high-signal trigger list also comes from the
+    active channel profile."""
+    from src.ai_triage import TRIAGE_SYSTEM_PROMPT, _render_triage_prompt
+    assert "أمن دخولك" in TRIAGE_SYSTEM_PROMPT
+    smc_triage = _render_triage_prompt("SMC")
+    assert "XAUUSD buy limit" in smc_triage
+    assert "Delete Limit" in smc_triage
+    assert "أمن دخولك" not in smc_triage

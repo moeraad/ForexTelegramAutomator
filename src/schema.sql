@@ -19,11 +19,11 @@ CREATE TABLE IF NOT EXISTS actions (
                     'OPEN','MODIFY','CLOSE','CLOSE_ALL','ALERT',
                     'MOVE_SL_BE','MOVE_SL','CLOSE_PARTIAL','CLOSE_FULL',
                     'REOPEN_LAST','REINFORCE','TIGHTEN_SL','MODIFY_TPS',
-                    'OPEN_INSTANT','ATTACH_SIGNAL'
+                    'OPEN_INSTANT','ATTACH_SIGNAL','CANCEL_PENDING'
                   )),
   payload_json    TEXT NOT NULL,
   status          TEXT NOT NULL DEFAULT 'pending'
-                  CHECK(status IN ('pending','cancelled','sent','claimed','executed','failed','rejected')),
+                  CHECK(status IN ('pending','cancelled','sent','claimed','watching','executed','failed','rejected')),
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
   notified_at     DATETIME,
   execute_after   DATETIME,

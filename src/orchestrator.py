@@ -23,6 +23,7 @@ from src.validators import (
     Action,
     AlertAction,
     AttachSignalAction,
+    CancelPendingAction,
     OpenAction,
     OpenInstantAction,
     validate_action,
@@ -242,6 +243,35 @@ def process_message(
             trades.info(
                 "action_inserted msg_id=%s action_id=%s type=%s status=rejected reason=%s",
                 msg_id, cur.lastrowid, _action_type(action), v.error,
+            )
+            continue
+
+        # CANCEL_PENDING is server-side only. Flip matching watching OPENs
+        # to 'rejected' immediately and mark the CANCEL action itself
+        # 'executed' — the EA's ManagePendingOrders() picks up the
+        # rejected state on its next OnTimer sweep and OrderDelete's the
+        # broker pending. No EA dispatcher involvement needed.
+        if isinstance(action, CancelPendingAction):
+            now_iso = datetime.now(timezone.utc).isoformat()
+            res = conn.execute(
+                "UPDATE actions SET status='rejected', ea_response=?, executed_at=? "
+                "WHERE action_type='OPEN' AND status='watching' "
+                "  AND json_extract(payload_json,'$.symbol')=?",
+                ("cancelled_by_channel", now_iso, action.symbol),
+            )
+            cancelled_n = res.rowcount if res.rowcount is not None else 0
+            cur = conn.execute(
+                "INSERT INTO actions(source_msg_id, action_type, payload_json, status, "
+                "ea_response, executed_at) "
+                "VALUES(?, 'CANCEL_PENDING', ?, 'executed', ?, ?)",
+                (msg_id, payload,
+                 f"cancelled {cancelled_n} watching OPEN(s)", now_iso),
+            )
+            inserted.append(cur.lastrowid)
+            trades.info(
+                "action_inserted msg_id=%s action_id=%s type=CANCEL_PENDING "
+                "status=executed cancelled=%s",
+                msg_id, cur.lastrowid, cancelled_n,
             )
             continue
 

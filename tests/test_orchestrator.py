@@ -4,7 +4,7 @@ from src.db import connect, init_schema
 from src.orchestrator import process_message
 from src.ai import AICallResult
 from src.ai_triage import TriageResult
-from src.validators import AIResponse, OpenAction, AlertAction
+from src.validators import AIResponse, OpenAction, AlertAction, CancelPendingAction
 
 
 def _make_triage(decision: str):
@@ -273,3 +273,92 @@ def test_duplicate_allowed_after_first_is_cancelled(tmp_path):
                            tmp_path / "a.jsonl", 30)
     r2 = conn.execute("SELECT status FROM actions WHERE id=?", (ids2[0],)).fetchone()
     assert r2["status"] == "pending"
+
+
+# ---- Phase 5: CANCEL_PENDING server-side handling ----------------------
+
+def test_cancel_pending_flips_watching_openes_and_records_count(tmp_path):
+    """When AI emits CANCEL_PENDING, the orchestrator must:
+      - flip every OPEN action with status='watching' and matching symbol
+        to status='rejected' with ea_response='cancelled_by_channel'
+      - insert the CANCEL_PENDING action itself with status='executed'
+        and ea_response noting how many openes were cancelled."""
+    conn = connect(str(tmp_path / "o.db"))
+    init_schema(conn)
+    # Seed two watching OPEN actions for XAUUSD (the pending limits the
+    # EA placed earlier) + one watching OPEN for a different symbol that
+    # MUST NOT be touched.
+    conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'watching')",
+        (json.dumps({"symbol": "XAUUSD", "side": "BUY",
+                     "entry_low": 4666, "entry_high": 4666,
+                     "tps": [4690], "sl": 4662, "pending": True}),),
+    )
+    conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'watching')",
+        (json.dumps({"symbol": "XAUUSD", "side": "SELL",
+                     "entry_low": 4720, "entry_high": 4720,
+                     "tps": [4700], "sl": 4725, "pending": True}),),
+    )
+    # An unrelated watching action that must NOT be flipped (different symbol).
+    # Note: SUPPORTED_SYMBOLS in this project is XAUUSD-only, so we use a
+    # raw INSERT bypassing the validator's symbol guard.
+    conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'watching')",
+        (json.dumps({"symbol": "EURUSD", "side": "BUY",
+                     "entry_low": 1.05, "entry_high": 1.05,
+                     "tps": [1.06], "sl": 1.04, "pending": True}),),
+    )
+
+    ai = _make_ai([CancelPendingAction(symbol="XAUUSD")])
+    ids = process_message(
+        conn, ai, tg_message_id=99, chat_id=42,
+        sender="Y", text="Delete Limit",
+        ai_log_path=tmp_path / "a.jsonl",
+        auto_execute_delay_sec=0,
+    )
+    assert len(ids) == 1
+    cancel_row = conn.execute(
+        "SELECT * FROM actions WHERE id=?", (ids[0],)
+    ).fetchone()
+    assert cancel_row["action_type"] == "CANCEL_PENDING"
+    assert cancel_row["status"] == "executed"
+    assert "cancelled 2 watching OPEN(s)" in cancel_row["ea_response"]
+
+    # Both XAUUSD watching rows flipped to rejected
+    xau_rejected = conn.execute(
+        "SELECT COUNT(*) FROM actions WHERE action_type='OPEN' "
+        "AND status='rejected' AND ea_response='cancelled_by_channel' "
+        "AND json_extract(payload_json,'$.symbol')='XAUUSD'"
+    ).fetchone()[0]
+    assert xau_rejected == 2
+
+    # EURUSD watching row unchanged
+    eur_still_watching = conn.execute(
+        "SELECT COUNT(*) FROM actions WHERE action_type='OPEN' "
+        "AND status='watching' "
+        "AND json_extract(payload_json,'$.symbol')='EURUSD'"
+    ).fetchone()[0]
+    assert eur_still_watching == 1
+
+
+def test_cancel_pending_with_no_watching_openes_records_zero(tmp_path):
+    """CANCEL_PENDING with nothing to cancel still inserts itself as
+    executed with a 'cancelled 0' note (no-op is fine)."""
+    conn = connect(str(tmp_path / "o.db"))
+    init_schema(conn)
+    ai = _make_ai([CancelPendingAction(symbol="XAUUSD")])
+    ids = process_message(
+        conn, ai, tg_message_id=100, chat_id=42,
+        sender="Y", text="Delete Limit",
+        ai_log_path=tmp_path / "a.jsonl",
+        auto_execute_delay_sec=0,
+    )
+    row = conn.execute(
+        "SELECT status, ea_response FROM actions WHERE id=?", (ids[0],)
+    ).fetchone()
+    assert row["status"] == "executed"
+    assert "cancelled 0 watching OPEN(s)" in row["ea_response"]

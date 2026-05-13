@@ -10,6 +10,15 @@ LOGS_DIR.mkdir(exist_ok=True)
 
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "copytrades.db"))
 
+# Active channel profile. Selects which channels/<name>.json file the AI
+# interpreter and triage prompts interpolate at startup. The profile
+# carries channel-specific bits (vocabulary table, worked examples,
+# price-range hint, language) while the universal rules (action-type
+# schemas, idempotency, Rules A/B/C for new-signal-with-position-open,
+# pending/CANCEL_PENDING semantics) stay hard-coded in src/ai.py.
+# Default 'fxengineer-gold' preserves backward compatibility.
+CHANNEL_PROFILE = os.getenv("CHANNEL_PROFILE", "fxengineer-gold")
+
 TG_API_ID = int(os.getenv("TG_API_ID", "0"))
 TG_API_HASH = os.getenv("TG_API_HASH", "")
 TG_PHONE = os.getenv("TG_PHONE", "")

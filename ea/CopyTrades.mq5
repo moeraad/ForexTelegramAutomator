@@ -71,6 +71,7 @@ input int    LogPanelPollSec         = 3;
 // (e.g. "ستوبك 56" -> 4856 only when gold is around 4850). Set to 0 to
 // disable. Heartbeat is unconditional (runs even when kill switch is on).
 input int    MarketPriceHeartbeatSec = 15;
+input bool   EnableMarketSnapshot    = true;
 // Gate the AI's reactive "احجز نصف أرباحك واحفظ دخولك" flow: when false,
 // both DoMoveSlBe and DoClosePartial silently no-op the incoming action
 // (status=executed, ea_response="noop_partial_and_be_disabled") so they
@@ -190,6 +191,26 @@ struct TradePlan {
 };
 TradePlan g_plans[];
 
+// ---- Phase 5: pending-limit orders (broker BuyLimit/SellLimit) --------
+// Each entry tracks a real broker-side pending order placed by DoOpen
+// when the AI emits OPEN with `pending: true`. Lives until the limit
+// fires (-> position opens, action transitions to executed) OR a
+// CANCEL_PENDING server-side flips the action to rejected (then
+// ManagePendingOrders calls trade.OrderDelete locally).
+struct PendingOrder {
+   long       action_id;        // server-side actions.id
+   ulong      order_ticket;     // broker order ticket from trade.ResultOrder()
+   bool       isBuy;
+   double     entry;            // the limit price
+   double     sl;
+   double     tps[3];
+   int        tpCount;
+   datetime   placedAt;
+   datetime   lastStatusCheck;  // throttle GET /actions/{id} polls
+};
+
+PendingOrder g_pending_orders[];
+
 // Sequence counter for retry-queue file names. Combined with TimeCurrent()
 // to disambiguate multiple EnqueueRetry calls within the same second so
 // each pending retry has a unique filename in MQL5\Files.
@@ -201,6 +222,7 @@ int OnInit() {
    EventSetTimer(PollIntervalSec);
    LoadPersistedPlans();
    LoadPersistedNaked();
+   LoadPersistedPendingOrders();
    g_ea_start = TimeCurrent();
    g_balance_open_today = AccountInfoDouble(ACCOUNT_BALANCE);
    g_equity_peak_today = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -333,6 +355,7 @@ void OnTimer() {
       ManagePlans();  // also driven by OnTick; belt-and-suspenders
       TrailStage2Sls();  // post-TP2 trailing SL on 3-TP plans (Flavour A)
       ManageNakedPlans();  // Phase 4: OPEN_INSTANT timeout fallback + trail
+      ManagePendingOrders();  // Phase 5: broker pending-limit fill + cancel poll
       ReconcileClosedPositions();
       DrainRetryQueue();  // resend any persisted POSTs from a prior outage
    }
@@ -384,6 +407,7 @@ void HeartbeatMarketPrice() {
 // and cached in static state — IndicatorRelease isn't called in OnDeinit
 // because EA reattaches re-create them.
 void PostMarketSnapshot() {
+   if(!EnableMarketSnapshot) return;
    datetime now = TimeCurrent();
    if(now - g_last_snapshot < 60) return;
 
@@ -916,7 +940,7 @@ bool HttpPostJsonWithStatus(string url, string jsonBody, string &outBody, int &o
    // would mangle multibyte chars before they ever reach the API.
    int blen = StringToCharArray(jsonBody, post, 0, -1, CP_UTF8);
    if(blen > 0) ArrayResize(post, blen - 1);  // drop trailing NUL
-   int res = WebRequest("POST", url, reqHeaders, 5000, post, result, respHeaders);
+   int res = WebRequest("POST", url, reqHeaders, 10000, post, result, respHeaders);
    if(res == -1) {
       Print("WebRequest POST error ", GetLastError(), " url=", url);
       outStatus = -1;
@@ -1139,6 +1163,71 @@ void DoOpen(long id, string payload) {
    int tpCount = ArraySize(tps);
    if(tpCount == 0) { PostResult(id, "failed", 0, "no_tps"); return; }
    if(tpCount > 3) tpCount = 3;  // strategy handles at most 3 stages
+
+   // Phase 5: pending-limit flow. Channel-style "buy limit X SL Y Tp Z"
+   // signals carry `pending: true` in the payload. EA places a real
+   // broker-side BuyLimit / SellLimit at the entry-zone midpoint (or
+   // single price for SMC-style single-line entries) and tracks it in
+   // g_pending_orders[]. ManagePendingOrders() (in OnTimer) detects
+   // fills and server-side cancellations.
+   string pendingField = JsonField(payload, "pending");
+   bool isPending = (pendingField == "true");
+   if(isPending) {
+      bool isBuyP = (side == "BUY");
+      double entryLimit = (entryLow + entryHigh) / 2.0;
+      double lotsP = LotsFromRisk(sl, entryLimit);
+      if(lotsP <= 0.0) {
+         PostResult(id, "rejected", 0, "sl_too_wide_for_max_risk_pct");
+         g_stats_rejected++;
+         return;
+      }
+      double tpFinalP = tps[tpCount - 1];
+      bool okP = isBuyP
+         ? trade.BuyLimit(lotsP, entryLimit, Symbol_Override, sl, tpFinalP,
+                          ORDER_TIME_GTC, 0, "ct-pending")
+         : trade.SellLimit(lotsP, entryLimit, Symbol_Override, sl, tpFinalP,
+                           ORDER_TIME_GTC, 0, "ct-pending");
+      if(!okP) {
+         PostResult(id, "failed", 0,
+            "pending_place_failed:" + IntegerToString(trade.ResultRetcode()));
+         g_stats_rejected++;
+         return;
+      }
+      ulong order_ticket = trade.ResultOrder();
+      if(order_ticket == 0) {
+         PostResult(id, "failed", 0, "pending_no_order_ticket");
+         g_stats_rejected++;
+         return;
+      }
+      PendingOrder po;
+      po.action_id = id;
+      po.order_ticket = order_ticket;
+      po.isBuy = isBuyP;
+      po.entry = entryLimit;
+      po.sl = sl;
+      for(int kp = 0; kp < 3; kp++) po.tps[kp] = 0.0;
+      for(int kp = 0; kp < tpCount; kp++) po.tps[kp] = tps[kp];
+      po.tpCount = tpCount;
+      po.placedAt = TimeCurrent();
+      po.lastStatusCheck = TimeCurrent();
+      int nP = ArraySize(g_pending_orders);
+      ArrayResize(g_pending_orders, nP + 1);
+      g_pending_orders[nP] = po;
+      PersistPendingOrder(po);
+
+      // POST status='watching' — the action sits in this state until
+      // ManagePendingOrders detects a fill (-> executed) or the server
+      // CANCEL_PENDING handler flips us to rejected.
+      string watchBody = StringFormat(
+         "{\"status\":\"watching\",\"error\":\"pending_order_ticket=%I64u\"}",
+         order_ticket);
+      string watchResp;
+      HttpPostJson(ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result",
+                   watchBody, watchResp);
+      Print("CT OPEN id=", id, " pending limit placed ticket=", order_ticket,
+            " entry=", entryLimit, " sl=", sl, " tp=", tpFinalP);
+      return;
+   }
 
    // Normalise TP ordering by DISTANCE FROM ENTRY so tps[0] = nearest target
    // (first partial-close trigger) and tps[tpCount-1] = farthest (final TP
@@ -3159,5 +3248,166 @@ void LoadPersistedNaked() {
       g_naked[m] = n;
       Print("CT restored naked ticket=", ticket, " isBuy=", n.isBuy,
             " armed=", n.fallbackArmed);
+   }
+}
+
+// =====================================================================
+// Phase 5: pending-limit pipeline
+// =====================================================================
+
+string PendingKey(ulong order_ticket, string field) {
+   return "ct_pending_" + IntegerToString((long)order_ticket) + "_" + field;
+}
+
+void PersistPendingOrder(const PendingOrder &p) {
+   GlobalVariableSet(PendingKey(p.order_ticket, "actionId"), (double)p.action_id);
+   GlobalVariableSet(PendingKey(p.order_ticket, "isBuy"),    p.isBuy ? 1.0 : 0.0);
+   GlobalVariableSet(PendingKey(p.order_ticket, "entry"),    p.entry);
+   GlobalVariableSet(PendingKey(p.order_ticket, "sl"),       p.sl);
+   GlobalVariableSet(PendingKey(p.order_ticket, "tp1"),      p.tps[0]);
+   GlobalVariableSet(PendingKey(p.order_ticket, "tp2"),      p.tps[1]);
+   GlobalVariableSet(PendingKey(p.order_ticket, "tp3"),      p.tps[2]);
+   GlobalVariableSet(PendingKey(p.order_ticket, "tpCount"),  (double)p.tpCount);
+   GlobalVariableSet(PendingKey(p.order_ticket, "placedAt"), (double)p.placedAt);
+}
+
+void ErasePendingOrderState(ulong order_ticket) {
+   string fields[] = {"actionId","isBuy","entry","sl","tp1","tp2","tp3",
+                      "tpCount","placedAt"};
+   for(int i = 0; i < ArraySize(fields); i++)
+      GlobalVariableDel(PendingKey(order_ticket, fields[i]));
+}
+
+void RemovePendingOrder(int idx) {
+   int n = ArraySize(g_pending_orders);
+   for(int j = idx; j < n - 1; j++) g_pending_orders[j] = g_pending_orders[j + 1];
+   ArrayResize(g_pending_orders, n - 1);
+}
+
+void LoadPersistedPendingOrders() {
+   int total = GlobalVariablesTotal();
+   for(int i = 0; i < total; i++) {
+      string name = GlobalVariableName(i);
+      if(StringFind(name, "ct_pending_") != 0) continue;
+      if(StringFind(name, "_actionId") < 0) continue;
+      // ct_pending_<orderTicket>_actionId
+      string rest = StringSubstr(name, 11);  // strip "ct_pending_"
+      int us = StringFind(rest, "_");
+      if(us <= 0) continue;
+      string ticketStr = StringSubstr(rest, 0, us);
+      ulong order_ticket = (ulong)StringToInteger(ticketStr);
+      if(order_ticket == 0) continue;
+      // If the broker order is gone (filled or deleted while EA was down),
+      // wipe the GVs and let the API's expire-stale-watches sweeper deal
+      // with the orphan watching row.
+      if(!OrderSelect(order_ticket)) {
+         ErasePendingOrderState(order_ticket);
+         continue;
+      }
+      PendingOrder p;
+      p.action_id    = (long)GlobalVariableGet(PendingKey(order_ticket, "actionId"));
+      p.order_ticket = order_ticket;
+      p.isBuy        = GlobalVariableGet(PendingKey(order_ticket, "isBuy")) > 0.5;
+      p.entry        = GlobalVariableGet(PendingKey(order_ticket, "entry"));
+      p.sl           = GlobalVariableGet(PendingKey(order_ticket, "sl"));
+      p.tps[0]       = GlobalVariableGet(PendingKey(order_ticket, "tp1"));
+      p.tps[1]       = GlobalVariableGet(PendingKey(order_ticket, "tp2"));
+      p.tps[2]       = GlobalVariableGet(PendingKey(order_ticket, "tp3"));
+      p.tpCount      = (int)GlobalVariableGet(PendingKey(order_ticket, "tpCount"));
+      p.placedAt     = (datetime)GlobalVariableGet(PendingKey(order_ticket, "placedAt"));
+      p.lastStatusCheck = 0;  // force first OnTimer to do a status poll
+      int m = ArraySize(g_pending_orders);
+      ArrayResize(g_pending_orders, m + 1);
+      g_pending_orders[m] = p;
+      Print("CT restored pending order ticket=", order_ticket,
+            " action=", p.action_id);
+   }
+}
+
+void ManagePendingOrders() {
+   if(ArraySize(g_pending_orders) == 0) return;
+   datetime now = TimeCurrent();
+
+   for(int i = ArraySize(g_pending_orders) - 1; i >= 0; i--) {
+      PendingOrder p = g_pending_orders[i];
+
+      // 1. Did the order convert to a position? On MT5 the position
+      //    ticket equals the opening order ticket, so the same value
+      //    we stored as order_ticket is now a valid position ticket.
+      if(PositionSelectByTicket((long)p.order_ticket)) {
+         double vol       = PositionGetDouble(POSITION_VOLUME);
+         double fillPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         double tpFinal   = p.tps[p.tpCount - 1];
+         string sideStr   = p.isBuy ? "BUY" : "SELL";
+
+         string legJson = StringFormat(
+            "{\"mt5_ticket\":%I64d,\"snapshot\":{\"symbol\":\"%s\","
+            "\"side\":\"%s\",\"volume\":%.2f,\"entry_price\":%.2f,"
+            "\"sl\":%.2f,\"tp\":%.2f}}",
+            (long)p.order_ticket, Symbol_Override, sideStr, vol,
+            fillPrice, p.sl, tpFinal);
+         string body = "{\"status\":\"executed\",\"legs\":[" + legJson + "]}";
+         string resp; int httpStatus;
+         string resultUrl = ApiBaseUrl + "/actions/" + IntegerToString(p.action_id)
+                          + "/result";
+         bool ok = HttpPostJsonWithStatus(resultUrl, body, resp, httpStatus);
+         if(!ok) {
+            Print("Result POST failed for filled pending action ",
+                  p.action_id, " status=", httpStatus, " — queued for retry");
+            EnqueueRetry(resultUrl, body);
+         }
+
+         // Multi-TP: register the staged plan so ManagePlans takes over.
+         if(p.tpCount >= 2) {
+            double tpsArr[];
+            ArrayResize(tpsArr, p.tpCount);
+            for(int k = 0; k < p.tpCount; k++) tpsArr[k] = p.tps[k];
+            RegisterPlan((long)p.order_ticket, p.isBuy, vol, fillPrice, p.sl,
+                         p.entry, p.entry, tpsArr, p.tpCount);
+         }
+
+         RememberRecentOpen((long)p.order_ticket);
+         ErasePendingOrderState(p.order_ticket);
+         RemovePendingOrder(i);
+         g_stats_executed++;
+         Print("CT pending FILLED action=", p.action_id,
+               " ticket=", p.order_ticket, " entry=", fillPrice);
+         continue;
+      }
+
+      // 2. Order still pending at MT5?
+      if(!OrderSelect(p.order_ticket)) {
+         // Order disappeared (no position). Broker-side cancellation,
+         // expiry, or operator delete from MT5 UI. POST rejected.
+         PostResult(p.action_id, "rejected", 0, "pending_order_disappeared");
+         ErasePendingOrderState(p.order_ticket);
+         RemovePendingOrder(i);
+         Print("CT pending DISAPPEARED action=", p.action_id,
+               " ticket=", p.order_ticket);
+         continue;
+      }
+
+      // 3. Server-side cancellation? Throttled poll (every 10s) to avoid
+      //    hammering the API.
+      if(now - p.lastStatusCheck < 10) continue;
+      p.lastStatusCheck = now;
+      g_pending_orders[i] = p;
+
+      string statusBody;
+      string statusUrl = ApiBaseUrl + "/actions/" + IntegerToString(p.action_id);
+      if(!HttpGet(statusUrl, statusBody) || statusBody == "") continue;
+      if(StringFind(statusBody, "\"status\":\"rejected\"") >= 0) {
+         // Server cancelled (CANCEL_PENDING). Delete broker pending order.
+         if(trade.OrderDelete(p.order_ticket)) {
+            Print("CT pending CANCELLED by server action=", p.action_id,
+                  " ticket=", p.order_ticket);
+         } else {
+            Print("CT pending OrderDelete FAILED action=", p.action_id,
+                  " ticket=", p.order_ticket,
+                  " retcode=", trade.ResultRetcode());
+         }
+         ErasePendingOrderState(p.order_ticket);
+         RemovePendingOrder(i);
+      }
    }
 }

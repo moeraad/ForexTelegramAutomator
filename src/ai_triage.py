@@ -4,11 +4,15 @@ AI interpreter.
 Returns either "ignore" (promotional / greeting / emoji-only / off-topic noise)
 or "keep" (anything that might carry trade info, management intent, or market
 commentary). On any ambiguity the model is instructed to return "keep" so the
-full Sonnet pass never misses a real signal.
+full interpreter pass never misses a real signal.
 
 Token footprint is tiny: short system prompt + one-line input + ~32-token
-output, no extended thinking. Roughly 3x cheaper per call than Sonnet, and
-we only pay for the Sonnet call on KEEP messages.
+output, no extended thinking. Roughly 3x cheaper per call than the
+interpreter, and we only pay for the full call on KEEP messages.
+
+The CHANNEL-SPECIFIC high-signal phrase list comes from the active
+channel profile (channels/<CHANNEL_PROFILE>.json -> triage_keep_triggers).
+The universal IGNORE/KEEP definitions stay hard-coded.
 """
 from __future__ import annotations
 
@@ -16,8 +20,11 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
+from string import Template
 from typing import Any, Literal
 
+from src import config
 from src.llm_provider import (
     AnthropicProvider,
     LLMProvider,
@@ -28,7 +35,21 @@ from src.llm_provider import (
 TriageDecision = Literal["ignore", "keep"]
 
 
-TRIAGE_SYSTEM_PROMPT = """You are a fast pre-filter for a gold (XAUUSD) Telegram signals channel.
+_PROFILE_DIR = Path(__file__).resolve().parent.parent / "channels"
+
+
+def _load_profile(name: str | None = None) -> dict:
+    target = name or config.CHANNEL_PROFILE
+    p = _PROFILE_DIR / f"{target}.json"
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Channel profile not found: {p}. Create channels/{target}.json "
+            f"or set CHANNEL_PROFILE."
+        )
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+_TEMPLATE = Template("""You are a fast pre-filter for a gold (XAUUSD) Telegram signals channel.
 
 Classify each incoming message as either "ignore" or "keep".
 
@@ -37,19 +58,14 @@ motivational quotes, channel announcements unrelated to gold trading, pure
 chit-chat with no price/direction/position reference.
 
 KEEP: anything that COULD be a trade signal, a management instruction (move
-SL, close, partial, reopen, reinforce, tighten), a market-commentary / bias
-/ zone note, a TP-hit confirmation, or anything referencing prices, numbers
-that look like gold levels, buy/sell/long/short words in any language, or
-an existing position. Also KEEP short ambiguous messages when there are
-open positions (e.g. "close", "exit", "out") because they may be management
-commands.
+SL, close, partial, reopen, reinforce, tighten, cancel a pending), a
+market-commentary / bias / zone note, a TP-hit confirmation, or anything
+referencing prices, numbers that look like gold levels, buy/sell/long/short
+words in any language, or an existing position. Also KEEP short ambiguous
+messages when there are open positions (e.g. "close", "exit", "out", "delete
+limit") because they may be management commands.
 
-ARABIC MANAGEMENT TRIGGERS (always keep these — high-signal phrases from
-the channel; do not let their brevity fool the filter):
-  أمن دخولك | احجز نصف | حجز الارباح | متاح حجز | ستوبك | ارفع ستوبك |
-  خرجنا | متاح للشراء | متاحة للدخول | عزز شراء | عزز بيع | ضيق ستوبك |
-  قرب ستوبك | ثبات للنهاية | كمل | على الدخول من جديد |
-  اشتري الذهب | اشتري ذهب | شراء الذهب | بيع الذهب | بيع ذهب
+${triage_keep_triggers}
 
 WHEN IN DOUBT, RETURN "keep". False negatives (losing a real signal) are
 much worse than false positives (letting noise through to the next stage,
@@ -57,7 +73,17 @@ which filters it anyway).
 
 OUTPUT FORMAT: a single JSON object, nothing else:
 {"decision": "ignore" | "keep"}
-"""
+""")
+
+
+def _render_triage_prompt(profile_name: str | None = None) -> str:
+    p = _load_profile(profile_name)
+    return _TEMPLATE.substitute(
+        triage_keep_triggers=p.get("triage_keep_triggers", ""),
+    )
+
+
+TRIAGE_SYSTEM_PROMPT = _render_triage_prompt()
 
 
 @dataclass
