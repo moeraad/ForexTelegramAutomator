@@ -1,0 +1,429 @@
+"""REPLAY view: rerun historical messages through current AI, flag drift."""
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QSpinBox,
+    QTableView,
+    QVBoxLayout,
+    QWidget,
+)
+
+from src.gui.services.replay import HistMessage, ReplayRow, ReplayRunner, load_messages
+from src.gui.services.stack_registry import Stack
+
+
+_RANGES: list[tuple[str, int | None]] = [
+    ("Today", 0),
+    ("Last 3 days", 3),
+    ("Last 7 days", 7),
+    ("Last 30 days", 30),
+]
+
+_AI_OPTIONS: list[tuple[str, str, str]] = [
+    ("Default (.env)", "", ""),
+    ("Anthropic — Sonnet 4.6", "anthropic", "claude-sonnet-4-6"),
+    ("Anthropic — Opus 4.7",   "anthropic", "claude-opus-4-7"),
+    ("Anthropic — Haiku 4.5",  "anthropic", "claude-haiku-4-5-20251001"),
+    ("OpenAI — gpt-5",       "openai", "gpt-5"),
+    ("OpenAI — gpt-5-mini",  "openai", "gpt-5-mini"),
+    ("OpenAI — gpt-5-nano",  "openai", "gpt-5-nano"),
+]
+
+_DRIFT_COLOR = {
+    "none":     QColor("#586e75"),
+    "type":     QColor("#dc322f"),
+    "side":     QColor("#dc322f"),
+    "count":    QColor("#cb4b16"),
+    "decision": QColor("#b58900"),
+}
+
+
+def _stat_box(label: str, value: str, color: str = "#073642") -> QWidget:
+    box = QFrame()
+    box.setFrameShape(QFrame.Shape.StyledPanel)
+    box.setStyleSheet("QFrame { background: #fdf6e3; border-radius: 4px; }")
+    box.setFixedSize(140, 80)
+    layout = QVBoxLayout(box)
+    layout.setContentsMargins(10, 8, 10, 8)
+    layout.setSpacing(2)
+    k = QLabel(label.upper())
+    k.setStyleSheet("color: #93a1a1; font-size: 9px; letter-spacing: 1px;")
+    v = QLabel(value)
+    v.setStyleSheet(f"color: {color}; font-size: 16px; font-weight: 700;")
+    v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    layout.addWidget(k)
+    layout.addWidget(v)
+    layout.addStretch()
+    return box
+
+
+def _summarize_original(actions: list) -> str:
+    if not actions:
+        return "(none)"
+    parts: list[str] = []
+    for a in actions:
+        side = getattr(a, "side", "") or ""
+        parts.append(f"{a.action_type}{' ' + side if side else ''}")
+    return " · ".join(parts)
+
+
+def _summarize_replayed(actions: list) -> str:
+    if not actions:
+        return "(none)"
+    parts: list[str] = []
+    for a in actions:
+        side = a.side or ""
+        parts.append(f"{a.action_type}{' ' + side if side else ''}")
+    return " · ".join(parts)
+
+
+class _ReplayModel(QAbstractTableModel):
+    HEADERS = ("When", "Msg", "Text", "Original", "Replayed", "Drift")
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._rows: list[ReplayRow] = []
+
+    def clear(self) -> None:
+        self.beginResetModel()
+        self._rows = []
+        self.endResetModel()
+
+    def append(self, row: ReplayRow) -> None:
+        n = len(self._rows)
+        self.beginInsertRows(QModelIndex(), n, n)
+        self._rows.append(row)
+        self.endInsertRows()
+
+    def row_at(self, idx: int) -> ReplayRow | None:
+        if 0 <= idx < len(self._rows):
+            return self._rows[idx]
+        return None
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self._rows)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return len(self.HEADERS)
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+        return self.HEADERS[section] if orientation == Qt.Orientation.Horizontal else section + 1
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if not index.isValid():
+            return None
+        r = self._rows[index.row()]
+        col = index.column()
+        if role == Qt.ItemDataRole.DisplayRole:
+            if col == 0:
+                return r.msg.received_at[:19].replace("T", " ")
+            if col == 1:
+                return str(r.msg.id)
+            if col == 2:
+                t = r.msg.text.replace("\n", " ").strip()
+                return (t[:80] + "…") if len(t) > 80 else t
+            if col == 3:
+                return _summarize_original(r.original)
+            if col == 4:
+                if r.error:
+                    return f"(error: {r.error[:40]})"
+                if r.triage_decision == "ignore":
+                    return "(triage=ignore)"
+                return _summarize_replayed(r.replayed)
+            if col == 5:
+                return r.drift
+        if role == Qt.ItemDataRole.ForegroundRole and col == 5:
+            return _DRIFT_COLOR.get(r.drift, QColor("#586e75"))
+        if role == Qt.ItemDataRole.ToolTipRole and col == 2:
+            return r.msg.text
+        return None
+
+
+class _DetailDialog(QDialog):
+    def __init__(self, parent: QWidget, row: ReplayRow) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Replay detail — msg #{row.msg.id}")
+        self.resize(900, 640)
+        layout = QVBoxLayout(self)
+        info = QLabel(
+            f"<b>received_at:</b> {row.msg.received_at}  ·  "
+            f"<b>sender:</b> {row.msg.sender or 'unknown'}  ·  "
+            f"<b>drift:</b> {row.drift}  ·  <b>triage:</b> {row.triage_decision}  ·  "
+            f"<b>est. cost:</b> ${row.cost_estimate:.4f}"
+        )
+        info.setTextFormat(Qt.TextFormat.RichText)
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        layout.addWidget(QLabel("Source message"))
+        src = QPlainTextEdit(row.msg.text)
+        src.setReadOnly(True)
+        src.setMaximumHeight(120)
+        layout.addWidget(src)
+
+        body = QHBoxLayout()
+        left = QVBoxLayout()
+        left.addWidget(QLabel("Original (production)"))
+        orig_panel = QPlainTextEdit()
+        orig_panel.setReadOnly(True)
+        lines: list[str] = []
+        for a in row.original:
+            lines.append(f"#{a.id}  {a.action_type}  status={a.status}")
+            lines.append(json.dumps(a.payload, indent=2, ensure_ascii=False))
+            lines.append("")
+        orig_panel.setPlainText("\n".join(lines) if lines else "(no actions inserted)")
+        left.addWidget(orig_panel)
+        body.addLayout(left)
+
+        right = QVBoxLayout()
+        right.addWidget(QLabel("Replayed (current AI)"))
+        new_panel = QPlainTextEdit()
+        new_panel.setReadOnly(True)
+        if row.error:
+            new_panel.setPlainText(f"ERROR:\n{row.error}")
+        else:
+            text = row.raw_actions_json or "(no actions)"
+            if row.raw_reasoning:
+                text += "\n\nREASONING\n" + row.raw_reasoning
+            new_panel.setPlainText(text)
+        right.addWidget(new_panel)
+        body.addLayout(right)
+        layout.addLayout(body, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(self.accept)
+        layout.addWidget(buttons)
+
+
+class ReplayView(QWidget):
+    def __init__(self, stack: Stack) -> None:
+        super().__init__()
+        self._stack = stack
+        self._runner: ReplayRunner | None = None
+        self._model = _ReplayModel()
+        self._planned_messages: list[HistMessage] = []
+        self._stat_row_layout: QHBoxLayout | None = None
+        self._stat_boxes: dict[str, QWidget] = {}
+        self._cum_cost = 0.0
+        self._cum_drift = 0
+        self._build_ui()
+        self._update_estimate()
+
+    def rebind(self, stack: Stack) -> None:
+        self._stack = stack
+        if self._runner is not None and self._runner.isRunning():
+            self._runner.cancel()
+        self._reset()
+        self._update_estimate()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        top = QHBoxLayout()
+        title = QLabel("<span style='font-size:16px; font-weight:700;'>REPLAY</span>")
+        title.setTextFormat(Qt.TextFormat.RichText)
+        top.addWidget(title)
+        hint = QLabel(
+            "<span style='color:#93a1a1;'>rerun historical messages through current AI  ·  "
+            "no DB writes  ·  costs real tokens</span>"
+        )
+        hint.setTextFormat(Qt.TextFormat.RichText)
+        top.addWidget(hint)
+        top.addStretch()
+        layout.addLayout(top)
+
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("Range:"))
+        self._range_combo = QComboBox()
+        for label, days in _RANGES:
+            self._range_combo.addItem(label, days)
+        self._range_combo.setCurrentIndex(1)
+        self._range_combo.currentIndexChanged.connect(self._on_range_changed)
+        controls.addWidget(self._range_combo)
+
+        controls.addWidget(QLabel("Limit:"))
+        self._limit = QSpinBox()
+        self._limit.setRange(1, 1000)
+        self._limit.setValue(50)
+        self._limit.valueChanged.connect(self._update_estimate)
+        controls.addWidget(self._limit)
+
+        controls.addWidget(QLabel("AI:"))
+        self._ai_combo = QComboBox()
+        for label, provider, model in _AI_OPTIONS:
+            self._ai_combo.addItem(label, (provider, model))
+        self._ai_combo.setMinimumWidth(220)
+        controls.addWidget(self._ai_combo)
+
+        self._estimate_lbl = QLabel("")
+        self._estimate_lbl.setStyleSheet("color: #586e75; padding-left: 12px;")
+        controls.addWidget(self._estimate_lbl)
+        controls.addStretch()
+
+        self._run_btn = QPushButton("Start")
+        self._run_btn.clicked.connect(self._on_run)
+        controls.addWidget(self._run_btn)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setEnabled(False)
+        self._cancel_btn.clicked.connect(self._on_cancel)
+        controls.addWidget(self._cancel_btn)
+        self._clear_btn = QPushButton("Clear")
+        self._clear_btn.clicked.connect(self._reset)
+        controls.addWidget(self._clear_btn)
+        layout.addLayout(controls)
+
+        self._stat_row_layout = QHBoxLayout()
+        self._stat_row_layout.setSpacing(8)
+        for key in ("processed", "drift", "cost", "rate"):
+            box = _stat_box(key, "—")
+            self._stat_boxes[key] = box
+            self._stat_row_layout.addWidget(box)
+        self._stat_row_layout.addStretch()
+        layout.addLayout(self._stat_row_layout)
+
+        self._progress = QProgressBar()
+        self._progress.setMaximum(1)
+        layout.addWidget(self._progress)
+
+        self._table = QTableView()
+        self._table.setModel(self._model)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.verticalHeader().setVisible(False)
+        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self._table.setAlternatingRowColors(True)
+        self._table.setShowGrid(False)
+        self._table.doubleClicked.connect(self._on_double_clicked)
+        layout.addWidget(self._table, 1)
+
+    def _on_range_changed(self, _idx: int) -> None:
+        self._update_estimate()
+
+    def _update_estimate(self) -> None:
+        days = self._range_combo.currentData()
+        limit = self._limit.value()
+        all_msgs = load_messages(self._stack.db_path, days=days, limit=limit)
+        self._planned_messages = all_msgs
+        rough = len(all_msgs) * 0.005
+        self._estimate_lbl.setText(
+            f"plan: {len(all_msgs)} message(s)  ·  est cost ~${rough:.2f}"
+        )
+
+    def _on_run(self) -> None:
+        if not self._planned_messages:
+            QMessageBox.information(self, "Nothing to replay", "No messages in this range.")
+            return
+        if self._runner is not None and self._runner.isRunning():
+            return
+        confirm = QMessageBox.question(
+            self, "Run replay",
+            f"This will run the AI on {len(self._planned_messages)} message(s) "
+            "and cost real tokens. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self._reset()
+        provider, model = self._ai_combo.currentData()
+        self._progress.setMaximum(len(self._planned_messages))
+        self._progress.setValue(0)
+        self._runner = ReplayRunner(
+            self._stack, self._planned_messages, provider, model,
+        )
+        self._runner.progress.connect(self._on_progress)
+        self._runner.row_ready.connect(self._on_row)
+        self._runner.completed.connect(self._on_completed)
+        self._runner.failed_with.connect(self._on_failed)
+        self._runner.finished.connect(self._on_thread_finished)
+        self._run_btn.setEnabled(False)
+        self._cancel_btn.setEnabled(True)
+        from src.gui.services.thread_registry import register
+        register(self._runner, stop_fn=self._runner.cancel)
+        self._runner.start()
+
+    def _on_cancel(self) -> None:
+        if self._runner is not None:
+            self._runner.cancel()
+        self._cancel_btn.setEnabled(False)
+
+    def _reset(self) -> None:
+        self._model.clear()
+        self._cum_cost = 0.0
+        self._cum_drift = 0
+        self._progress.setValue(0)
+        self._progress.setMaximum(1)
+        self._replace_box("processed", "Processed", "0")
+        self._replace_box("drift", "Drift", "0")
+        self._replace_box("cost", "Cost (est)", "$0.00")
+        self._replace_box("rate", "Drift rate", "0%")
+
+    def _on_progress(self, done: int, total: int) -> None:
+        self._progress.setMaximum(max(1, total))
+        self._progress.setValue(done)
+        rate = (self._cum_drift / done * 100) if done > 0 else 0.0
+        self._replace_box("processed", "Processed", f"{done}/{total}")
+        self._replace_box("rate", "Drift rate", f"{rate:.0f}%")
+
+    def _on_row(self, row: ReplayRow) -> None:
+        self._model.append(row)
+        if row.drift != "none":
+            self._cum_drift += 1
+        self._cum_cost += row.cost_estimate
+        self._replace_box(
+            "drift", "Drift", str(self._cum_drift),
+            "#dc322f" if self._cum_drift else "#073642",
+        )
+        self._replace_box("cost", "Cost (est)", f"${self._cum_cost:.4f}")
+
+    def _on_completed(self, drifted: int) -> None:
+        QMessageBox.information(
+            self, "Replay complete",
+            f"Drift: {drifted} / {self._model.rowCount()}  ·  "
+            f"Est cost: ${self._cum_cost:.4f}",
+        )
+
+    def _on_failed(self, err: str) -> None:
+        QMessageBox.critical(self, "Replay failed", err)
+
+    def _on_thread_finished(self) -> None:
+        self._run_btn.setEnabled(True)
+        self._cancel_btn.setEnabled(False)
+        self._runner = None
+
+    def _on_double_clicked(self, index: QModelIndex) -> None:
+        row = self._model.row_at(index.row())
+        if row is None:
+            return
+        _DetailDialog(self, row).exec()
+
+    def _replace_box(self, key: str, label: str, value: str, color: str = "#073642") -> None:
+        assert self._stat_row_layout is not None
+        old = self._stat_boxes[key]
+        new = _stat_box(label, value, color)
+        idx = self._stat_row_layout.indexOf(old)
+        self._stat_row_layout.removeWidget(old)
+        old.deleteLater()
+        self._stat_row_layout.insertWidget(idx, new)
+        self._stat_boxes[key] = new

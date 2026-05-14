@@ -1,83 +1,134 @@
-import os
-from pathlib import Path
-from dotenv import load_dotenv
+"""Lazy DB-backed config facade.
 
-load_dotenv()
+Boot tier (resolved at import time):
+  - DB_PATH       resolved from --db-path CLI / DB_PATH env / default APPDATA
+  - BASE_DIR      project root
+  - LOGS_DIR      <project_root>/logs
+
+Everything else (API keys, Telegram, AI provider, tuning knobs) lives in
+the active DB's `settings` table. Reads happen via module-level
+__getattr__ on first access; values are cached per DB_PATH thereafter.
+
+Critical keys with no default cause services to refuse to start until
+the GUI's setup wizard populates them.
+"""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-LOGS_DIR = BASE_DIR / "logs"
-LOGS_DIR.mkdir(exist_ok=True)
-
-DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "copytrades.db"))
-
-# Active channel profile. Selects which channels/<name>.json file the AI
-# interpreter and triage prompts interpolate at startup. The profile
-# carries channel-specific bits (vocabulary table, worked examples,
-# price-range hint, language) while the universal rules (action-type
-# schemas, idempotency, Rules A/B/C for new-signal-with-position-open,
-# pending/CANCEL_PENDING semantics) stay hard-coded in src/ai.py.
-# Default 'fxengineer-gold' preserves backward compatibility.
-CHANNEL_PROFILE = os.getenv("CHANNEL_PROFILE", "fxengineer-gold")
-
-TG_API_ID = int(os.getenv("TG_API_ID", "0"))
-TG_API_HASH = os.getenv("TG_API_HASH", "")
-TG_PHONE = os.getenv("TG_PHONE", "")
-TG_SESSION_NAME = os.getenv("TG_SESSION_NAME", "copytrades_session")
-TG_WATCHED_CHAT_ID = int(os.getenv("TG_WATCHED_CHAT_ID", "0"))
-
-TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
-TG_BOT_OWNER_USER_ID = int(os.getenv("TG_BOT_OWNER_USER_ID", "0"))
-
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-
-# Provider switch: "anthropic" (default) or "openai". Selects the SDK used by
-# both the interpreter (AIClient) and the triage pre-filter (TriageClient).
-AI_PROVIDER = os.getenv("AI_PROVIDER", "anthropic").lower()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
-OPENAI_TRIAGE_MODEL = os.getenv("OPENAI_TRIAGE_MODEL", "gpt-5-nano")
-
-# Two-stage pipeline: a cheap Haiku triage pass decides ignore-vs-keep before
-# the full Sonnet interpreter runs. Cuts Sonnet call volume on noisy channels
-# without losing precision (full model still sees every KEEP message).
-AI_TRIAGE_ENABLED = os.getenv("AI_TRIAGE_ENABLED", "1") not in ("0", "false", "False", "")
-AI_TRIAGE_MODEL = os.getenv("AI_TRIAGE_MODEL", "claude-haiku-4-5-20251001")
-
-# Extended thinking: let the model reason step-by-step before producing JSON.
-# Materially improves parsing of ambiguous/shorthand Arabic signals where
-# entries like "95-94" must be anchored to an explicit SL like "4808".
-AI_THINKING_ENABLED = os.getenv("AI_THINKING_ENABLED", "1") not in ("0", "false", "False", "")
-AI_THINKING_BUDGET_TOKENS = int(os.getenv("AI_THINKING_BUDGET_TOKENS", "4000"))
-
-API_HOST = os.getenv("API_HOST", "127.0.0.1")
-API_PORT = int(os.getenv("API_PORT", "8765"))
-# Shared secret for the EA -> API auth header. Blank = unauth (dev mode).
-# When set, the auth_gate middleware in src/api.py requires every request
-# to include `X-EA-Token: <this value>` and the EA's WebRequest helpers
-# must send the matching header (configured via the EA's ApiSharedToken
-# input).
-EA_SHARED_TOKEN = os.getenv("EA_SHARED_TOKEN", "")
-
-DEFAULT_AUTO_EXECUTE_DELAY_SEC = 0  # 0 = promote on next tick; no grace window
-RECENT_CHAT_WINDOW = 20  # messages
 SUPPORTED_SYMBOLS = {"XAUUSD"}
 
-# Dedup: collapse resent/quoted signals into one fingerprint bucket.
-# BAND_PRICE is the rounding granularity; WINDOW_HOURS how far back to look.
-FINGERPRINT_BAND_PRICE = float(os.getenv("FINGERPRINT_BAND_PRICE", "5.0"))
-FINGERPRINT_WINDOW_HOURS = int(os.getenv("FINGERPRINT_WINDOW_HOURS", "6"))
 
-# Backfill replay: on reconnect (not first launch), feed missed Telegram
-# messages through the AI only if they're fresher than this cap. Older
-# messages are archived with is_backfill=1 and not processed because price
-# has likely moved too far for the signal to be safe.
-BACKFILL_MAX_AGE_MIN = int(os.getenv("BACKFILL_MAX_AGE_MIN", "30"))
+def _resolve_db_path() -> str:
+    for i, arg in enumerate(sys.argv):
+        if arg == "--db-path" and i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+        if arg.startswith("--db-path="):
+            return arg.split("=", 1)[1]
+    env_path = os.environ.get("DB_PATH")
+    if env_path:
+        return env_path
+    stack = os.environ.get("CHANNEL_PROFILE_BOOTSTRAP") or "default"
+    appdata = os.environ.get("APPDATA") or str(Path.home())
+    return str(Path(appdata) / "CopyTrades" / stack / "copytrades.db")
 
-# Signal memory: distilled AI summaries of prior non-ignore messages are
-# accumulated and fed back into every call in place of the raw 20-message
-# chat window. Cleared when an OPEN action lands (the deliberation resolved).
-# Falls back to raw recent-chat when disabled.
-SIGNAL_MEMORY_ENABLED = os.getenv("SIGNAL_MEMORY_ENABLED", "1") not in ("0", "false", "False", "")
-SIGNAL_MEMORY_MAX_ENTRIES = int(os.getenv("SIGNAL_MEMORY_MAX_ENTRIES", "10"))
-SIGNAL_MEMORY_MAX_AGE_HOURS = int(os.getenv("SIGNAL_MEMORY_MAX_AGE_HOURS", "4"))
+
+DB_PATH = _resolve_db_path()
+LOGS_DIR = Path(DB_PATH).parent / "logs"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# Mapping: public Python name → (settings key, type)
+_LAZY: dict[str, tuple[str, str]] = {
+    "API_HOST": ("api_host", "str"),
+    "API_PORT": ("api_port", "int"),
+    "EA_SHARED_TOKEN": ("ea_shared_token", "str"),
+    "ANTHROPIC_API_KEY": ("anthropic_api_key", "str"),
+    "ANTHROPIC_MODEL": ("anthropic_model", "str"),
+    "OPENAI_API_KEY": ("openai_api_key", "str"),
+    "OPENAI_MODEL": ("openai_model", "str"),
+    "OPENAI_TRIAGE_MODEL": ("openai_triage_model", "str"),
+    "AI_PROVIDER": ("ai_provider", "str"),
+    "AI_TRIAGE_MODEL": ("ai_triage_model", "str"),
+    "AI_TRIAGE_ENABLED": ("ai_triage_enabled", "bool"),
+    "AI_THINKING_ENABLED": ("ai_thinking_enabled", "bool"),
+    "AI_THINKING_BUDGET_TOKENS": ("ai_thinking_budget_tokens", "int"),
+    "TG_API_ID": ("tg_api_id", "int"),
+    "TG_API_HASH": ("tg_api_hash", "str"),
+    "TG_PHONE": ("tg_phone", "str"),
+    "TG_SESSION_NAME": ("tg_session_name", "str"),
+    "TG_WATCHED_CHAT_ID": ("tg_watched_chat_id", "int"),
+    "TG_BOT_TOKEN": ("tg_bot_token", "str"),
+    "TG_BOT_OWNER_USER_ID": ("tg_bot_owner_user_id", "int"),
+    "CHANNEL_PROFILE": ("channel_profile", "str"),
+    "SIGNAL_MEMORY_ENABLED": ("signal_memory_enabled", "bool"),
+    "SIGNAL_MEMORY_MAX_ENTRIES": ("signal_memory_max_entries", "int"),
+    "SIGNAL_MEMORY_MAX_AGE_HOURS": ("signal_memory_max_age_hours", "int"),
+    "FINGERPRINT_BAND_PRICE": ("fingerprint_band_price", "float"),
+    "FINGERPRINT_WINDOW_HOURS": ("fingerprint_window_hours", "int"),
+    "BACKFILL_MAX_AGE_MIN": ("backfill_max_age_min", "int"),
+    "DEFAULT_AUTO_EXECUTE_DELAY_SEC": ("default_auto_execute_delay_sec", "int"),
+    "RECENT_CHAT_WINDOW": ("recent_chat_window", "int"),
+    "CLASSIFIER_BATCH_SIZE": ("classifier_batch_size", "int"),
+    "CLASSIFIER_CONCURRENCY": ("classifier_concurrency", "int"),
+    "CLASSIFIER_PROVIDER": ("classifier_provider", "str"),
+    "CLASSIFIER_ANTHROPIC_MODEL": ("classifier_anthropic_model", "str"),
+    "CLASSIFIER_OPENAI_MODEL": ("classifier_openai_model", "str"),
+}
+
+_TYPE_DEFAULT = {"str": "", "int": 0, "float": 0.0, "bool": False}
+
+_cache: dict[str, dict[str, object]] = {}
+
+
+def _read(name: str) -> object:
+    key, kind = _LAZY[name]
+    bucket = _cache.setdefault(DB_PATH, {})
+    if name in bucket:
+        return bucket[name]
+    path = Path(DB_PATH)
+    if not path.exists():
+        return _TYPE_DEFAULT[kind]
+    from src import db_settings
+    if kind == "str":
+        value = db_settings.get_str(path, key, "")
+    elif kind == "int":
+        value = db_settings.get_int(path, key, 0)
+    elif kind == "float":
+        value = db_settings.get_float(path, key, 0.0)
+    else:
+        value = db_settings.get_bool(path, key, False)
+    bucket[name] = value
+    return value
+
+
+def __getattr__(name: str):
+    if name in _LAZY:
+        return _read(name)
+    raise AttributeError(f"module 'src.config' has no attribute {name!r}")
+
+
+def invalidate_cache() -> None:
+    """Clear cached settings — call after writes / DB swaps."""
+    _cache.clear()
+
+
+def initialize() -> None:
+    """Open DB, run migrations, eagerly load all settings. Idempotent.
+
+    Service entrypoints (api/bot/listener) should call this at startup so
+    config failures surface immediately rather than on first attribute use.
+    """
+    path = Path(DB_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    from src import db, db_settings
+    with db.connect(DB_PATH) as conn:
+        db.init_schema(conn)
+    db_settings.seed_defaults(path)
+    invalidate_cache()
+    for name in _LAZY:
+        _read(name)

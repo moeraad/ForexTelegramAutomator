@@ -100,7 +100,8 @@ class AnthropicProvider:
         if client is None:
             import anthropic  # local import so openai-only deploys don't need it
 
-            client = anthropic.Anthropic()
+            api_key = config.ANTHROPIC_API_KEY or None
+            client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
         self._client = client
         self._model = model or config.ANTHROPIC_MODEL
 
@@ -225,7 +226,8 @@ class OpenAIProvider:
         if client is None:
             import openai  # local import
 
-            client = openai.OpenAI()
+            api_key = config.OPENAI_API_KEY or None
+            client = openai.OpenAI(api_key=api_key) if api_key else openai.OpenAI()
         self._client = client
         self._model = model or config.OPENAI_MODEL
 

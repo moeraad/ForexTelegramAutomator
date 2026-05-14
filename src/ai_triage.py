@@ -40,6 +40,11 @@ _PROFILE_DIR = Path(__file__).resolve().parent.parent / "channels"
 
 def _load_profile(name: str | None = None) -> dict:
     target = name or config.CHANNEL_PROFILE
+    if not target:
+        raise RuntimeError(
+            "No channel profile configured. Set channel_profile in the stack's "
+            "DB settings (the setup wizard does this automatically)."
+        )
     p = _PROFILE_DIR / f"{target}.json"
     if not p.exists():
         raise FileNotFoundError(
@@ -83,7 +88,10 @@ def _render_triage_prompt(profile_name: str | None = None) -> str:
     )
 
 
-TRIAGE_SYSTEM_PROMPT = _render_triage_prompt()
+try:
+    TRIAGE_SYSTEM_PROMPT: str | None = _render_triage_prompt()
+except (RuntimeError, FileNotFoundError):
+    TRIAGE_SYSTEM_PROMPT = None
 
 
 @dataclass

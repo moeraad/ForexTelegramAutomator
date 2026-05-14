@@ -255,9 +255,16 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
         finally:
             if status >= 400:
                 ms = int((time.perf_counter() - start) * 1000)
-                log.warning(
+                # Expected 404s on poll endpoints: log at DEBUG only.
+                # The EA hits these every tick; they're "absent, not error".
+                path = request.url.path
+                expected_empty_404 = status == 404 and path in (
+                    "/actions/latest_open_evaluation",
+                )
+                logger_fn = log.debug if expected_empty_404 else log.warning
+                logger_fn(
                     "%s %s -> %s %dms",
-                    request.method, request.url.path, status, ms,
+                    request.method, path, status, ms,
                 )
 
     @app.exception_handler(RequestValidationError)
@@ -280,6 +287,10 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             status_code=422,
             content={"detail": safe_errors, "raw_body": raw},
         )
+
+    @app.get("/health")
+    def health():
+        return {"ok": True}
 
     @app.get("/actions")
     def get_actions(status: str = "sent", limit: int = 50):

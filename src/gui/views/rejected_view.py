@@ -1,0 +1,432 @@
+"""REJECTED view: prompt-drift detector.
+
+Surfaces all actions in status='rejected', grouped by ea_response category.
+Spikes in 'already_open' / 'no_open_position' / 'cancelled_by_channel' are
+strong signals that the AI prompt's idempotency rules are misfiring.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+from collections import Counter
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QPushButton,
+    QTableView,
+    QVBoxLayout,
+    QWidget,
+)
+
+from src.gui.services.stack_registry import Stack
+
+
+_RANGES: list[tuple[str, int | None]] = [
+    ("Today", 0),
+    ("Last 3 days", 3),
+    ("Last 7 days", 7),
+    ("Last 30 days", 30),
+    ("Last 90 days", 90),
+    ("All time", None),
+]
+
+
+@dataclass(frozen=True)
+class _Rejected:
+    id: int
+    action_type: str
+    reason: str
+    reason_category: str
+    created_at: str
+    source_msg_id: int | None
+    source_text: str
+    payload_comment: str
+
+
+def _normalize_reason(raw: str | None) -> tuple[str, str]:
+    if not raw:
+        return "(unknown)", "(unknown)"
+    raw = raw.strip()
+    category = raw.split(":", 1)[0].strip() if ":" in raw else raw
+    return category or "(unknown)", raw
+
+
+def _since_iso(days: int | None) -> str | None:
+    if days is None:
+        return None
+    if days == 0:
+        now = datetime.now(timezone.utc)
+        return now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+def _load(db_path: Path, days: int | None) -> list[_Rejected]:
+    if not db_path.exists():
+        return []
+    since = _since_iso(days)
+    sql = (
+        "SELECT a.id, a.action_type, a.ea_response, a.payload_json, "
+        "a.created_at, a.source_msg_id, m.text AS source_text "
+        "FROM actions a LEFT JOIN messages m ON m.id = a.source_msg_id "
+        "WHERE a.status='rejected'"
+    )
+    params: tuple = ()
+    if since is not None:
+        sql += " AND a.created_at >= ?"
+        params = (since,)
+    sql += " ORDER BY a.id DESC"
+    out: list[_Rejected] = []
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        for r in conn.execute(sql, params).fetchall():
+            cat, full = _normalize_reason(r["ea_response"])
+            comment = ""
+            payload = r["payload_json"] or ""
+            if '"comment"' in payload:
+                try:
+                    p = json.loads(payload)
+                    if isinstance(p, dict):
+                        comment = str(p.get("comment", ""))
+                except json.JSONDecodeError:
+                    pass
+            out.append(_Rejected(
+                id=int(r["id"]),
+                action_type=str(r["action_type"]),
+                reason=full,
+                reason_category=cat,
+                created_at=str(r["created_at"] or ""),
+                source_msg_id=int(r["source_msg_id"]) if r["source_msg_id"] is not None else None,
+                source_text=str(r["source_text"] or ""),
+                payload_comment=comment,
+            ))
+    return out
+
+
+def _stat_box(label: str, value: str, color: str = "#073642") -> QWidget:
+    box = QFrame()
+    box.setFrameShape(QFrame.Shape.StyledPanel)
+    box.setStyleSheet("QFrame { background: #fdf6e3; border-radius: 4px; }")
+    box.setFixedSize(140, 80)
+    layout = QVBoxLayout(box)
+    layout.setContentsMargins(10, 8, 10, 8)
+    layout.setSpacing(2)
+    k = QLabel(label.upper())
+    k.setStyleSheet("color: #93a1a1; font-size: 9px; letter-spacing: 1px;")
+    v = QLabel(value)
+    v.setStyleSheet(f"color: {color}; font-size: 16px; font-weight: 700;")
+    v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    v.setWordWrap(True)
+    layout.addWidget(k)
+    layout.addWidget(v)
+    layout.addStretch()
+    return box
+
+
+class _ReasonsModel(QAbstractTableModel):
+    HEADERS = ("Reason", "Count", "%", "Last seen")
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._rows: list[tuple[str, int, float, str]] = []
+
+    def set_from(self, rejected: list[_Rejected]) -> None:
+        self.beginResetModel()
+        counter = Counter(r.reason_category for r in rejected)
+        last_seen: dict[str, str] = {}
+        for r in rejected:
+            if r.reason_category not in last_seen:
+                last_seen[r.reason_category] = r.created_at
+        total = max(1, len(rejected))
+        rows: list[tuple[str, int, float, str]] = []
+        for cat, count in counter.most_common():
+            rows.append((cat, count, count / total * 100.0, last_seen.get(cat, "")))
+        self._rows = rows
+        self.endResetModel()
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self._rows)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return len(self.HEADERS)
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+        return self.HEADERS[section] if orientation == Qt.Orientation.Horizontal else section + 1
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if not index.isValid():
+            return None
+        cat, count, pct, last = self._rows[index.row()]
+        col = index.column()
+        if role == Qt.ItemDataRole.DisplayRole:
+            if col == 0:
+                return cat
+            if col == 1:
+                return str(count)
+            if col == 2:
+                return f"{pct:.0f}%"
+            if col == 3:
+                return last[:19].replace("T", " ")
+        if role == Qt.ItemDataRole.TextAlignmentRole and col in (1, 2):
+            return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        if role == Qt.ItemDataRole.ForegroundRole and col == 0:
+            return QColor("#dc322f") if cat != "(unknown)" else QColor("#586e75")
+        return None
+
+    def category_at(self, row: int) -> str | None:
+        if 0 <= row < len(self._rows):
+            return self._rows[row][0]
+        return None
+
+
+class _RejectedListModel(QAbstractTableModel):
+    HEADERS = ("ID", "Type", "Reason", "Source / comment", "Created")
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._all: list[_Rejected] = []
+        self._filtered: list[_Rejected] = []
+        self._filter_category: str | None = None
+
+    def set_rows(self, rows: list[_Rejected]) -> None:
+        self.beginResetModel()
+        self._all = rows
+        self._apply_filter()
+        self.endResetModel()
+
+    def filter_category(self, category: str | None) -> None:
+        self.beginResetModel()
+        self._filter_category = category
+        self._apply_filter()
+        self.endResetModel()
+
+    def _apply_filter(self) -> None:
+        if self._filter_category is None:
+            self._filtered = list(self._all)
+        else:
+            self._filtered = [r for r in self._all if r.reason_category == self._filter_category]
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self._filtered)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return len(self.HEADERS)
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+        return self.HEADERS[section] if orientation == Qt.Orientation.Horizontal else section + 1
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if not index.isValid():
+            return None
+        row = self._filtered[index.row()]
+        col = index.column()
+        if role == Qt.ItemDataRole.DisplayRole:
+            if col == 0:
+                return str(row.id)
+            if col == 1:
+                return row.action_type
+            if col == 2:
+                return row.reason
+            if col == 3:
+                src = row.source_text.strip().replace("\n", " ")
+                if not src and row.payload_comment:
+                    src = f"({row.payload_comment})"
+                if len(src) > 80:
+                    src = src[:77] + "…"
+                return src
+            if col == 4:
+                return row.created_at[:19].replace("T", " ")
+        if role == Qt.ItemDataRole.ToolTipRole and col == 3 and row.source_text:
+            return row.source_text
+        if role == Qt.ItemDataRole.TextAlignmentRole and col == 0:
+            return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        if role == Qt.ItemDataRole.ForegroundRole and col == 2:
+            return QColor("#dc322f")
+        return None
+
+
+class RejectedView(QWidget):
+    def __init__(self, stack: Stack) -> None:
+        super().__init__()
+        self._stack = stack
+        self._days: int | None = 7
+        self._stat_row_layout: QHBoxLayout | None = None
+        self._stat_boxes: dict[str, QWidget] = {}
+        self._reasons_model = _ReasonsModel()
+        self._list_model = _RejectedListModel()
+        self._build_ui()
+        self.refresh()
+
+    def rebind(self, stack: Stack) -> None:
+        self._stack = stack
+        self.refresh()
+
+    def refresh(self) -> None:
+        rows = _load(self._stack.db_path, self._days)
+        self._list_model.set_rows(rows)
+        self._reasons_model.set_from(rows)
+        self._update_stats(rows)
+        self._update_spike_banner(rows)
+
+    def _update_spike_banner(self, rows: list[_Rejected]) -> None:
+        """Show a banner when today's category counts spike vs yesterday."""
+        today = datetime.now(timezone.utc).date()
+        yesterday = today - timedelta(days=1)
+        today_counts: Counter[str] = Counter()
+        yest_counts: Counter[str] = Counter()
+        for r in rows:
+            try:
+                d = datetime.fromisoformat(r.created_at).date()
+            except ValueError:
+                continue
+            if d == today:
+                today_counts[r.reason_category] += 1
+            elif d == yesterday:
+                yest_counts[r.reason_category] += 1
+        spikes: list[tuple[str, int, int]] = []
+        for cat, n_today in today_counts.items():
+            n_yest = yest_counts.get(cat, 0)
+            if n_today >= 5 and n_today >= 2 * max(1, n_yest):
+                spikes.append((cat, n_today, n_yest))
+        if not spikes:
+            self._spike_banner.hide()
+            return
+        spikes.sort(key=lambda x: -x[1])
+        parts = []
+        for cat, nt, ny in spikes[:3]:
+            parts.append(f"<b>{cat}</b> ×{nt} today (was {ny} yesterday)")
+        self._spike_banner.setText(
+            "⚠ Rejection spike — possible prompt drift: " + " · ".join(parts)
+        )
+        self._spike_banner.show()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        top = QHBoxLayout()
+        title = QLabel("<span style='font-size:16px; font-weight:700;'>REJECTED</span>")
+        title.setTextFormat(Qt.TextFormat.RichText)
+        top.addWidget(title)
+        hint = QLabel("<span style='color:#93a1a1;'>prompt-drift detector — investigate spikes</span>")
+        hint.setTextFormat(Qt.TextFormat.RichText)
+        top.addWidget(hint)
+        top.addSpacing(16)
+        top.addWidget(QLabel("Range:"))
+        self._range_combo = QComboBox()
+        for label, days in _RANGES:
+            self._range_combo.addItem(label, days)
+        self._range_combo.setCurrentIndex(2)
+        self._range_combo.currentIndexChanged.connect(self._on_range_changed)
+        top.addWidget(self._range_combo)
+        top.addStretch()
+        refresh = QPushButton("Refresh")
+        refresh.clicked.connect(self.refresh)
+        top.addWidget(refresh)
+        layout.addLayout(top)
+
+        self._stat_row_layout = QHBoxLayout()
+        self._stat_row_layout.setSpacing(8)
+        for key in ("total", "categories", "top_reason", "topmost_recent"):
+            box = _stat_box(key, "—")
+            self._stat_boxes[key] = box
+            self._stat_row_layout.addWidget(box)
+        self._stat_row_layout.addStretch()
+        layout.addLayout(self._stat_row_layout)
+
+        self._spike_banner = QLabel("")
+        self._spike_banner.setTextFormat(Qt.TextFormat.RichText)
+        self._spike_banner.setStyleSheet(
+            "QLabel { background: #dc322f; color: white; "
+            "padding: 8px 12px; border-radius: 4px; font-weight: 600; }"
+        )
+        self._spike_banner.hide()
+        layout.addWidget(self._spike_banner)
+
+        body = QHBoxLayout()
+
+        left = QVBoxLayout()
+        left.addWidget(QLabel("Reasons"))
+        self._reasons_table = QTableView()
+        self._reasons_table.setModel(self._reasons_model)
+        self._reasons_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._reasons_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._reasons_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._reasons_table.verticalHeader().setVisible(False)
+        self._reasons_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self._reasons_table.setAlternatingRowColors(True)
+        self._reasons_table.setShowGrid(False)
+        self._reasons_table.setMinimumWidth(360)
+        self._reasons_table.selectionModel().currentRowChanged.connect(self._on_reason_selected)
+        left.addWidget(self._reasons_table)
+        self._all_btn = QPushButton("Show all categories")
+        self._all_btn.clicked.connect(lambda: self._list_model.filter_category(None))
+        left.addWidget(self._all_btn)
+        body.addLayout(left)
+
+        right = QVBoxLayout()
+        right.addWidget(QLabel("Rejected actions"))
+        self._list_table = QTableView()
+        self._list_table.setModel(self._list_model)
+        self._list_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._list_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._list_table.verticalHeader().setVisible(False)
+        self._list_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self._list_table.horizontalHeader().setStretchLastSection(False)
+        self._list_table.setAlternatingRowColors(True)
+        self._list_table.setShowGrid(False)
+        right.addWidget(self._list_table)
+        body.addLayout(right, 1)
+
+        layout.addLayout(body, 1)
+
+    def _on_range_changed(self, _idx: int) -> None:
+        self._days = self._range_combo.currentData()
+        self.refresh()
+
+    def _on_reason_selected(self, current, _previous) -> None:
+        if not current.isValid():
+            return
+        category = self._reasons_model.category_at(current.row())
+        self._list_model.filter_category(category)
+
+    def _update_stats(self, rows: list[_Rejected]) -> None:
+        counter = Counter(r.reason_category for r in rows)
+        total = len(rows)
+        categories = len(counter)
+        top_reason, top_count = counter.most_common(1)[0] if counter else ("—", 0)
+        most_recent = rows[0].created_at[:19].replace("T", " ") if rows else "—"
+
+        replacements = (
+            ("total", "Total rejected", str(total), "#dc322f" if total else "#073642"),
+            ("categories", "Reason types", str(categories), "#073642"),
+            ("top_reason", "Top reason", f"{top_reason}  ({top_count})", "#073642"),
+            ("topmost_recent", "Most recent", most_recent, "#073642"),
+        )
+        for key, label, value, color in replacements:
+            self._replace_box(key, label, value, color)
+
+    def _replace_box(self, key: str, label: str, value: str, color: str) -> None:
+        assert self._stat_row_layout is not None
+        old = self._stat_boxes[key]
+        new = _stat_box(label, value, color)
+        idx = self._stat_row_layout.indexOf(old)
+        self._stat_row_layout.removeWidget(old)
+        old.deleteLater()
+        self._stat_row_layout.insertWidget(idx, new)
+        self._stat_boxes[key] = new

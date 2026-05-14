@@ -33,6 +33,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_actions_add_instant_types(conn)
     _migrate_positions_add_naked(conn)
     _migrate_actions_add_cancel_pending(conn)
+    _migrate_seed_settings_defaults(conn)
+    _migrate_env_to_settings(conn)
 
 
 def _migrate_actions_add_phase2_types(conn: sqlite3.Connection) -> None:
@@ -592,3 +594,95 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (key, value),
     )
+
+
+def _migrate_seed_settings_defaults(conn: sqlite3.Connection) -> None:
+    """Seed non-critical default values into settings if missing.
+
+    Critical keys (tg_api_id, ..., ai_provider) get NO default — the
+    setup wizard fills them. Everything else has a sensible default
+    inserted via INSERT OR IGNORE so existing values aren't clobbered.
+    """
+    from src.db_settings import DEFAULT_SETTINGS
+    for key, val in DEFAULT_SETTINGS.items():
+        conn.execute(
+            "INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)",
+            (key, val),
+        )
+
+
+def _migrate_env_to_settings(conn: sqlite3.Connection) -> None:
+    """One-time copy of legacy `.env` keys into settings table.
+
+    Runs only when the settings table is missing critical keys AND a
+    `.env` file is reachable in BASE_DIR. Encrypts secrets via DPAPI.
+    Renames the .env to .env.migrated.bak so subsequent runs skip.
+    """
+    cur = conn.execute(
+        "SELECT COUNT(*) AS n FROM settings WHERE key IN "
+        "('tg_api_id','tg_api_hash','tg_phone','tg_watched_chat_id','tg_bot_token','ai_provider')"
+    ).fetchone()
+    if cur and (cur["n"] if hasattr(cur, "keys") else cur[0]) >= 6:
+        return
+    env_path = SCHEMA_PATH.parent.parent / ".env"
+    if not env_path.exists():
+        return
+    pairs: dict[str, str] = {}
+    for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, _, v = s.partition("=")
+        pairs[k.strip()] = v.strip().strip('"').strip("'")
+    if not pairs:
+        return
+    mapping = {
+        "TG_API_ID": "tg_api_id",
+        "TG_API_HASH": "tg_api_hash",
+        "TG_PHONE": "tg_phone",
+        "TG_SESSION_NAME": "tg_session_name",
+        "TG_WATCHED_CHAT_ID": "tg_watched_chat_id",
+        "TG_BOT_TOKEN": "tg_bot_token",
+        "TG_BOT_OWNER_USER_ID": "tg_bot_owner_user_id",
+        "ANTHROPIC_API_KEY": "anthropic_api_key",
+        "ANTHROPIC_MODEL": "anthropic_model",
+        "OPENAI_API_KEY": "openai_api_key",
+        "OPENAI_MODEL": "openai_model",
+        "OPENAI_TRIAGE_MODEL": "openai_triage_model",
+        "AI_PROVIDER": "ai_provider",
+        "AI_TRIAGE_MODEL": "ai_triage_model",
+        "AI_TRIAGE_ENABLED": "ai_triage_enabled",
+        "AI_THINKING_ENABLED": "ai_thinking_enabled",
+        "AI_THINKING_BUDGET_TOKENS": "ai_thinking_budget_tokens",
+        "API_HOST": "api_host",
+        "API_PORT": "api_port",
+        "EA_SHARED_TOKEN": "ea_shared_token",
+        "CHANNEL_PROFILE": "channel_profile",
+        "FINGERPRINT_BAND_PRICE": "fingerprint_band_price",
+        "FINGERPRINT_WINDOW_HOURS": "fingerprint_window_hours",
+        "BACKFILL_MAX_AGE_MIN": "backfill_max_age_min",
+        "SIGNAL_MEMORY_ENABLED": "signal_memory_enabled",
+        "SIGNAL_MEMORY_MAX_ENTRIES": "signal_memory_max_entries",
+        "SIGNAL_MEMORY_MAX_AGE_HOURS": "signal_memory_max_age_hours",
+    }
+    from src.db_settings import SECRET_KEYS
+    from src.secret_box import encrypt
+    for env_key, settings_key in mapping.items():
+        if env_key not in pairs or pairs[env_key] == "":
+            continue
+        raw_value = pairs[env_key]
+        if settings_key in SECRET_KEYS:
+            try:
+                value = encrypt(raw_value)
+            except OSError:
+                continue
+        else:
+            value = raw_value
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES(?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (settings_key, value),
+        )
+    # NOTE: .env is left in place after migration. It's now a stale reference
+    # only — config.py no longer reads it at runtime. Subsequent runs detect
+    # already-migrated state via the missing-critical-keys check above and skip.

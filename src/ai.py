@@ -29,6 +29,11 @@ _PROFILE_DIR = Path(__file__).resolve().parent.parent / "channels"
 
 def _load_profile(name: str | None = None) -> dict:
     target = name or config.CHANNEL_PROFILE
+    if not target:
+        raise RuntimeError(
+            "No channel profile configured. Set channel_profile in the stack's "
+            "DB settings (the setup wizard does this automatically)."
+        )
     p = _PROFILE_DIR / f"{target}.json"
     if not p.exists():
         raise FileNotFoundError(
@@ -255,7 +260,12 @@ def _render_system_prompt(profile_name: str | None = None) -> str:
     )
 
 
-SYSTEM_PROMPT = _render_system_prompt()
+try:
+    SYSTEM_PROMPT: str | None = _render_system_prompt()
+except (RuntimeError, FileNotFoundError):
+    # No channel profile configured yet (fresh install / pre-wizard).
+    # AI calls will fail clearly when actually attempted.
+    SYSTEM_PROMPT = None
 
 
 def build_messages(

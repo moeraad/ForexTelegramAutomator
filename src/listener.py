@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable
 
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 
 from src import config
 from src.ai import AIClient
@@ -197,11 +198,22 @@ async def main() -> None:
         log.info("ai triage enabled: model=%s", triage_model)
     ai_log_path = LOGS_DIR / "ai_calls.jsonl"
 
+    # Session is persisted in the DB as the DPAPI-encrypted tg_session_blob
+    # written by the setup wizard. Loading it as a StringSession lets the
+    # listener restart without re-prompting for the Telegram login code.
+    from src import db_settings
+    session_blob = db_settings.get_str(Path(config.DB_PATH), "tg_session_blob", "")
+    if not session_blob:
+        raise RuntimeError(
+            "tg_session_blob is empty — re-run the setup wizard to log in to "
+            "Telegram and persist the session before starting the listener."
+        )
+
     # connection_retries=-1 tells Telethon to retry forever instead of bailing
     # after the default 5 attempts (which surfaced as ConnectionError and crashed
     # the listener). auto_reconnect handles transient drops without re-auth.
     client = TelegramClient(
-        config.TG_SESSION_NAME,
+        StringSession(session_blob),
         config.TG_API_ID,
         config.TG_API_HASH,
         connection_retries=-1,
@@ -209,7 +221,13 @@ async def main() -> None:
         auto_reconnect=True,
         request_retries=5,
     )
-    await client.start(phone=config.TG_PHONE)
+    await client.connect()
+    if not await client.is_user_authorized():
+        raise RuntimeError(
+            "Telegram session in tg_session_blob is no longer authorized "
+            "(probably revoked from another device or expired). Re-run the "
+            "setup wizard to log in again."
+        )
 
     last_seen = int(get_setting(conn, "last_seen_tg_msg_id") or "0")
     log.info("listener started; last_seen_tg_msg_id=%s", last_seen)

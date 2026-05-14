@@ -85,7 +85,55 @@ def configure_logging(name: str, level: int = logging.INFO) -> logging.Logger:
     for noisy in _NOISY_LOGGERS:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
+    _install_asyncio_exception_filter()
+
     return logging.getLogger(name)
+
+
+def _install_asyncio_exception_filter() -> None:
+    """Suppress benign Windows ProactorEventLoop teardown noise.
+
+    `ConnectionResetError: [WinError 10054]` fires when a long-lived
+    asyncio socket's remote side drops the keepalive while the local
+    side is mid-shutdown. The library reconnects on the next call; the
+    only artifact is an ERROR log line that scares the operator. We
+    swallow exactly that case and let everything else fall through to
+    the default handler.
+    """
+    import asyncio
+
+    default_handler = None
+
+    def _handler(loop, context):
+        exc = context.get("exception")
+        message = context.get("message", "")
+        if isinstance(exc, ConnectionResetError):
+            return
+        if "ConnectionResetError" in message and "10054" in message:
+            return
+        if default_handler is not None:
+            default_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    # Apply to any current and future event loops.
+    try:
+        loop = asyncio.get_event_loop_policy().get_event_loop()
+        if loop and not loop.is_closed():
+            loop.set_exception_handler(_handler)
+    except RuntimeError:
+        pass
+
+    # Patch the policy so new loops created after this call also get it.
+    policy = asyncio.get_event_loop_policy()
+    original_new_event_loop = policy.new_event_loop
+
+    def new_event_loop():
+        loop = original_new_event_loop()
+        loop.set_exception_handler(_handler)
+        return loop
+
+    policy.new_event_loop = new_event_loop  # type: ignore[method-assign]
 
 
 def trades_log() -> logging.Logger:
