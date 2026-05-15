@@ -18,6 +18,7 @@ _ITEMS: list[tuple[str, str, str]] = [
     ("risk",     "", "Risk"),
     ("replay",   "", "Replay"),
     ("profile",  "", "Profile"),
+    ("prompts",  "", "Prompts"),
     ("settings", "", "Settings"),
 ]
 

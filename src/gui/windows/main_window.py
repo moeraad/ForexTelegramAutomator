@@ -27,13 +27,14 @@ from src.gui.views.cost_view import CostView
 from src.gui.views.journal_view import JournalView
 from src.gui.views.live_view import LiveView
 from src.gui.views.profile_view import ProfileView
+from src.gui.views.prompts_view import PromptsView
 from src.gui.views.rejected_view import RejectedView
 from src.gui.views.replay_view import ReplayView
 from src.gui.views.risk_view import RiskView
 from src.gui.views.settings_view import SettingsView
 
 
-_VIEW_KEYS = ("live", "journal", "rejected", "cost", "risk", "replay", "profile", "settings")
+_VIEW_KEYS = ("live", "journal", "rejected", "cost", "risk", "replay", "profile", "prompts", "settings")
 
 
 class MainWindow(QMainWindow):
@@ -156,6 +157,7 @@ class MainWindow(QMainWindow):
             "risk": RiskView(self._stack, self._risk_monitor),
             "replay": ReplayView(self._stack),
             "profile": ProfileView(self._stack),
+            "prompts": PromptsView(self._stack),
             "settings": settings_view,
         }
         self._stack_widget = QStackedWidget()
