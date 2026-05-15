@@ -143,8 +143,11 @@ class MainWindow(QMainWindow):
 
         self._header = HeaderBar(self._stacks, self._stack, self._halt)
         self._header.stack_change_requested.connect(self._rebind_stack)
+        self._header.new_stack_requested.connect(self._open_new_stack_wizard)
         self._services_bar = ServicesBar(self._stack)
 
+        settings_view = SettingsView(self._stack)
+        settings_view.new_stack_requested.connect(self._open_new_stack_wizard)
         self._views: dict[str, QWidget] = {
             "live": LiveView(self._stack),
             "journal": JournalView(self._stack),
@@ -153,7 +156,7 @@ class MainWindow(QMainWindow):
             "risk": RiskView(self._stack, self._risk_monitor),
             "replay": ReplayView(self._stack),
             "profile": ProfileView(self._stack),
-            "settings": SettingsView(self._stack),
+            "settings": settings_view,
         }
         self._stack_widget = QStackedWidget()
         for key in _VIEW_KEYS:
@@ -204,6 +207,24 @@ class MainWindow(QMainWindow):
             if hasattr(view, "rebind"):
                 view.rebind(new_stack)
         self.statusBar().showMessage(self._status_text())
+
+    def _open_new_stack_wizard(self) -> None:
+        """Launch the full setup wizard with stack=None so a brand-new
+        stack can be created end-to-end (identity + AI + bot + TG +
+        services). On success, refresh the stack list and switch active
+        stack to the freshly-created one.
+        """
+        from src.gui.windows.telegram_wizard import TelegramWizard
+        wiz = TelegramWizard(None, self)
+        result = wiz.exec()
+        if not result or wiz.stack is None:
+            return
+        new_stack = wiz.stack
+        self._stacks = discover_stacks()
+        self._header.switcher.set_stacks(self._stacks, new_stack)
+        from src.gui.app import _ensure_db_ready
+        _ensure_db_ready(new_stack)
+        self._rebind_stack(new_stack)
 
     def _on_service_crashed(self, service: str, tail: list, log_path: str) -> None:
         self._crash_banner.push_alert(service, list(tail), log_path)

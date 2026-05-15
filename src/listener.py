@@ -104,6 +104,29 @@ async def _resolve_sender(source) -> str:
         return "unknown"
 
 
+async def _telegram_heartbeat_loop(client, conn) -> None:
+    """Pings Telegram via Telethon's get_me() every 30s and writes
+    settings.listener_telegram_ok_at on success. The GUI's service-bar
+    reads this timestamp to colour the Listener pill — green if the
+    timestamp is fresh, amber/red if it goes stale.
+
+    Failure modes don't crash the listener; they just stop refreshing
+    the heartbeat, which IS the signal.
+    """
+    from datetime import datetime, timezone
+    from src.db import set_setting
+    while True:
+        try:
+            await client.get_me()
+            set_setting(
+                conn, "listener_telegram_ok_at",
+                datetime.now(timezone.utc).isoformat(),
+            )
+        except Exception as e:  # noqa: BLE001
+            log.debug("listener_heartbeat: %s: %s", type(e).__name__, e)
+        await asyncio.sleep(30.0)
+
+
 async def _second_pass_catchup(
     client,
     conn: sqlite3.Connection,
@@ -335,6 +358,7 @@ async def main() -> None:
     asyncio.create_task(_second_pass_catchup(
         client, conn, ai, ai_log_path, triage,
     ))
+    asyncio.create_task(_telegram_heartbeat_loop(client, conn))
 
     # Supervisor: Telethon's connection_retries=-1 should prevent ConnectionError
     # from ever escaping, but wrap run_until_disconnected anyway so a stray

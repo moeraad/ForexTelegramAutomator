@@ -68,6 +68,51 @@ def _ensure_db_ready(stack: Stack) -> None:
     with db.connect(str(target)) as conn:
         db.init_schema(conn)
     _migrate_legacy_session_file(stack, target)
+    _migrate_legacy_channel_profile(stack)
+
+
+def _migrate_legacy_channel_profile(stack: Stack) -> Stack:
+    """Move a legacy <project>/channels/<name>.json profile into the
+    stack's APPDATA folder, then rewrite the registry entry to point at
+    the new location. No-op if the profile is already where it belongs.
+    """
+    from src.gui.services.stack_registry import _default_profile_path
+    from src.gui.services.stacks_config_io import (
+        StackEntry,
+        load_entries,
+        save_entries,
+    )
+
+    target = _default_profile_path(stack.name)
+    src_path = stack.profile_path
+    if src_path.resolve() == target.resolve():
+        return stack  # already migrated
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if src_path.exists() and not target.exists():
+            shutil.copy2(src_path, target)
+            _log.info("migrated channel profile %s -> %s", src_path, target)
+    except OSError as e:
+        _log.warning("channel profile copy failed (%s): %s", src_path, e)
+        return stack
+    # Update the registry entry so the GUI uses the new path next launch.
+    entries = load_entries()
+    changed = False
+    for e in entries:
+        if e.name == stack.name and Path(e.profile_path) == src_path:
+            e_new = StackEntry(
+                name=e.name,
+                profile_path=str(target),
+                project_path=e.project_path,
+                db_path=e.db_path,
+                service_names=list(e.service_names),
+            )
+            entries[entries.index(e)] = e_new
+            changed = True
+            break
+    if changed:
+        save_entries(entries)
+    return stack
 
 
 def _migrate_legacy_session_file(stack: Stack, db_path: Path) -> None:

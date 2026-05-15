@@ -888,12 +888,11 @@ class _StackIdentityPage(_BasePage):
 
 
 def _write_blank_channel_profile(name: str, symbol: str) -> None:
-    """Create channels/<name>.json with all expected fields blank."""
+    """Create the stack's blank profile JSON next to its DB under APPDATA."""
     import json
-    from src.config import BASE_DIR
-    channels_dir = BASE_DIR / "channels"
-    channels_dir.mkdir(parents=True, exist_ok=True)
-    profile_path = channels_dir / f"{name}.json"
+    from src.gui.services.stack_registry import _default_profile_path
+    profile_path = _default_profile_path(name)
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
     if profile_path.exists():
         return
     template = {

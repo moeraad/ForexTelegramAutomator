@@ -24,9 +24,9 @@ from src.gui.services.stack_registry import Stack
 class _Health:
     api_ok: bool
     api_caption: str
-    bot_ok: bool
+    bot_state: str       # "ok" | "warn" | "bad"
     bot_caption: str
-    listener_ok: bool
+    listener_state: str  # "ok" | "warn" | "bad"
     listener_caption: str
     ea_state: str
     ea_caption: str
@@ -80,10 +80,12 @@ class _HealthPoller(QThread):
         api_caption = f"port {stack.api_port}" if api_ok else "unreachable"
 
         _api_svc, bot_svc, listener_svc = stack.service_names
-        bot_ok = nssm_client.service_running(bot_svc)
-        bot_caption = "running" if bot_ok else "stopped"
-        listener_ok = nssm_client.service_running(listener_svc)
-        listener_caption = "running" if listener_ok else "stopped"
+        bot_state, bot_caption = self._service_health(
+            stack, bot_svc, "bot_telegram_ok_at",
+        )
+        listener_state, listener_caption = self._service_health(
+            stack, listener_svc, "listener_telegram_ok_at",
+        )
 
         ea_state, ea_caption = self._market_age_state(
             stack, "market_XAUUSD_at", warn_sec=30, bad_sec=60
@@ -95,15 +97,42 @@ class _HealthPoller(QThread):
         return _Health(
             api_ok=api_ok,
             api_caption=api_caption,
-            bot_ok=bot_ok,
+            bot_state=bot_state,
             bot_caption=bot_caption,
-            listener_ok=listener_ok,
+            listener_state=listener_state,
             listener_caption=listener_caption,
             ea_state=ea_state,
             ea_caption=ea_caption,
             snapshot_state=snap_state,
             snapshot_caption=snap_caption,
         )
+
+    def _service_health(
+        self, stack: Stack, svc_name: str, heartbeat_key: str,
+    ) -> tuple[str, str]:
+        """Combine 'Windows service running' + 'Telegram heartbeat fresh'.
+
+        Service stopped       -> bad / "stopped"
+        Service running + fresh heartbeat (<=60s)  -> ok / "<age>"
+        Service running + stale heartbeat (<=300s) -> warn / "stale <age>"
+        Service running + dead heartbeat (>300s)   -> bad / "no telegram"
+        Service running + no heartbeat key at all  -> warn / "starting…"
+        """
+        if not nssm_client.service_running(svc_name):
+            return "bad", "stopped"
+        hb_state, hb_caption = self._market_age_state(
+            stack, heartbeat_key, warn_sec=60, bad_sec=300
+        )
+        # Translate the heartbeat sub-states into messages that read
+        # right next to a running service.
+        if hb_state == "ok":
+            return "ok", hb_caption
+        if hb_state == "warn":
+            return "warn", f"stale {hb_caption}"
+        # bad — either no heartbeat ever, or it's gone cold.
+        if hb_caption in ("no data", "no db", "db error", "bad ts"):
+            return "warn", "starting…"
+        return "bad", f"no telegram ({hb_caption})"
 
     def _market_age_state(
         self, stack: Stack, key: str, warn_sec: int, bad_sec: int
@@ -208,10 +237,8 @@ class ServicesBar(QWidget):
 
     def _on_health(self, h: _Health) -> None:
         self._api.set_state("ok" if h.api_ok else "bad", h.api_caption)
-        self._bot.set_state("ok" if h.bot_ok else "bad", h.bot_caption)
-        self._listener.set_state(
-            "ok" if h.listener_ok else "bad", h.listener_caption
-        )
+        self._bot.set_state(h.bot_state, h.bot_caption)
+        self._listener.set_state(h.listener_state, h.listener_caption)
         self._ea.set_state(h.ea_state, h.ea_caption)
         self._snapshot.set_state(h.snapshot_state, h.snapshot_caption)
 

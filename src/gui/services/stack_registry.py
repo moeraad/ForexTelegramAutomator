@@ -63,6 +63,12 @@ def _default_db_path(stack_name: str) -> Path:
     return Path(appdata) / "CopyTrades" / stack_name / "copytrades.db"
 
 
+def _default_profile_path(stack_name: str) -> Path:
+    """Channel profile lives next to the stack's DB under APPDATA."""
+    appdata = os.environ.get("APPDATA") or str(Path.home())
+    return Path(appdata) / "CopyTrades" / stack_name / "profile.json"
+
+
 def _stacks_config_path() -> Path:
     appdata = os.environ.get("APPDATA", str(Path.home()))
     return Path(appdata) / "CopyTrades" / "stacks_config.json"
@@ -164,6 +170,12 @@ def available_profiles() -> list[str]:
 
 
 def build_stack_for_new_entry(name: str, profile_name: str) -> Stack:
-    """Construct a Stack object for a freshly-added stacks_config entry."""
-    profile_path = BASE_DIR / "channels" / f"{profile_name}.json"
+    """Construct a Stack object for a freshly-added stacks_config entry.
+
+    The profile JSON lives next to the stack's DB under APPDATA so all
+    per-stack files share one folder. The ``profile_name`` arg is the
+    profile identifier kept for parity with older callers; new stacks
+    just use the stack name.
+    """
+    profile_path = _default_profile_path(name)
     return _build_stack(name, profile_path, BASE_DIR, None)

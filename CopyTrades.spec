@@ -7,7 +7,8 @@ from pathlib import Path
 ROOT = Path(SPECPATH)
 
 datas = [
-    (str(ROOT / "channels"), "channels"),
+    # channel profiles now live under %APPDATA%/CopyTrades/<stack>/profile.json
+    # — no need to bundle them with the .exe.
     (str(ROOT / "src/gui/styles.qss"), "src/gui"),
     (str(ROOT / "src/schema.sql"), "src"),
     (str(ROOT / "copytrades.ico"), "."),

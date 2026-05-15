@@ -35,7 +35,7 @@ from src.llm_provider import (
 TriageDecision = Literal["ignore", "keep"]
 
 
-_PROFILE_DIR = Path(__file__).resolve().parent.parent / "channels"
+_LEGACY_PROFILE_DIR = Path(__file__).resolve().parent.parent / "channels"
 
 
 def _load_profile(name: str | None = None) -> dict:
@@ -45,11 +45,13 @@ def _load_profile(name: str | None = None) -> dict:
             "No channel profile configured. Set channel_profile in the stack's "
             "DB settings (the setup wizard does this automatically)."
         )
-    p = _PROFILE_DIR / f"{target}.json"
+    appdata_path = Path(config.DB_PATH).parent / "profile.json"
+    legacy_path = _LEGACY_PROFILE_DIR / f"{target}.json"
+    p = appdata_path if appdata_path.exists() else legacy_path
     if not p.exists():
         raise FileNotFoundError(
-            f"Channel profile not found: {p}. Create channels/{target}.json "
-            f"or set CHANNEL_PROFILE."
+            f"Channel profile not found: {appdata_path}. Run the setup "
+            f"wizard or create the file manually."
         )
     return json.loads(p.read_text(encoding="utf-8"))
 

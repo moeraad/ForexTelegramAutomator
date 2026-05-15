@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -42,6 +42,8 @@ from src.gui.windows.telegram_wizard import TelegramWizard
 
 
 class SettingsView(QWidget):
+    new_stack_requested = Signal()
+
     def __init__(self, stack: Stack) -> None:
         super().__init__()
         self._stack = stack
@@ -59,8 +61,13 @@ class SettingsView(QWidget):
         title_row.addWidget(self._status_label)
         title_row.addStretch()
         self._wizard_btn = QPushButton("Setup wizard")
+        self._wizard_btn.setToolTip("Re-configure the active stack (AI keys, bot token, channel, services).")
         self._wizard_btn.clicked.connect(self._open_telegram_wizard)
         title_row.addWidget(self._wizard_btn)
+        self._new_stack_btn = QPushButton("+ New stack")
+        self._new_stack_btn.setToolTip("Create a new stack from scratch (full setup wizard).")
+        self._new_stack_btn.clicked.connect(self._open_new_stack_wizard)
+        title_row.addWidget(self._new_stack_btn)
         self._start_btn = QPushButton("Start services")
         self._start_btn.clicked.connect(self._on_start_services)
         title_row.addWidget(self._start_btn)
@@ -95,6 +102,12 @@ class SettingsView(QWidget):
         TelegramWizard(self._stack, self).exec()
         self._tuning_tab.rebind(self._stack)
         self._refresh_status()
+
+    def _open_new_stack_wizard(self) -> None:
+        # Defer to MainWindow — it owns the stack list, services bar,
+        # crash watcher, and all views that need to rebind to the new
+        # stack after the wizard finishes.
+        self.new_stack_requested.emit()
 
     def _refresh_status(self) -> None:
         missing = db_settings.missing_critical_keys(self._stack.db_path)

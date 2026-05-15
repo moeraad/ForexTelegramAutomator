@@ -334,6 +334,33 @@ async def claim_sweeper_loop(app: Application):
         await asyncio.sleep(15.0)
 
 
+async def telegram_heartbeat_loop(app: Application):
+    """Probes Telegram every 30s via bot.get_me() and writes
+    settings.bot_telegram_ok_at on success. The GUI's service-bar reads
+    this timestamp to colour the Bot pill — green = recent success,
+    amber = stale, red = failing or missing.
+
+    Failure modes (all surface to the pill, none crash the bot):
+      - DNS broken -> NetworkError -> heartbeat not updated -> pill goes amber/red
+      - Telegram backend slow -> same
+      - Bot token revoked -> Unauthorized -> heartbeat not updated -> red
+    """
+    from datetime import datetime, timezone
+    from src.db import set_setting
+    conn: sqlite3.Connection = app.bot_data["conn"]
+    while True:
+        try:
+            await app.bot.get_me()
+            set_setting(
+                conn, "bot_telegram_ok_at",
+                datetime.now(timezone.utc).isoformat(),
+            )
+        except Exception as e:  # noqa: BLE001
+            # Don't update the timestamp — staleness IS the signal.
+            log.debug("telegram_heartbeat: %s: %s", type(e).__name__, e)
+        await asyncio.sleep(30.0)
+
+
 async def macro_feed_loop(app: Application):
     """Periodically fetch the macro snapshot (DXY/10Y/VIX/JPY/oil) and
     persist it under settings.macro_snapshot for the directional-bias
@@ -413,6 +440,7 @@ async def post_init(app: Application):
     _supervise(asyncio.create_task(promotion_loop(app)), "promotion_loop")
     _supervise(asyncio.create_task(claim_sweeper_loop(app)), "claim_sweeper_loop")
     _supervise(asyncio.create_task(macro_feed_loop(app)), "macro_feed_loop")
+    _supervise(asyncio.create_task(telegram_heartbeat_loop(app)), "telegram_heartbeat_loop")
 
 
 def main() -> None:

@@ -22,23 +22,35 @@ from src.validators import AIResponse, parse_ai_response
 #   2. A CHANNEL PROFILE JSON at channels/<CHANNEL_PROFILE>.json that
 #      supplies the channel-specific bits (header, vocabulary table,
 #      worked examples, commentary filter, price-range hint, etc.).
-# Profile is selected via the CHANNEL_PROFILE env var; default is the
-# Arabic FX Engineer channel for backward compatibility.
-_PROFILE_DIR = Path(__file__).resolve().parent.parent / "channels"
+# Per-stack channel profile lives next to the stack's DB:
+#   <APPDATA>/CopyTrades/<stack>/profile.json
+# Legacy location, still read as fallback:
+#   <project>/channels/<name>.json
+_LEGACY_PROFILE_DIR = Path(__file__).resolve().parent.parent / "channels"
 
 
-def _load_profile(name: str | None = None) -> dict:
+def _resolve_profile_path(name: str | None = None) -> Path:
     target = name or config.CHANNEL_PROFILE
     if not target:
         raise RuntimeError(
             "No channel profile configured. Set channel_profile in the stack's "
             "DB settings (the setup wizard does this automatically)."
         )
-    p = _PROFILE_DIR / f"{target}.json"
+    appdata_path = Path(config.DB_PATH).parent / "profile.json"
+    if appdata_path.exists():
+        return appdata_path
+    legacy_path = _LEGACY_PROFILE_DIR / f"{target}.json"
+    if legacy_path.exists():
+        return legacy_path
+    return appdata_path  # nothing yet; surface the canonical path in errors
+
+
+def _load_profile(name: str | None = None) -> dict:
+    p = _resolve_profile_path(name)
     if not p.exists():
         raise FileNotFoundError(
-            f"Channel profile not found: {p}. Create channels/{target}.json "
-            f"or set CHANNEL_PROFILE to an existing profile."
+            f"Channel profile not found: {p}. Run the setup wizard or "
+            f"create the file manually."
         )
     return json.loads(p.read_text(encoding="utf-8"))
 

@@ -24,6 +24,7 @@ _RUN_STYLE = (
 class HeaderBar(QWidget):
     halt_toggled = Signal(bool)
     stack_change_requested = Signal(object)
+    new_stack_requested = Signal()
 
     def __init__(
         self,
@@ -40,6 +41,7 @@ class HeaderBar(QWidget):
 
         self.switcher = ChannelSwitcher(stacks, current)
         self.switcher.stack_change_requested.connect(self.stack_change_requested.emit)
+        self.switcher.new_stack_requested.connect(self.new_stack_requested.emit)
         layout.addWidget(self.switcher)
 
         self.summary = QLabel("Today  +$0.00  ·  Signals 0  ·  Wins 0/0")

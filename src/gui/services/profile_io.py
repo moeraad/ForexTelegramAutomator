@@ -45,7 +45,21 @@ _FIELD_ORDER = (
 
 
 def profile_path(stack_name: str) -> Path:
-    return BASE_DIR / "channels" / f"{stack_name}.json"
+    """Resolve a stack's profile JSON path.
+
+    Default location: %APPDATA%/CopyTrades/<stack>/profile.json.
+    Falls back to the legacy <project>/channels/<stack>.json if it
+    exists there but not under APPDATA — keeps already-running setups
+    working until the one-shot migration moves them.
+    """
+    from src.gui.services.stack_registry import _default_profile_path
+    appdata_path = _default_profile_path(stack_name)
+    legacy_path = BASE_DIR / "channels" / f"{stack_name}.json"
+    if appdata_path.exists():
+        return appdata_path
+    if legacy_path.exists():
+        return legacy_path
+    return appdata_path  # nothing exists yet; new writes go to APPDATA
 
 
 def load_profile(stack_name: str) -> OrderedDict:
