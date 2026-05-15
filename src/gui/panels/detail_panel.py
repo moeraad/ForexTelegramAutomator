@@ -212,14 +212,18 @@ class DetailPanel(QWidget):
         sl = p.get("sl")
         tps = p.get("tps") or []
         pending = bool(p.get("pending"))
-        zone = (
-            f"{entry_low}" if entry_low == entry_high
-            else f"{entry_low} – {entry_high}"
-        )
-        self._add_kv("side", f"{side}  {'(PENDING LIMIT)' if pending else '(MARKET)'}")
-        self._add_kv("entry", str(zone))
-        self._add_kv("sl", str(sl))
-        self._add_kv("tps", ", ".join(str(t) for t in tps) or "—")
+        is_naked = entry_low is None and sl is None and not tps
+        if is_naked:
+            self._add_kv("side", f"{side}  (NAKED — awaiting ATTACH_SIGNAL)")
+        else:
+            zone = (
+                f"{entry_low}" if entry_low == entry_high
+                else f"{entry_low} – {entry_high}"
+            )
+            self._add_kv("side", f"{side}  {'(PENDING LIMIT)' if pending else '(MARKET)'}")
+            self._add_kv("entry", str(zone))
+            self._add_kv("sl", str(sl))
+            self._add_kv("tps", ", ".join(str(t) for t in tps) or "—")
         if p.get("comment"):
             self._add_kv("comment", str(p["comment"]))
 

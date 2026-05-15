@@ -187,10 +187,11 @@ class TriggersView(QWidget):
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
         self._table.itemChanged.connect(self._on_cell_edited)
-        h = self._table.horizontalHeader()
-        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        from src.gui.panels._table_utils import apply_full_width_headers
+        # Cols: Phrase | Sample message | Note  →  Sample stretches.
+        apply_full_width_headers(
+            self._table, content_columns=(0, 2), stretch_column=1,
+        )
         self._table.setColumnWidth(0, 240)
         self._table.setColumnWidth(2, 160)
         right_layout.addWidget(self._table, 1)

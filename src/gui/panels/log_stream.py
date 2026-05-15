@@ -22,11 +22,15 @@ from src.gui.services.log_tailer import LogTailer
 from src.gui.services.stack_registry import Stack
 
 
-_SOURCES: list[tuple[str, str]] = [
-    ("api", "api.log"),
-    ("bot", "bot.log"),
-    ("listener", "listener.log"),
-    ("api_http", "api_http.log"),
+_SOURCES: list[tuple[str, str, str]] = [
+    # (key, filename, "stack_logs" | "project_logs")
+    # stack_logs  -> %APPDATA%/CopyTrades/<stack>/logs/<file>
+    # project_logs -> <repo>/logs/<file>   (NSSM-captured stderr)
+    ("system", "system.log", "stack_logs"),
+    ("trades", "trades.log", "stack_logs"),
+    ("nssm-api", "nssm-api.err.log", "project_logs"),
+    ("nssm-bot", "nssm-bot.err.log", "project_logs"),
+    ("nssm-listener", "nssm-listener.err.log", "project_logs"),
 ]
 
 _LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
@@ -88,7 +92,7 @@ class LogStream(QWidget):
         header.addWidget(QLabel("LOG STREAM"))
 
         self._radio_group = QButtonGroup(self)
-        for key, _filename in _SOURCES:
+        for key, _filename, _where in _SOURCES:
             rb = QRadioButton(key)
             rb.setProperty("source_key", key)
             self._radio_group.addButton(rb)
@@ -172,12 +176,16 @@ class LogStream(QWidget):
             self._tailer.stop()
             self._tailer.deleteLater()
 
-        filename = next((f for k, f in _SOURCES if k == key), None)
-        if filename is None:
+        entry = next(((f, where) for k, f, where in _SOURCES if k == key), None)
+        if entry is None:
             return
+        filename, where = entry
         self._active_source = key
         self._reset_view()
-        path = self._stack.project_path / "logs" / filename
+        if where == "stack_logs":
+            path = self._stack.db_path.parent / "logs" / filename
+        else:
+            path = self._stack.project_path / "logs" / filename
         self._tailer = LogTailer(path, parent=self)
         self._tailer.line.connect(self._on_line)
         self._tailer.rotated.connect(self._on_rotated)

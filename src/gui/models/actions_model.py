@@ -55,12 +55,17 @@ class ActionRow:
 
     @property
     def is_open(self) -> bool:
-        return self.action_type == "OPEN"
+        # Both OPEN (structured) and OPEN_INSTANT (bare directional) carry a
+        # side and get the evaluator scored against them, so both qualify
+        # for the "signal-quality" rendering path.
+        return self.action_type in ("OPEN", "OPEN_INSTANT")
 
     @property
     def type_display(self) -> str:
-        if self.is_open and self.side:
+        if self.action_type == "OPEN" and self.side:
             return f"OPEN  {self.side.lower()}"
+        if self.action_type == "OPEN_INSTANT" and self.side:
+            return f"OPEN_INSTANT  {self.side.lower()}"
         if self.action_type == "ALERT":
             lvl = self.payload.get("level", "info") if self.payload else "info"
             return f"ALERT  {lvl}"

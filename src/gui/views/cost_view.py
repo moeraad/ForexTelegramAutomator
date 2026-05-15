@@ -272,7 +272,11 @@ class CostView(QWidget):
         self._top_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._top_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._top_table.verticalHeader().setVisible(False)
-        self._top_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        from src.gui.panels._table_utils import apply_full_width_headers
+        apply_full_width_headers(
+            self._top_table,
+            content_columns=tuple(range(self._top_model.columnCount() - 1)),
+        )
         self._top_table.setAlternatingRowColors(True)
         self._top_table.setShowGrid(False)
         self._top_table.setFixedHeight(260)

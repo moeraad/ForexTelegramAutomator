@@ -60,6 +60,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "classifier_anthropic_model": "claude-haiku-4-5-20251001",
     "classifier_openai_model": "gpt-5-nano",
     "cost_daily_budget_usd": "5.00",
+    "classifier_custom_prompt": "",
 }
 
 
@@ -72,10 +73,15 @@ def _open(db_path: Path) -> sqlite3.Connection:
 def _read_raw(db_path: Path, key: str) -> str | None:
     if not db_path.exists():
         return None
-    with _open(db_path) as conn:
-        row = conn.execute(
-            "SELECT value FROM settings WHERE key=?", (key,)
-        ).fetchone()
+    try:
+        with _open(db_path) as conn:
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key=?", (key,)
+            ).fetchone()
+    except sqlite3.OperationalError:
+        # DB file exists but the settings table hasn't been created yet
+        # (orphan empty DB from a prior run, or pre-migration state).
+        return None
     return row[0] if row else None
 
 

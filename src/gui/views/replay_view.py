@@ -312,7 +312,11 @@ class ReplayView(QWidget):
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        from src.gui.panels._table_utils import apply_full_width_headers
+        apply_full_width_headers(
+            self._table,
+            content_columns=tuple(range(self._model.columnCount() - 1)),
+        )
         self._table.setAlternatingRowColors(True)
         self._table.setShowGrid(False)
         self._table.doubleClicked.connect(self._on_double_clicked)

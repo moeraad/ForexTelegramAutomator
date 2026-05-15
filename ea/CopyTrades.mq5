@@ -72,6 +72,14 @@ input int    LogPanelPollSec         = 3;
 // disable. Heartbeat is unconditional (runs even when kill switch is on).
 input int    MarketPriceHeartbeatSec = 15;
 input bool   EnableMarketSnapshot    = true;
+// Break-even calculation: when the EA moves SL to "BE" (either via the
+// AI's MOVE_SL_BE action OR via the automated TP1-hit stage-0 move), it
+// targets a price that nets ZERO PnL after broker costs. The cost
+// offset is computed from POSITION_COMMISSION, POSITION_SWAP, and the
+// symbol's tick value/size. CommissionMultiplier accounts for brokers
+// that charge commission per-side: 2.0 means the open-side commission
+// is paid again at close. Set to 1.0 for round-turn-upfront brokers.
+input double CommissionMultiplier    = 2.0;
 // Gate the AI's reactive "احجز نصف أرباحك واحفظ دخولك" flow: when false,
 // both DoMoveSlBe and DoClosePartial silently no-op the incoming action
 // (status=executed, ea_response="noop_partial_and_be_disabled") so they
@@ -1710,6 +1718,66 @@ double SignalAnchorSl(const TradePlan &p, double currentExit) {
    return anchor;
 }
 
+//-----------------------------------------------------------------------
+// TrueBreakEvenSl
+// Compute the SL price at which the position nets exactly $0 after broker
+// costs (commission round-turn + accrued swap). For BUY this is ABOVE
+// entry; for SELL this is BELOW entry. Falls back to the position's
+// entry price when costs are unknown, when the symbol metadata is bad,
+// or when current price hasn't moved enough to put BE on the valid SL
+// side (so caller can still attempt PositionModify without rejection).
+//-----------------------------------------------------------------------
+// PositionCommissionAccrued
+// Returns the sum of commission across every deal that belongs to this
+// position. Replaces the deprecated POSITION_COMMISSION property —
+// commission is now a per-DEAL field because netting/hedging accounts
+// can have multiple fills per position.
+double PositionCommissionAccrued(ulong position_id) {
+   if(!HistorySelectByPosition((long)position_id)) return 0.0;
+   double total = 0.0;
+   int deals = HistoryDealsTotal();
+   for(int i = 0; i < deals; i++) {
+      ulong deal_ticket = HistoryDealGetTicket(i);
+      if(deal_ticket == 0) continue;
+      total += HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION);
+   }
+   return total;
+}
+
+double TrueBreakEvenSl(ulong ticket) {
+   if(!PositionSelectByTicket(ticket)) return 0.0;
+   string sym = PositionGetString(POSITION_SYMBOL);
+   double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+   double vol   = PositionGetDouble(POSITION_VOLUME);
+   ulong  pid   = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+   double comm  = PositionCommissionAccrued(pid);
+   double swap  = PositionGetDouble(POSITION_SWAP);
+   double tv    = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
+   double ts    = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
+   int    digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+
+   if(vol <= 0.0 || tv <= 0.0 || ts <= 0.0) {
+      return NormalizeDouble(entry, digits);
+   }
+
+   double total_cost = MathAbs(comm) * CommissionMultiplier + MathAbs(swap);
+   double offset     = total_cost * ts / (tv * vol);
+
+   bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+   double be  = isBuy ? entry + offset : entry - offset;
+
+   // Validity guard: BE must be on the correct side of the current
+   // close-side price (BID for BUY, ASK for SELL). If price hasn't moved
+   // enough yet, fall back to entry — at least SL = entry covers move
+   // risk even if commission/swap will be eaten as a small net loss.
+   double bid = SymbolInfoDouble(sym, SYMBOL_BID);
+   double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
+   if(isBuy  && be >= bid) be = entry;
+   if(!isBuy && be <= ask) be = entry;
+
+   return NormalizeDouble(be, digits);
+}
+
 void ManagePlans() {
    if(ArraySize(g_plans) == 0) return;
    double minLot = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_MIN);
@@ -1813,14 +1881,17 @@ void ManagePlans() {
             }
          }
 
-         // Stage-0 SL move (revised 2026-05-09):
-         //   Both 2-TP and 3-TP push SL to SignalAnchorSl (the entry-zone
-         //   edge behind the chase, NOT the chased fill).
+         // Stage-0 SL move (revised 2026-05-15):
+         //   Both 2-TP and 3-TP push SL to TrueBreakEvenSl — the price
+         //   where the remaining lots net $0 after commission round-trip
+         //   + accrued swap. Falls back to entry when costs unknown or
+         //   when price hasn't moved enough yet (price-side guard).
          //   2-TP additionally drops the broker TP (was TP2) to 0 so the
          //   remaining 30% can ride the trail past TP2 if the move extends.
          //   3-TP keeps the broker TP at TP3 as a worst-case ceiling
          //   through stage 1; it is removed at the stage-1→2 transition.
-         double newSl = SignalAnchorSl(p, exitPrice);
+         double newSl = TrueBreakEvenSl(p.ticket);
+         if(newSl <= 0.0) newSl = SignalAnchorSl(p, exitPrice);  // hard fallback
          // 2-TP stage-0 broker TP removal is gated by FinalStageMode:
          //   FINAL_TRAIL  → remove TP (0.0) so trail can capture extensions
          //   FINAL_KEEP_TP → leave broker TP at signal final (rides to market hit)
@@ -2199,19 +2270,13 @@ void DoMoveSlBe(long id, string payload) {
    if(!PositionSelectByTicket(ticket)) { PostResult(id, "failed", ticket, "no_position"); return; }
    double entry = PositionGetDouble(POSITION_PRICE_OPEN);
    double curTp = PositionGetDouble(POSITION_TP);
-   // Anchor SL on the signal-zone edge (entry_low for BUY / entry_high for
-   // SELL) — same as the staged ManagePlans pipeline. Falls back to the
-   // chased fill `entry` when no plan is registered (1-TP signals, legacy
-   // in-flight) or when SignalAnchorSl's safety net trips (anchor looser
-   // than slOrig, or wrong side of price).
-   double beSl = entry;
-   int planIdxBe = FindPlanIdx(ticket);
-   if(planIdxBe >= 0) {
-      double curExit = g_plans[planIdxBe].isBuy
-                       ? SymbolInfoDouble(Symbol_Override, SYMBOL_BID)
-                       : SymbolInfoDouble(Symbol_Override, SYMBOL_ASK);
-      beSl = SignalAnchorSl(g_plans[planIdxBe], curExit);
-   }
+   // True break-even: SL price where the open position nets $0 after
+   // broker costs (commission × CommissionMultiplier + abs(swap)).
+   // For BUY this is ABOVE entry; for SELL this is BELOW. Falls back
+   // to entry when costs unknown or when current price hasn't moved
+   // enough yet (TrueBreakEvenSl internal guard).
+   double beSl = TrueBreakEvenSl(ticket);
+   if(beSl <= 0.0) beSl = entry;  // hard fallback (ticket vanished mid-call)
    // Broker minDist clamp (BE often lands close to current price by design;
    // some brokers reject SL inside SYMBOL_TRADE_STOPS_LEVEL).
    bool isBuyBe = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
@@ -3076,7 +3141,15 @@ void DoAttachSignal(long id, string payload) {
 
    long ticket = FindSingletonNakedTicket();
    if(ticket <= 0) {
-      PostResult(id, "rejected", 0, "no_naked_position");
+      // No naked position to upgrade. Operator policy (2026-05-15):
+      // treat this as a fresh OPEN — the channel may have skipped or
+      // missed the bare directional that normally precedes ATTACH_SIGNAL.
+      // DoOpen reads the same payload fields (side, entry_low/high, sl,
+      // tps), so forwarding is a clean one-shot. The action_type stays
+      // ATTACH_SIGNAL in the DB; only the EA branch differs.
+      Print("CT ATTACH_SIGNAL id=", id,
+            " no_naked_position -> forwarding to DoOpen");
+      DoOpen(id, payload);
       return;
    }
    int idx = FindNakedIdx(ticket);

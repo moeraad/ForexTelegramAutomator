@@ -75,7 +75,7 @@ RULES:
   fragment like "BUY @ 1234 SL 1200 TP 1300".
 - Use IGNORE liberally for commentary. Better to drop than to misclassify.
 - Use UNKNOWN only when the message is too garbled or off-topic to map.
-
+${custom_rules_block}
 MESSAGE:
 ${message}
 """)
@@ -87,6 +87,17 @@ class Classification:
     phrase: str
     reasoning: str
     confidence: float
+
+
+def _custom_rules_block() -> str:
+    """Return the ``${custom_rules_block}`` substitution: either an empty
+    string (no custom rules set) or a CUSTOM CHANNEL RULES section the
+    classifier will treat as part of the prompt.
+    """
+    raw = (config.CLASSIFIER_CUSTOM_PROMPT or "").strip()
+    if not raw:
+        return ""
+    return "\n\nCUSTOM CHANNEL RULES (operator-supplied, follow these):\n" + raw + "\n"
 
 
 def build_discovery_provider() -> LLMProvider:
@@ -123,7 +134,7 @@ RULES:
 - The array must have EXACTLY ${count} items, even if some are IGNORE or UNKNOWN.
 - "phrase" must be a substring of the input message, the shortest piece that conveys intent.
 - Use IGNORE liberally for commentary; UNKNOWN only when too garbled to classify.
-
+${custom_rules_block}
 MESSAGES:
 ${messages}
 """)
@@ -140,7 +151,11 @@ def classify_batch(messages: list[str], provider: LLMProvider) -> list[Classific
     numbered = "\n\n".join(
         f"{i + 1}. {m.strip()}" for i, m in enumerate(messages)
     )
-    prompt = _BATCH_TEMPLATE.substitute(count=len(messages), messages=numbered)
+    prompt = _BATCH_TEMPLATE.substitute(
+        count=len(messages),
+        messages=numbered,
+        custom_rules_block=_custom_rules_block(),
+    )
     try:
         result = provider.triage(
             system_prompt="Reply with strict JSON only. No code fences.",
@@ -180,7 +195,10 @@ def classify_batch(messages: list[str], provider: LLMProvider) -> list[Classific
 
 def classify(message: str, provider: LLMProvider) -> Classification:
     """Run the discovery prompt on one message; return the parsed bucket."""
-    prompt = _TEMPLATE.substitute(message=message.strip())
+    prompt = _TEMPLATE.substitute(
+        message=message.strip(),
+        custom_rules_block=_custom_rules_block(),
+    )
     result = provider.triage(
         system_prompt="Reply with strict JSON only. No code fences.",
         user_content=prompt,

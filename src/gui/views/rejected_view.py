@@ -368,7 +368,11 @@ class RejectedView(QWidget):
         self._reasons_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._reasons_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._reasons_table.verticalHeader().setVisible(False)
-        self._reasons_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        from src.gui.panels._table_utils import apply_full_width_headers
+        apply_full_width_headers(
+            self._reasons_table,
+            content_columns=tuple(range(self._reasons_model.columnCount() - 1)),
+        )
         self._reasons_table.setAlternatingRowColors(True)
         self._reasons_table.setShowGrid(False)
         self._reasons_table.setMinimumWidth(360)
@@ -386,8 +390,10 @@ class RejectedView(QWidget):
         self._list_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._list_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._list_table.verticalHeader().setVisible(False)
-        self._list_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self._list_table.horizontalHeader().setStretchLastSection(False)
+        apply_full_width_headers(
+            self._list_table,
+            content_columns=tuple(range(self._list_model.columnCount() - 1)),
+        )
         self._list_table.setAlternatingRowColors(True)
         self._list_table.setShowGrid(False)
         right.addWidget(self._list_table)

@@ -115,12 +115,66 @@ class _IntroPage(QWizardPage):
         self._settings_note.setWordWrap(True)
         self._settings_note.setStyleSheet("color:#586e75;")
 
+        # Collapsible custom-rules editor (hidden by default).
+        self._rules_toggle = QPushButton("▸ Custom classifier rules (optional)")
+        self._rules_toggle.setFlat(True)
+        self._rules_toggle.setStyleSheet(
+            "QPushButton { text-align: left; color: #073642; padding: 4px 0; }"
+            "QPushButton:hover { color: #268bd2; }"
+        )
+        self._rules_toggle.clicked.connect(self._toggle_rules)
+        self._rules_expanded = False
+        self._rules_hint = QLabel(
+            "<span style='color:#586e75;'>Free-form guidance for the "
+            "classifier. Plain language. Edits save back to the DB so "
+            "the same rules apply to future runs.</span>"
+        )
+        self._rules_hint.setTextFormat(Qt.TextFormat.RichText)
+        self._rules_hint.setWordWrap(True)
+        self._rules_hint.hide()
+        self._rules_edit = QPlainTextEdit()
+        self._rules_edit.setPlaceholderText(
+            "e.g.\n"
+            "- Messages starting with 📅 are scheduled announcements -> IGNORE.\n"
+            "- The phrase 'احسب نفسك' is colloquial CLOSE_FULL.\n"
+            "- When BUY and SELL both appear with no zone, IGNORE."
+        )
+        self._rules_edit.setMinimumHeight(140)
+        self._rules_edit.setMaximumHeight(220)
+        self._rules_edit.hide()
+        self._rules_counter = QLabel("")
+        self._rules_counter.setStyleSheet("color: #93a1a1; font-size: 11px;")
+        self._rules_counter.hide()
+        self._rules_edit.textChanged.connect(self._refresh_rules_counter)
+
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addSpacing(8)
         layout.addWidget(self._settings_note)
         layout.addWidget(cost)
+        layout.addSpacing(8)
+        layout.addWidget(self._rules_toggle)
+        layout.addWidget(self._rules_hint)
+        layout.addWidget(self._rules_edit)
+        layout.addWidget(self._rules_counter)
         layout.addStretch()
+
+    def _toggle_rules(self) -> None:
+        self._rules_expanded = not self._rules_expanded
+        for w in (self._rules_hint, self._rules_edit, self._rules_counter):
+            w.setVisible(self._rules_expanded)
+        self._rules_toggle.setText(
+            ("▾" if self._rules_expanded else "▸")
+            + " Custom classifier rules (optional)"
+        )
+
+    def _refresh_rules_counter(self) -> None:
+        n = len(self._rules_edit.toPlainText())
+        color = "#dc322f" if n > 2000 else "#93a1a1"
+        self._rules_counter.setText(
+            f"<span style='color:{color};'>{n} chars · soft limit 2000</span>"
+        )
+        self._rules_counter.setTextFormat(Qt.TextFormat.RichText)
 
     def initializePage(self) -> None:
         wiz: "ProfileGeneratorWizard" = self.wizard()  # type: ignore[assignment]
@@ -130,6 +184,12 @@ class _IntroPage(QWizardPage):
             f"batch={bs} · concurrency={conc} "
             "(change in Settings → Tuning → CLASSIFIER)"
         )
+        from src import db_settings
+        existing = db_settings.get_str(wiz.stack.db_path, "classifier_custom_prompt", "")
+        self._rules_edit.blockSignals(True)
+        self._rules_edit.setPlainText(existing)
+        self._rules_edit.blockSignals(False)
+        self._refresh_rules_counter()
 
     def params(self) -> WizardParameters:
         wiz: "ProfileGeneratorWizard" = self.wizard()  # type: ignore[assignment]
@@ -140,6 +200,15 @@ class _IntroPage(QWizardPage):
             batch_size=bs,
             concurrency=conc,
         )
+
+    def validatePage(self) -> bool:
+        # Persist any edits to custom rules back to the DB so they take
+        # effect for this run AND survive across runs.
+        wiz: "ProfileGeneratorWizard" = self.wizard()  # type: ignore[assignment]
+        from src import db_settings
+        rules = self._rules_edit.toPlainText().strip()
+        db_settings.set_str(wiz.stack.db_path, "classifier_custom_prompt", rules)
+        return True
 
 
 def _resolve_classifier_settings(stack) -> tuple[int, int, str, str]:

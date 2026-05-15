@@ -100,17 +100,16 @@ class CrashWatcher(QThread):
                 if prev is None:
                     self._state[svc] = curr
                     continue
-                fired = False
-                # Down transition
+                # Only treat RUNNING -> NOT-RUNNING as a crash. The
+                # earlier "err-log grew" signal was too noisy because
+                # NSSM redirects every stderr write (including INFO
+                # logging lines) to the err-log, so it fired on every
+                # heartbeat. Operators can inspect logs/<svc>.err.log
+                # directly if they want runtime warnings.
                 if prev.running and not curr.running:
                     self._emit_crash(svc)
-                    fired = True
-                # Up transition (recovered)
                 elif not prev.running and curr.running:
                     self.recovered.emit(svc)
-                # Stderr grew while still running — fresh traceback
-                if not fired and curr.log_size > prev.log_size + 16:
-                    self._emit_crash(svc)
                 self._state[svc] = curr
             self._stop.wait(timeout=5.0)
 

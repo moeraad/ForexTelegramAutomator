@@ -133,9 +133,12 @@ class ActionsTable(QWidget):
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
-        self._table.horizontalHeader().setStretchLastSection(False)
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self._table.horizontalHeader().setSectionResizeMode(COL_TYPE, QHeaderView.ResizeMode.Stretch)
+        from src.gui.panels._table_utils import apply_full_width_headers
+        ncols = self._model.columnCount()
+        content_cols = tuple(c for c in range(ncols) if c != COL_TYPE)
+        apply_full_width_headers(
+            self._table, content_columns=content_cols, stretch_column=COL_TYPE,
+        )
         self._table.setAlternatingRowColors(True)
         self._table.setShowGrid(False)
         self._table.selectionModel().currentRowChanged.connect(self._on_selection)

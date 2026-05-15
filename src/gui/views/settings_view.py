@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -176,7 +177,11 @@ class _ChannelsTab(QWidget):
         self._table = QTableWidget(0, len(self.HEADERS))
         self._table.setHorizontalHeaderLabels(list(self.HEADERS))
         self._table.verticalHeader().setVisible(False)
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        from src.gui.panels._table_utils import apply_full_width_headers
+        apply_full_width_headers(
+            self._table,
+            content_columns=tuple(range(self._table.columnCount() - 1)),
+        )
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -530,6 +535,12 @@ class _TuningTab(QWidget):
             )
             row.addWidget(btn)
             return container
+        if f.kind == "text":
+            pte = QPlainTextEdit()
+            pte.setToolTip(f.tooltip)
+            pte.setMinimumHeight(160)
+            pte.setMaximumHeight(260)
+            return pte
         edit = QLineEdit()
         edit.setToolTip(f.tooltip)
         return edit
@@ -565,6 +576,9 @@ class _TuningTab(QWidget):
                     edit = w.findChild(QLineEdit, "secret_input")
                     if edit is not None:
                         edit.setText(db_settings.get_str(db_path, f.key, ""))
+                elif f.kind == "text":
+                    assert isinstance(w, QPlainTextEdit)
+                    w.setPlainText(db_settings.get_str(db_path, f.key, ""))
                 else:
                     assert isinstance(w, QLineEdit)
                     w.setText(db_settings.get_str(db_path, f.key, ""))
@@ -593,6 +607,8 @@ class _TuningTab(QWidget):
                         edit = w.findChild(QLineEdit, "secret_input")
                         if edit is not None:
                             db_settings.set_str(db_path, f.key, edit.text())
+                    elif f.kind == "text":
+                        db_settings.set_str(db_path, f.key, w.toPlainText())
                     else:
                         db_settings.set_str(db_path, f.key, w.text())
         except Exception as e:
@@ -800,6 +816,20 @@ _TUNING_SECTIONS: list[tuple[str, list[_Field]]] = [
                ),
                opts=(["gpt-5-nano", "gpt-5-mini", "gpt-5"],),
                editable=True),
+        _Field("classifier_custom_prompt", "Custom rules", "text",
+               tooltip=(
+                   "Free-form guidance spliced into the classifier prompt. "
+                   "Use this to teach the model channel-specific vocabulary, "
+                   "exceptions, and edge cases — rules, examples, hints. "
+                   "Plain language is fine. Leave blank for the default "
+                   "generic classifier. Keep under ~2000 chars; longer "
+                   "blobs hurt accuracy.\n\n"
+                   "Example:\n"
+                   "  - Messages starting with '📅' are scheduled "
+                   "announcements -> IGNORE.\n"
+                   "  - The Arabic phrase 'احسب نفسك' is colloquial "
+                   "CLOSE_FULL."
+               )),
     ]),
 ]
 
@@ -834,7 +864,11 @@ class _ServicesTab(QWidget):
         self._table = QTableWidget(0, len(self.HEADERS))
         self._table.setHorizontalHeaderLabels(list(self.HEADERS))
         self._table.verticalHeader().setVisible(False)
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        from src.gui.panels._table_utils import apply_full_width_headers
+        apply_full_width_headers(
+            self._table,
+            content_columns=tuple(range(self._table.columnCount() - 1)),
+        )
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setAlternatingRowColors(True)

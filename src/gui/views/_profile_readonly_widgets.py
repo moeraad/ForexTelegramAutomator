@@ -276,11 +276,11 @@ class ExamplesTableView(_ReadOnlyBase):
         self._table.setAlternatingRowColors(True)
         self._table.setMinimumHeight(200)
         self._table.verticalHeader().setVisible(False)
-        h = self._table.horizontalHeader()
-        h.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        h.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        from src.gui.panels._table_utils import apply_full_width_headers
+        # Cols: # | Action type | Message | Output  →  Message stretches.
+        apply_full_width_headers(
+            self._table, content_columns=(0, 1, 3), stretch_column=2,
+        )
         self._table.setColumnWidth(3, 200)
         self._frame_layout.addWidget(self._table)
 
