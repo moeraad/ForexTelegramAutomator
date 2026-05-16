@@ -47,8 +47,37 @@ class StatCard(QFrame):
         except RuntimeError:
             pass
 
+    # Glyph affixes that double-encode accent state so the card stays
+    # readable for color-blind operators and announces a meaningful
+    # accessibleDescription to screen readers (REVIEW.md §3 Accessibility).
+    _ACCENT_GLYPH = {
+        "success": "✓",
+        "warning": "!",
+        "danger":  "×",
+    }
+    _ACCENT_DESCRIPTION = {
+        "":        "",
+        "accent":  "highlighted",
+        "success": "ok",
+        "warning": "warning",
+        "danger":  "danger",
+    }
+
     def set_value(self, value: str, accent: str = "") -> None:
-        self._value.setText(value)
+        glyph = self._ACCENT_GLYPH.get(accent, "")
+        display = f"{glyph} {value}" if glyph else value
+        self._value.setText(display)
+        # Announce the underlying numeric value + a textual accent so
+        # NVDA/JAWS don't read the glyph as a literal symbol.
+        try:
+            self._value.setAccessibleName(value)
+            desc = self._ACCENT_DESCRIPTION.get(accent, "")
+            if desc:
+                self._value.setAccessibleDescription(desc)
+            else:
+                self._value.setAccessibleDescription("")
+        except Exception:
+            pass
         if accent != self._accent_key:
             self._accent_key = accent
             self._restyle()

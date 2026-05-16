@@ -137,7 +137,11 @@ class TriggersView(QWidget):
         self._dirty_label.setStyleSheet("color: #ff9800;")
         toolbar.addWidget(self._dirty_label)
         toolbar.addStretch()
-        self._save_btn = QPushButton("Save")
+        try:
+            from qfluentwidgets import PrimaryPushButton
+            self._save_btn = PrimaryPushButton("Save")
+        except Exception:
+            self._save_btn = QPushButton("Save")
         self._save_btn.clicked.connect(self._save)
         toolbar.addWidget(self._save_btn)
         self._revert_btn = QPushButton("Revert")
@@ -155,7 +159,23 @@ class TriggersView(QWidget):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(4)
-        left_layout.addWidget(QLabel("<b>Action types</b>"))
+        # Mirror the right pane's toolbar row height so the list and
+        # table start at the same Y. Without this the right pane's
+        # +Add/Delete/Move toolbar pushes the table down ~30 px and the
+        # two scrollable areas look misaligned.
+        left_toolbar = QHBoxLayout()
+        left_toolbar.addWidget(QLabel("<b>Action types</b>"))
+        left_toolbar.addStretch()
+        # Invisible spacer button — same size as the right-pane buttons
+        # so vertical alignment holds even after a theme swap changes
+        # button heights.
+        spacer_btn = QPushButton("")
+        spacer_btn.setEnabled(False)
+        spacer_btn.setFlat(True)
+        spacer_btn.setStyleSheet("QPushButton { background: transparent; border: none; }")
+        spacer_btn.setFixedSize(0, 28)
+        left_toolbar.addWidget(spacer_btn)
+        left_layout.addLayout(left_toolbar)
         self._types_list = QListWidget()
         self._types_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._types_list.currentItemChanged.connect(self._on_type_selected)

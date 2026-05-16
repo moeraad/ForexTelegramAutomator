@@ -181,10 +181,17 @@ class DetailPanel(QWidget):
             self._add(_section_title("SOURCE MESSAGE"))
             sender = msg.get("sender") or "unknown"
             self._add_kv("from", f"{sender}  ·  {msg.get('received_at', '')}")
-            self._add(_body(
+            body = _body(
                 msg.get("text") or "(empty)",
                 "background: rgba(255,152,0,0.10); padding: 8px; border-left: 3px solid #ff9800;",
-            ))
+            )
+            # The source message is Arabic (XAUUSD signals from an
+            # Arabic-language channel). Right-align + RTL layout so the
+            # operator reads it as the channel rendered it
+            # (REVIEW.md §3 RTL).
+            body.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+            body.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+            self._add(body)
 
         if action.is_open:
             self._render_open_specifics(action)

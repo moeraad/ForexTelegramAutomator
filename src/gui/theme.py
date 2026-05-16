@@ -131,6 +131,36 @@ def palette_for(name: ThemeName) -> Palette:
     return _palettes.get(name, DARK)
 
 
+def _render_chevron_png(pal: Palette) -> str:
+    """Bake the chevron SVG with the active palette's muted-text color
+    into a PNG, return its absolute path with forward slashes (QSS
+    requires that on Windows). Returns "" if anything goes wrong; the
+    QSS then falls back to its default arrow."""
+    try:
+        import os
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor, QPainter, QPixmap
+        from PySide6.QtSvg import QSvgRenderer
+        src = Path(__file__).resolve().parent / "resources" / "icons" / "chevron-down.svg"
+        if not src.exists():
+            return ""
+        cache_dir = Path(os.environ.get("APPDATA", str(Path.home()))) / "CopyTrades" / "cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        out = cache_dir / f"chevron-{pal.name}.png"
+        size = 12
+        pix = QPixmap(size, size)
+        pix.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pix)
+        QSvgRenderer(str(src)).render(painter)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        painter.fillRect(pix.rect(), QColor(pal.text_muted))
+        painter.end()
+        pix.save(str(out), "PNG")
+        return str(out).replace("\\", "/")
+    except Exception:
+        return ""
+
+
 def apply_theme(app, name: ThemeName) -> None:
     """Apply palette globally: QSS template + qfluentwidgets + signal."""
     global _current
@@ -147,6 +177,8 @@ def apply_theme(app, name: ThemeName) -> None:
         setThemeColor(QColor(pal.accent))
     except Exception:
         pass
+
+    chevron_url = _render_chevron_png(pal)
 
     qss_path = Path(__file__).resolve().parent / "styles.qss"
     if qss_path.exists():
@@ -174,6 +206,7 @@ def apply_theme(app, name: ThemeName) -> None:
             button_hover_bg=pal.button_hover_bg,
             button_hover_border=pal.button_hover_border,
             button_pressed_bg=pal.button_pressed_bg,
+            chevron_url=chevron_url,
         )
         app.setStyleSheet(rendered)
 

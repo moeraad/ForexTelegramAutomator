@@ -59,7 +59,10 @@ class CrashBanner(QWidget):
             except Exception:
                 pass
 
+        # Strip ANSI from the headline summary too so colorlog/rich
+        # decorations from the crashed service don't render as garbage.
         summary_line = (tail[-1] if tail else "(no stderr captured)")
+        summary_line = _CrashContent._ANSI_RE.sub("", summary_line)
         summary_line = summary_line[:160] + ("…" if len(summary_line) > 160 else "")
 
         # Build a small custom widget for the InfoBar to host: details
@@ -95,10 +98,21 @@ class _CrashContent(QWidget):
 
     restart_clicked = Signal()
 
+    # ANSI escape sequences (color codes from rich/colorlog) render as
+    # garbage in QPlainTextEdit. Strip them on the way in so the tail
+    # reads cleanly regardless of how the underlying service decorated
+    # its output (REVIEW.md §3 Empty/loading/error states).
+    import re as _re
+    _ANSI_RE = _re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+    @classmethod
+    def _strip_ansi(cls, lines: list[str]) -> list[str]:
+        return [cls._ANSI_RE.sub("", line) for line in lines]
+
     def __init__(self, service: str, tail: list[str], log_path: str) -> None:
         super().__init__()
         self._service = service
-        self._tail = tail
+        self._tail = self._strip_ansi(tail)
         self._log_path = log_path
         self._expanded = False
         self._build_ui()

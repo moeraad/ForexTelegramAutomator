@@ -62,6 +62,8 @@ class RiskView(QWidget):
         top = QHBoxLayout()
         title = QLabel("<span style='font-size:16px; font-weight:700;'>RISK BUDGET</span>")
         title.setTextFormat(Qt.TextFormat.RichText)
+        from src.gui.panels._a11y import mark_heading
+        mark_heading(title, "Risk budget")
         top.addWidget(title)
         hint = QLabel(
             "<span style='color:#787b86;'>auto-halts trading when any limit is breached  ·  "
@@ -148,7 +150,11 @@ class RiskView(QWidget):
         layout.addLayout(form)
 
         actions = QHBoxLayout()
-        self._save_btn = QPushButton("Save")
+        try:
+            from qfluentwidgets import PrimaryPushButton
+            self._save_btn = PrimaryPushButton("Save")
+        except Exception:
+            self._save_btn = QPushButton("Save")
         self._save_btn.clicked.connect(self._save)
         actions.addWidget(self._save_btn)
         revert_btn = QPushButton("Revert")

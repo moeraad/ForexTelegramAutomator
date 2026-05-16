@@ -65,9 +65,61 @@ class MainWindow(QMainWindow):
         register(self._crash_watcher, stop_fn=self._crash_watcher.stop)
         self._crash_watcher.start()
 
+        from PySide6.QtCore import QTimer
+        self._nav_badge_timer = QTimer(self)
+        self._nav_badge_timer.setInterval(5000)
+        self._nav_badge_timer.timeout.connect(self._refresh_nav_badges)
+        self._nav_badge_timer.start()
+        self._refresh_nav_badges()
+
         state = load_state()
         if state.last_active_view in _VIEW_KEYS:
             self._switch_view(state.last_active_view)
+
+    def _refresh_nav_badges(self) -> None:
+        """Poll the stack DB and update nav-item badges:
+          - Live      : count of actions in non-terminal status
+          - Rejected  : count of today's rejected actions
+          - Cost      : '!' when today's spend > 80% of budget, '×' if over cap
+        """
+        import sqlite3
+        from datetime import datetime, timezone
+        from pathlib import Path
+        try:
+            with sqlite3.connect(str(self._stack.db_path)) as conn:
+                today = datetime.now(timezone.utc).date().isoformat()
+                live = conn.execute(
+                    "SELECT COUNT(*) FROM actions "
+                    "WHERE status IN ('pending', 'sent', 'claimed', 'watching')"
+                ).fetchone()[0]
+                rejected_today = conn.execute(
+                    "SELECT COUNT(*) FROM actions "
+                    "WHERE status='rejected' AND created_at >= ?",
+                    (today,),
+                ).fetchone()[0]
+        except sqlite3.OperationalError:
+            live = 0
+            rejected_today = 0
+        self._nav.set_badge("live", live or None)
+        self._nav.set_badge("rejected", rejected_today or None)
+
+        # Cost badge: read ai_calls.jsonl + budget.
+        try:
+            from src import db_settings
+            from src.cost_guard import todays_cost_usd
+            log = self._stack.project_path / "logs" / "ai_calls.jsonl"
+            today_cost = todays_cost_usd(log)
+            budget = db_settings.get_float(self._stack.db_path, "cost_daily_budget_usd", 0.0)
+            badge: str | None = None
+            if budget > 0:
+                pct = today_cost / budget
+                if pct >= 1.0:
+                    badge = "×"
+                elif pct >= 0.8:
+                    badge = "!"
+            self._nav.set_badge("cost", badge)
+        except Exception:
+            pass
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         if self._tray.is_available() and not self._allow_close:
@@ -149,13 +201,24 @@ class MainWindow(QMainWindow):
 
         settings_view = SettingsView(self._stack)
         settings_view.new_stack_requested.connect(self._open_new_stack_wizard)
+        rejected_view = RejectedView(self._stack)
+        replay_view = ReplayView(self._stack)
+        # Cross-view: clicking Replay on a rejected row jumps to the
+        # Replay view with that specific message pre-loaded (REVIEW.md
+        # §4.3). Keeps the operator's flow tight when triaging spikes.
+        rejected_view.replay_message_requested.connect(
+            lambda mid: (
+                replay_view.preload_message(mid),
+                self._switch_view("replay"),
+            )
+        )
         self._views: dict[str, QWidget] = {
             "live": LiveView(self._stack),
             "journal": JournalView(self._stack),
-            "rejected": RejectedView(self._stack),
+            "rejected": rejected_view,
             "cost": CostView(self._stack),
             "risk": RiskView(self._stack, self._risk_monitor),
-            "replay": ReplayView(self._stack),
+            "replay": replay_view,
             "profile": ProfileView(self._stack),
             "prompts": PromptsView(self._stack),
             "settings": settings_view,
@@ -245,7 +308,6 @@ class MainWindow(QMainWindow):
                 "Service restart typically needs admin rights. Run as "
                 "administrator, or restart from the Services panel.",
             )
-        save_state(replace(load_state(), last_stack=new_stack.name))
 
     def _status_text(self) -> str:
         return (

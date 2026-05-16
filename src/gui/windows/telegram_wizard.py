@@ -87,6 +87,16 @@ class TelegramWizard(QWizard):
         self.setOption(QWizard.WizardOption.NoBackButtonOnStartPage, True)
         self.setOption(QWizard.WizardOption.NoDefaultButton, True)
         self.setOption(QWizard.WizardOption.HaveFinishButtonOnEarlyPages, False)
+        # Promote Next + Finish to PrimaryPushButton so the wizard's
+        # forward affordance matches every other primary save action
+        # in the app (REVIEW.md §3 Component fit). Falls back silently
+        # if qfluentwidgets isn't importable.
+        try:
+            from qfluentwidgets import PrimaryPushButton
+            self.setButton(QWizard.WizardButton.NextButton, PrimaryPushButton("Next"))
+            self.setButton(QWizard.WizardButton.FinishButton, PrimaryPushButton("Finish"))
+        except Exception:
+            pass
 
         self.stack: Stack | None = stack
         self.data = _Collected(session_name=stack.name if stack else "")
@@ -250,7 +260,8 @@ class _PhonePage(_BasePage):
         self._send_btn = QPushButton("Send code")
         self._send_btn.clicked.connect(self._on_send)
         self._busy = QLabel("")
-        self._busy.setStyleSheet("color: #787b86;")
+        # Muted-role token tracks the active palette (REVIEW.md §3 Theming).
+        self._busy.setProperty("role", "muted")
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Phone number"))
@@ -287,10 +298,18 @@ class _PhonePage(_BasePage):
 
     def _on_connected(self, authorized: bool) -> None:
         if authorized:
-            self._busy.setText("already logged in — skipping to channel picker")
+            # Foot-gun fix (REVIEW.md §4.10): previously auto-advanced to
+            # the channel picker as soon as the Telethon session reported
+            # already-authorized. That bounced the operator forward at an
+            # unpredictable moment — e.g. if they tabbed back to verify
+            # their phone — and they could miss the channel choice
+            # entirely. Now we just mark the page complete and let the
+            # operator click Next themselves.
+            self._busy.setText(
+                "already logged in - click Next to continue to channel picker"
+            )
             self._sent = True
             self.completeChanged.emit()
-            self.wiz().next()
 
     def _on_send(self) -> None:
         self.clear_error()
@@ -333,7 +352,8 @@ class _CodePage(_BasePage):
         self._submit_btn = QPushButton("Sign in")
         self._submit_btn.clicked.connect(self._on_submit)
         self._busy = QLabel("")
-        self._busy.setStyleSheet("color: #787b86;")
+        # Muted-role token tracks the active palette (REVIEW.md §3 Theming).
+        self._busy.setProperty("role", "muted")
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Code"))
@@ -930,7 +950,8 @@ class _ServicesInstallPage(_BasePage):
         self._install_btn = QPushButton("Install + start services")
         self._install_btn.clicked.connect(self._on_install)
         self._busy = QLabel("")
-        self._busy.setStyleSheet("color: #787b86;")
+        # Muted-role token tracks the active palette (REVIEW.md §3 Theming).
+        self._busy.setProperty("role", "muted")
         self._done = False
         self._mgr = None
 

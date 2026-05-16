@@ -22,6 +22,15 @@ QToolTip {
     padding: 4px 6px;
 }
 
+/* Semantic muted/dim tokens for labels that need to sit visually below
+   primary text without each call site hardcoding a hex. Apply via:
+       label.setProperty("role", "muted")     // text_muted token
+       label.setProperty("role", "dim")       // text_dim token (even lower)
+   After setProperty, call label.style().polish(label) once (or just
+   apply before the widget is first shown) so the selector picks up. */
+QLabel[role="muted"] { color: ${text_muted}; }
+QLabel[role="dim"]   { color: ${text_dim}; }
+
 QPushButton {
     background-color: ${button_bg};
     border: 1px solid ${border};
@@ -80,11 +89,9 @@ QComboBox::drop-down {
     background: transparent;
 }
 QComboBox::down-arrow {
-    width: 0;
-    height: 0;
-    border-left: 5px solid transparent;
-    border-right: 5px solid transparent;
-    border-top: 6px solid ${text_muted};
+    image: url(${chevron_url});
+    width: 12px;
+    height: 12px;
     margin-right: 6px;
 }
 QComboBox QAbstractItemView {
