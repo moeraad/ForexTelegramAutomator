@@ -19,7 +19,11 @@ COL_EXIT = 5
 COL_PNL = 6
 COL_DURATION = 7
 COL_REASON = 8
-HEADERS = ("Closed", "Ticket", "Side", "Lots", "Entry", "Exit", "PnL", "Duration", "Reason")
+# Renamed "Reason" -> "Close source" so the operator distinguishes EA-driven
+# closes (tp, sl, trail_sl), manual MT5 closes (mt5_not_found, reconciled),
+# and channel-driven closes (close_full, reinforce_replace) from the column
+# header without diving into the tooltip (REVIEW.md §4.2).
+HEADERS = ("Closed", "Ticket", "Side", "Lots", "Entry", "Exit", "PnL", "Duration", "Close source")
 
 _GREEN = QColor("#26a69a")
 _RED = QColor("#ef5350")
@@ -115,4 +119,29 @@ class JournalModel(QAbstractTableModel):
             COL_TICKET, COL_LOTS, COL_ENTRY, COL_EXIT, COL_PNL
         ):
             return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        if role == Qt.ItemDataRole.ToolTipRole and col == COL_REASON:
+            return _close_source_tooltip(row.close_reason or "")
         return None
+
+
+_CLOSE_SOURCE_TOOLTIPS = {
+    "tp": "Broker take-profit fill",
+    "sl": "Broker stop-loss hit",
+    "trail_sl": "Trailing stop fired after stage 2",
+    "manual": "Closed by operator from MT5 terminal",
+    "mt5_not_found": (
+        "Position was closed in MT5 but the API found no matching ticket "
+        "during reconciliation — typically a manual close from another "
+        "terminal or session"
+    ),
+    "close_full": "Channel instructed CLOSE_FULL; EA closed at market",
+    "close_partial": "Channel instructed CLOSE_PARTIAL; partial fill recorded",
+    "reinforce_replace": "REINFORCE: position was closed and re-opened",
+    "kill_switch": "Kill switch triggered close",
+}
+
+
+def _close_source_tooltip(reason: str) -> str:
+    if not reason:
+        return "(no close source recorded)"
+    return _CLOSE_SOURCE_TOOLTIPS.get(reason, f"Close source: {reason}")

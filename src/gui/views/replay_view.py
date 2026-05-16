@@ -239,6 +239,8 @@ class ReplayView(QWidget):
         top = QHBoxLayout()
         title = QLabel("<span style='font-size:16px; font-weight:700;'>REPLAY</span>")
         title.setTextFormat(Qt.TextFormat.RichText)
+        from src.gui.panels._a11y import mark_heading
+        mark_heading(title, "Replay")
         top.addWidget(title)
         hint = QLabel(
             "<span style='color:#787b86;'>rerun historical messages through current AI  ·  "
@@ -287,6 +289,21 @@ class ReplayView(QWidget):
         self._clear_btn = QPushButton("Clear")
         self._clear_btn.clicked.connect(self._reset)
         controls.addWidget(self._clear_btn)
+        # Save-as-fixture (REVIEW.md §4.6) — appends the selected row's
+        # (message, state, expected_action_types) to
+        # fixtures/management_messages.jsonl so the next prompt-drift
+        # safety-net replay (tests/test_management_replay.py) covers
+        # this case. Disabled until a row is selected.
+        self._save_fixture_btn = QPushButton("Save as fixture")
+        self._save_fixture_btn.setToolTip(
+            "Append the selected replay row to "
+            "fixtures/management_messages.jsonl. Captures message + "
+            "current DB state (open position / last closed / market) + "
+            "the action types the AI returned as the expected outcome."
+        )
+        self._save_fixture_btn.setEnabled(False)
+        self._save_fixture_btn.clicked.connect(self._on_save_fixture)
+        controls.addWidget(self._save_fixture_btn)
         layout.addLayout(controls)
 
         from src.gui.panels._stat_card import StatCard
@@ -316,11 +333,54 @@ class ReplayView(QWidget):
         )
         self._table.setAlternatingRowColors(True)
         self._table.setShowGrid(False)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table.doubleClicked.connect(self._on_double_clicked)
+        self._table.selectionModel().currentRowChanged.connect(
+            lambda cur, _prev: self._save_fixture_btn.setEnabled(cur.isValid())
+        )
         layout.addWidget(self._table, 1)
 
     def _on_range_changed(self, _idx: int) -> None:
         self._update_estimate()
+
+    def preload_message(self, source_msg_id: int) -> None:
+        """Cross-view entry point (REVIEW.md §4.3): RejectedView's
+        "Replay" button calls this with a specific message id so the
+        operator lands in Replay with the failing message already
+        loaded and queued as the only planned run.
+
+        Loads the message text from the DB, sets it as the single
+        planned message, and updates the estimate line so the operator
+        sees "plan: 1 message" before clicking Run.
+        """
+        import sqlite3
+        try:
+            conn = sqlite3.connect(str(self._stack.db_path))
+            conn.row_factory = sqlite3.Row
+            try:
+                row = conn.execute(
+                    "SELECT id, text, received_at, sender FROM messages WHERE id=?",
+                    (source_msg_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return
+        if row is None:
+            return
+        self._planned_messages = [
+            HistMessage(
+                id=row["id"],
+                text=row["text"] or "",
+                received_at=row["received_at"] or "",
+                sender=row["sender"] or "",
+            )
+        ]
+        self._estimate_lbl.setText(
+            f"plan: 1 message (preloaded from Rejected · id={source_msg_id})"
+            f"  ·  est cost ~$0.01"
+        )
 
     def _update_estimate(self) -> None:
         days = self._range_combo.currentData()
@@ -418,6 +478,116 @@ class ReplayView(QWidget):
         if row is None:
             return
         _DetailDialog(self, row).exec()
+
+    def _on_save_fixture(self) -> None:
+        from pathlib import Path
+        from PySide6.QtWidgets import QInputDialog
+        idx = self._table.currentIndex()
+        if not idx.isValid():
+            return
+        row = self._model.row_at(idx.row())
+        if row is None:
+            return
+        fid, ok = QInputDialog.getText(
+            self, "Fixture id",
+            "Short kebab-case id (e.g. 'reinforce-after-close'):",
+        )
+        if not ok or not fid.strip():
+            return
+        notes, ok = QInputDialog.getText(
+            self, "Notes", "One-line note explaining the case:",
+        )
+        if not ok:
+            return
+        state = self._snapshot_fixture_state()
+        fixture = {
+            "id": fid.strip(),
+            "message": row.msg.text,
+            "state": state,
+            "expected_action_types": [a.action_type for a in row.replayed],
+            "expected_category": "signal" if row.replayed else "context",
+            "notes": notes.strip(),
+        }
+        fixtures_path = (
+            Path(__file__).resolve().parents[3] / "fixtures" / "management_messages.jsonl"
+        )
+        try:
+            fixtures_path.parent.mkdir(parents=True, exist_ok=True)
+            with fixtures_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(fixture, ensure_ascii=False) + "\n")
+        except OSError as e:
+            QMessageBox.warning(self, "Save failed", f"Could not write fixture: {e}")
+            return
+        QMessageBox.information(
+            self, "Saved",
+            f"Appended fixture '{fid.strip()}' to {fixtures_path.name}. "
+            "Re-run tests/test_management_replay.py to include it.",
+        )
+
+    def _snapshot_fixture_state(self) -> dict:
+        import sqlite3
+        out: dict = {"open_position": None, "last_closed": None, "market": None}
+        try:
+            conn = sqlite3.connect(str(self._stack.db_path))
+            conn.row_factory = sqlite3.Row
+            try:
+                op = conn.execute(
+                    "SELECT side, entry_price, volume, original_volume, "
+                    "       partial_close_count, sl, tp, sl_moved_at "
+                    "FROM positions WHERE status='open' "
+                    "ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                if op is not None:
+                    out["open_position"] = {
+                        "side": op["side"],
+                        "entry_price": op["entry_price"],
+                        "volume": op["volume"],
+                        "original_volume": op["original_volume"],
+                        "partials_taken": op["partial_close_count"] or 0,
+                        "sl": op["sl"],
+                        "tp": op["tp"],
+                        "sl_at_be": (
+                            op["sl"] is not None
+                            and op["entry_price"] is not None
+                            and abs(op["sl"] - op["entry_price"]) < 0.5
+                        ),
+                        "sl_moved": op["sl_moved_at"] is not None,
+                    }
+                lc = conn.execute(
+                    "SELECT p.side, p.entry_price, p.volume, p.sl, p.tp, "
+                    "       p.closed_at, a.payload_json "
+                    "FROM positions p "
+                    "LEFT JOIN actions a ON a.id = p.action_id "
+                    "WHERE p.status='closed' "
+                    "ORDER BY p.id DESC LIMIT 1"
+                ).fetchone()
+                if lc is not None:
+                    out["last_closed"] = {
+                        "side": lc["side"],
+                        "entry_price": lc["entry_price"],
+                        "sl": lc["sl"],
+                        "tp": lc["tp"],
+                        "closed_at": lc["closed_at"],
+                    }
+                bid_row = conn.execute(
+                    "SELECT value FROM settings WHERE key='market_XAUUSD_bid'"
+                ).fetchone()
+                ask_row = conn.execute(
+                    "SELECT value FROM settings WHERE key='market_XAUUSD_ask'"
+                ).fetchone()
+                if bid_row and ask_row:
+                    try:
+                        out["market"] = {
+                            "bid": float(bid_row[0]),
+                            "ask": float(ask_row[0]),
+                        }
+                    except (TypeError, ValueError):
+                        pass
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            pass
+        return out
 
     def _replace_box(self, key: str, label: str, value: str, color: str = "#d1d4dc") -> None:
         assert self._stat_row_layout is not None

@@ -33,7 +33,7 @@ class LiveView(QWidget):
         super().closeEvent(event)
 
     def _build_ui(self) -> None:
-        self._actions_table = ActionsTable(self._subscriber)
+        self._actions_table = ActionsTable(self._subscriber, stack=self._stack)
         self._detail_panel = DetailPanel(self._subscriber, self._stack.db_path)
         self._actions_table.selection_changed.connect(self._detail_panel.set_action)
 
@@ -61,19 +61,35 @@ class LiveView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # EA heartbeat + claim staleness row (under the splitter).
+        # EA heartbeat + claim staleness — render as pill-shaped tiles
+        # so the operator's eye finds them in a fixed location even when
+        # the value is "—". Previously rendered as flat inline text which
+        # is easy to miss when not scanning (REVIEW.md §4.1).
         indicators = QWidget()
-        indicators.setFixedHeight(22)
+        indicators.setFixedHeight(28)
+        from src.gui.theme import current_palette
+        pal = current_palette()
         indicators.setStyleSheet(
-            "QLabel { color: #787b86; padding: 0 12px; font-size: 11px; }"
+            "QLabel[role='indicator-tile'] {"
+            f"  background: {pal.surface};"
+            f"  border: 1px solid {pal.border};"
+            "  border-radius: 12px;"
+            "  padding: 2px 12px;"
+            "  font-size: 11px;"
+            "  margin: 2px 4px;"
+            "}"
         )
         ind_layout = QHBoxLayout(indicators)
-        ind_layout.setContentsMargins(0, 0, 0, 0)
-        ind_layout.setSpacing(0)
+        ind_layout.setContentsMargins(8, 0, 8, 0)
+        ind_layout.setSpacing(6)
         self._ea_lbl = QLabel("EA: —")
         self._ea_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self._ea_lbl.setProperty("role", "indicator-tile")
+        self._ea_lbl.setAccessibleName("EA heartbeat age")
         self._claim_lbl = QLabel("Oldest claim: —")
         self._claim_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self._claim_lbl.setProperty("role", "indicator-tile")
+        self._claim_lbl.setAccessibleName("Oldest claim age")
         ind_layout.addWidget(self._ea_lbl)
         ind_layout.addWidget(self._claim_lbl)
         ind_layout.addStretch()
@@ -95,7 +111,7 @@ class LiveView(QWidget):
                 ).fetchone()
                 ea_iso = row[0] if row else ""
                 claim = conn.execute(
-                    "SELECT MIN(execute_after) FROM actions WHERE status='claimed'"
+                    "SELECT MIN(claimed_at) FROM actions WHERE status='claimed'"
                 ).fetchone()[0]
             finally:
                 conn.close()

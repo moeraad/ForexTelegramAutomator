@@ -164,6 +164,16 @@ class CostView(QWidget):
         self._cap_spin.blockSignals(True)
         self._cap_spin.setValue(float(cap_mult or 1.2))
         self._cap_spin.blockSignals(False)
+        # Auto-halt switch: enabled iff budget > 0 (existing cost_guard
+        # contract). Label reflects the active multiplier so the operator
+        # always sees the effective cap (REVIEW.md §4.4).
+        self._auto_halt_label.setText(
+            f"Auto-halt when spend exceeds budget × {cap_mult:.1f}"
+        )
+        if self._auto_halt_switch is not None:
+            self._auto_halt_switch.blockSignals(True)
+            self._auto_halt_switch.setChecked(budget > 0)
+            self._auto_halt_switch.blockSignals(False)
         today = datetime.now(timezone.utc).date().isoformat()
         today_cost = float(s.per_day.get(today, 0.0))
         pct = (today_cost / budget * 100) if budget > 0 else 0
@@ -199,6 +209,36 @@ class CostView(QWidget):
         db_settings.set_str(self._stack.db_path, "cost_daily_budget_usd", f"{value:.2f}")
         self.refresh()
 
+    def _on_auto_halt_toggled(self, checked: bool) -> None:
+        """SwitchButton handler — flipping OFF sets budget=0 (the existing
+        cost_guard contract for "disabled"); flipping ON restores the
+        previously-saved budget if it was zero, otherwise leaves it.
+        REVIEW.md §4.4."""
+        from src import db_settings
+        if checked:
+            current = db_settings.get_float(self._stack.db_path, "cost_daily_budget_usd", 0.0)
+            if current <= 0:
+                # Restore previous non-zero budget if we cached one, else default.
+                prev = db_settings.get_float(
+                    self._stack.db_path, "cost_daily_budget_usd_last_enabled", 5.0
+                )
+                db_settings.set_str(
+                    self._stack.db_path,
+                    "cost_daily_budget_usd",
+                    f"{max(prev, 1.0):.2f}",
+                )
+        else:
+            current = db_settings.get_float(self._stack.db_path, "cost_daily_budget_usd", 0.0)
+            if current > 0:
+                # Cache so toggling back ON restores intent.
+                db_settings.set_str(
+                    self._stack.db_path,
+                    "cost_daily_budget_usd_last_enabled",
+                    f"{current:.2f}",
+                )
+            db_settings.set_str(self._stack.db_path, "cost_daily_budget_usd", "0")
+        self.refresh()
+
     def _on_cap_changed(self) -> None:
         from src import db_settings
         value = self._cap_spin.value()
@@ -212,6 +252,8 @@ class CostView(QWidget):
 
         top = QHBoxLayout()
         title = QLabel("<span style='font-size:16px; font-weight:700;'>COST</span>")
+        from src.gui.panels._a11y import mark_heading
+        mark_heading(title, "Cost")
         title.setTextFormat(Qt.TextFormat.RichText)
         top.addWidget(title)
         hint = QLabel(
@@ -237,6 +279,26 @@ class CostView(QWidget):
         self._meta_label = QLabel()
         self._meta_label.setStyleSheet("color: #787b86; padding-bottom: 4px;")
         layout.addWidget(self._meta_label)
+
+        # Auto-halt toggle (REVIEW.md §4.4). Previously the cost cap was
+        # implicit ("set Daily budget = 0 to disable"). Surfacing an
+        # explicit on/off switch with the active multiplier inline makes
+        # the policy visible at a glance.
+        try:
+            from qfluentwidgets import SwitchButton
+            self._auto_halt_switch: SwitchButton | None = SwitchButton()
+            self._auto_halt_switch.setOnText("On")
+            self._auto_halt_switch.setOffText("Off")
+            self._auto_halt_switch.checkedChanged.connect(self._on_auto_halt_toggled)
+        except Exception:
+            self._auto_halt_switch = None
+        auto_row = QHBoxLayout()
+        self._auto_halt_label = QLabel("Auto-halt when spend exceeds budget x 1.2")
+        auto_row.addWidget(self._auto_halt_label)
+        if self._auto_halt_switch is not None:
+            auto_row.addWidget(self._auto_halt_switch)
+        auto_row.addStretch()
+        layout.addLayout(auto_row)
 
         # Daily budget controls + alert banner
         budget_row = QHBoxLayout()
@@ -286,17 +348,32 @@ class CostView(QWidget):
         self._stat_row_layout.addStretch()
         layout.addLayout(self._stat_row_layout)
 
+        # Chart and Top-10 sit side-by-side so each takes the full
+        # available height instead of fighting for it vertically
+        # (REVIEW.md follow-up). 2:1 stretch keeps the chart dominant.
         from src.gui.views._chart_theme import apply_dark_theme
+        from PySide6.QtWidgets import QSplitter
+
+        body_split = QSplitter(Qt.Orientation.Horizontal)
+        body_split.setChildrenCollapsible(False)
+
+        chart_panel = QWidget()
+        chart_panel_layout = QVBoxLayout(chart_panel)
+        chart_panel_layout.setContentsMargins(0, 0, 0, 0)
         self._chart = QChart()
         self._chart.setTitle("Estimated daily spend")
         self._chart.legend().hide()
         self._chart_view = QChartView(self._chart)
         self._chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self._chart_view.setMinimumHeight(180)
+        self._chart_view.setMinimumHeight(240)
         apply_dark_theme(self._chart, self._chart_view)
-        layout.addWidget(self._chart_view, 1)
+        chart_panel_layout.addWidget(self._chart_view, 1)
+        body_split.addWidget(chart_panel)
 
-        layout.addWidget(QLabel("Top 10 most expensive calls"))
+        right_panel = QWidget()
+        right_panel_layout = QVBoxLayout(right_panel)
+        right_panel_layout.setContentsMargins(0, 0, 0, 0)
+        right_panel_layout.addWidget(QLabel("Top 10 most expensive calls"))
         self._top_table = QTableView()
         self._top_table.setModel(self._top_model)
         self._top_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -309,8 +386,12 @@ class CostView(QWidget):
         )
         self._top_table.setAlternatingRowColors(True)
         self._top_table.setShowGrid(False)
-        self._top_table.setFixedHeight(260)
-        layout.addWidget(self._top_table)
+        right_panel_layout.addWidget(self._top_table, 1)
+        body_split.addWidget(right_panel)
+
+        body_split.setStretchFactor(0, 2)
+        body_split.setStretchFactor(1, 1)
+        layout.addWidget(body_split, 1)
 
     def _on_range_changed(self, _idx: int) -> None:
         self._days = self._range_combo.currentData()
@@ -330,7 +411,13 @@ class CostView(QWidget):
         for key, label, value, color in replacements:
             self._replace_box(key, label, value, color)
         if total_records == 0:
-            self._chart.setTitle("Estimated daily spend  ·  no AI calls in range")
+            # Empty-state copy that's specific instead of leaving the chart
+            # blank (REVIEW.md §3). Tells the operator the chart will fill
+            # in once the first signal arrives, not that something is broken.
+            self._chart.setTitle(
+                "Estimated daily spend  ·  no AI calls yet — chart will "
+                "appear after the first signal"
+            )
 
     def _replace_box(self, key: str, label: str, value: str, color: str) -> None:
         accent = _hex_to_accent(color)

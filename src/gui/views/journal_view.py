@@ -104,6 +104,8 @@ class JournalView(QWidget):
         top = QHBoxLayout()
         title = QLabel("<span style='font-size:16px; font-weight:700;'>JOURNAL</span>")
         title.setTextFormat(Qt.TextFormat.RichText)
+        from src.gui.panels._a11y import mark_heading
+        mark_heading(title, "Journal")
         top.addWidget(title)
         top.addSpacing(16)
         top.addWidget(QLabel("Range:"))
@@ -153,9 +155,43 @@ class JournalView(QWidget):
         )
         self._table.setAlternatingRowColors(True)
         self._table.setShowGrid(False)
-        layout.addWidget(self._table, 1)
 
-        charts_row = QHBoxLayout()
+        # Layout (REVIEW.md follow-up):
+        #   Top row = closed-trades table + "By close reason" side-by-side.
+        #   Bottom row = equity curve + PnL-per-day charts.
+        # This frees up vertical space for the charts (they used to share
+        # the bottom strip with the reason panel) and keeps the reason
+        # breakdown adjacent to the data it summarises.
+        from PySide6.QtWidgets import QSplitter
+
+        top_row = QSplitter(Qt.Orientation.Horizontal)
+        top_row.setChildrenCollapsible(False)
+        top_row.addWidget(self._table)
+
+        reason_panel = QWidget()
+        reason_panel_layout = QVBoxLayout(reason_panel)
+        reason_panel_layout.setContentsMargins(0, 0, 0, 0)
+        reason_panel_layout.setSpacing(6)
+        self._reason_label = QLabel("<b>By close reason</b>")
+        self._reason_label.setTextFormat(Qt.TextFormat.RichText)
+        reason_panel_layout.addWidget(self._reason_label)
+        self._reason_table = QLabel("(no closed trades in range)")
+        self._restyle_reason_table()
+        self._reason_table.setTextFormat(Qt.TextFormat.RichText)
+        self._reason_table.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._reason_table.setWordWrap(True)
+        reason_panel_layout.addWidget(self._reason_table, 1)
+        top_row.addWidget(reason_panel)
+        top_row.setStretchFactor(0, 3)
+        top_row.setStretchFactor(1, 1)
+        top_row.setSizes([900, 320])
+
+        body_split = QSplitter(Qt.Orientation.Vertical)
+        body_split.addWidget(top_row)
+
+        charts_container = QWidget()
+        charts_row = QHBoxLayout(charts_container)
+        charts_row.setContentsMargins(0, 0, 0, 0)
         charts_row.setSpacing(8)
 
         from src.gui.views._chart_theme import apply_dark_theme
@@ -164,6 +200,7 @@ class JournalView(QWidget):
         self._chart.legend().hide()
         self._chart_view = QChartView(self._chart)
         self._chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._chart_view.setMinimumHeight(220)
         apply_dark_theme(self._chart, self._chart_view)
         charts_row.addWidget(self._chart_view, 2)
 
@@ -172,19 +209,15 @@ class JournalView(QWidget):
         self._daily_chart.legend().hide()
         self._daily_view = QChartView(self._daily_chart)
         self._daily_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._daily_view.setMinimumHeight(220)
         apply_dark_theme(self._daily_chart, self._daily_view)
         charts_row.addWidget(self._daily_view, 1)
 
-        layout.addLayout(charts_row, 1)
-
-        self._reason_label = QLabel("<b>By close reason</b>")
-        self._reason_label.setTextFormat(Qt.TextFormat.RichText)
-        layout.addWidget(self._reason_label)
-        self._reason_table = QLabel("(no closed trades in range)")
-        # Card style is rebuilt on theme toggle below.
-        self._restyle_reason_table()
-        self._reason_table.setTextFormat(Qt.TextFormat.RichText)
-        layout.addWidget(self._reason_table)
+        body_split.addWidget(charts_container)
+        body_split.setStretchFactor(0, 2)
+        body_split.setStretchFactor(1, 3)
+        body_split.setCollapsible(1, False)
+        layout.addWidget(body_split, 1)
 
     def _on_range_changed(self, _idx: int) -> None:
         days = self._range_combo.currentData()

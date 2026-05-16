@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
+    QPushButton,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -19,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from src.gui.models.actions_model import ActionRow, ActionsModel, COL_TYPE
 from src.gui.services.db_subscriber import DBSubscriber
+from src.gui.services.stack_registry import Stack
 
 
 _FILTERS: list[tuple[str, str]] = [
@@ -93,12 +96,14 @@ class ActionsTable(QWidget):
         "FROM actions ORDER BY id DESC LIMIT 50"
     )
 
-    def __init__(self, subscriber: DBSubscriber) -> None:
+    def __init__(self, subscriber: DBSubscriber, stack: Stack | None = None) -> None:
         super().__init__()
         self._subscriber = subscriber
+        self._stack = stack
         self._model = ActionsModel()
         self._proxy = _ActionsProxyModel()
         self._proxy.setSourceModel(self._model)
+        self._current_action: ActionRow | None = None
         self._build_ui()
         subscriber.subscribe(self.SUBSCRIPTION_KEY, self.SQL)
         subscriber.query_changed.connect(self._on_query_changed)
@@ -125,6 +130,26 @@ class ActionsTable(QWidget):
         self._search.setMaximumWidth(220)
         self._search.textChanged.connect(self._proxy.set_search)
         header.addWidget(self._search)
+        # Per-row operator controls (REVIEW.md Q4). Promote-now flips a
+        # pending row straight to 'sent' so the EA picks it up on its
+        # next poll instead of waiting for the configured grace delay.
+        # Cancel marks a pending row 'cancelled'. Both are disabled
+        # until a 'pending' row is selected.
+        self._promote_btn = QPushButton("Promote now")
+        self._promote_btn.setToolTip(
+            "Force-trigger the selected pending action (skips the auto-execute "
+            "delay; EA picks it up on the next poll)."
+        )
+        self._promote_btn.setEnabled(False)
+        self._promote_btn.clicked.connect(self._on_promote_clicked)
+        header.addWidget(self._promote_btn)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setToolTip(
+            "Cancel the selected pending action before it auto-promotes."
+        )
+        self._cancel_btn.setEnabled(False)
+        self._cancel_btn.clicked.connect(self._on_cancel_clicked)
+        header.addWidget(self._cancel_btn)
         layout.addLayout(header)
 
         self._table = QTableView()
@@ -153,11 +178,83 @@ class ActionsTable(QWidget):
 
     def _on_selection(self, current, _previous) -> None:
         if not current.isValid():
+            self._current_action = None
+            self._update_button_state()
             self.selection_changed.emit(None)
             return
         source_index = self._proxy.mapToSource(current)
         action = self._model.action_at(source_index.row())
+        self._current_action = action
+        self._update_button_state()
         self.selection_changed.emit(action)
+
+    def _update_button_state(self) -> None:
+        # Only pending rows can be promoted or cancelled. Sent/claimed are
+        # mid-flight with the EA; watching is owned by the broker pending
+        # order (see CLAUDE.md "Synthetic pending"). Disabling here mirrors
+        # what _do_cancel / _do_execute enforce server-side in bot.py.
+        action = self._current_action
+        is_pending = (
+            self._stack is not None
+            and action is not None
+            and action.status == "pending"
+        )
+        self._promote_btn.setEnabled(bool(is_pending))
+        self._cancel_btn.setEnabled(bool(is_pending))
+
+    def _on_promote_clicked(self) -> None:
+        action = self._current_action
+        if action is None or self._stack is None:
+            return
+        if action.status != "pending":
+            QMessageBox.information(
+                self, "Promote",
+                f"Action #{action.id} is {action.status}; only pending "
+                "actions can be promoted.",
+            )
+            return
+        self._apply_action_status_change(
+            action.id,
+            "UPDATE actions SET status='sent' WHERE id=? AND status='pending'",
+            success_msg=f"Promoted action #{action.id} to sent.",
+            noop_msg=f"Action #{action.id} is no longer pending.",
+        )
+
+    def _on_cancel_clicked(self) -> None:
+        action = self._current_action
+        if action is None or self._stack is None:
+            return
+        if action.status != "pending":
+            QMessageBox.information(
+                self, "Cancel",
+                f"Action #{action.id} is {action.status}; only pending "
+                "actions can be cancelled.",
+            )
+            return
+        self._apply_action_status_change(
+            action.id,
+            "UPDATE actions SET status='cancelled' WHERE id=? AND status='pending'",
+            success_msg=f"Cancelled action #{action.id}.",
+            noop_msg=f"Action #{action.id} is no longer pending.",
+        )
+
+    def _apply_action_status_change(
+        self, action_id: int, sql: str, *, success_msg: str, noop_msg: str,
+    ) -> None:
+        assert self._stack is not None
+        try:
+            conn = sqlite3.connect(str(self._stack.db_path))
+            try:
+                cur = conn.execute(sql, (action_id,))
+                conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            QMessageBox.warning(self, "DB error", f"Action #{action_id}: {e}")
+            return
+        QMessageBox.information(
+            self, "OK", success_msg if cur.rowcount else noop_msg,
+        )
 
     def refresh_ages(self) -> None:
         self._model.refresh_ages()

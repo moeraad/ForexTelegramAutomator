@@ -107,6 +107,8 @@ class PromptsView(QWidget):
         title_row = QHBoxLayout()
         title = QLabel("<span style='font-size:16px; font-weight:700;'>PROMPTS</span>")
         title.setTextFormat(Qt.TextFormat.RichText)
+        from src.gui.panels._a11y import mark_heading
+        mark_heading(title, "Prompts")
         title_row.addWidget(title)
         hint = QLabel(
             "<span style='color:#787b86;'>read-only inspection of every AI prompt</span>"
@@ -123,6 +125,7 @@ class PromptsView(QWidget):
         # dark "segmented bar" so the white-bordered indicators have
         # contrast to read against.
         sel_bar = QWidget()
+        sel_bar.setObjectName("PromptsSelBar")
         self._sel_bar = sel_bar
         self._apply_sel_bar_style()
         from src.gui.theme import bus as theme_bus
@@ -130,18 +133,44 @@ class PromptsView(QWidget):
         sel_row = QHBoxLayout(sel_bar)
         sel_row.setContentsMargins(12, 6, 12, 6)
         sel_row.addWidget(QLabel("Prompt:"))
-        self._prompt_group = QButtonGroup(self)
-        for pid in PROMPT_IDS:
-            rb = QRadioButton(_PROMPT_LABELS[pid])
-            rb.setProperty("prompt_id", pid)
-            if pid == self._selected:
-                rb.setChecked(True)
-            rb.toggled.connect(self._on_prompt_changed)
-            self._prompt_group.addButton(rb)
-            sel_row.addWidget(rb)
+        # SegmentedWidget for prompt selection — read-only inspector
+        # affordance reads better than radio buttons, and we get
+        # accent-coloured indicator built-in (REVIEW.md §4.8). Falls back
+        # to QButtonGroup-of-radios if qfluentwidgets is missing.
+        self._prompt_group: QButtonGroup | None = None
+        try:
+            from qfluentwidgets import SegmentedWidget
+            self._prompt_seg = SegmentedWidget(self)
+            for pid in PROMPT_IDS:
+                # SegmentedWidget connects onClick to `itemClicked` which
+                # carries a `bool` (the clicked signal). A bare
+                # `lambda _k=pid: …` would receive the bool as `_k`,
+                # breaking the route lookup — the symptom was: first tab
+                # rendered (because _refresh runs in __init__), and
+                # every subsequent click left the body empty. Accept and
+                # discard the bool explicitly.
+                self._prompt_seg.addItem(
+                    routeKey=pid,
+                    text=_PROMPT_LABELS[pid],
+                    onClick=lambda _clicked=False, _k=pid: self._select_prompt(_k),
+                )
+            self._prompt_seg.setCurrentItem(self._selected)
+            sel_row.addWidget(self._prompt_seg)
+        except Exception:
+            self._prompt_seg = None
+            self._prompt_group = QButtonGroup(self)
+            for pid in PROMPT_IDS:
+                rb = QRadioButton(_PROMPT_LABELS[pid])
+                rb.setProperty("prompt_id", pid)
+                if pid == self._selected:
+                    rb.setChecked(True)
+                rb.toggled.connect(self._on_prompt_changed)
+                self._prompt_group.addButton(rb)
+                sel_row.addWidget(rb)
         sel_row.addSpacing(16)
 
-        # Mode selector
+        # Mode selector — kept as radio buttons; SegmentedWidget for a
+        # 2-item demo/live binary would feel oversized.
         sel_row.addWidget(QLabel("Mode:"))
         self._mode_group = QButtonGroup(self)
         for mode_id, label in (("demo", "Demo"), ("live", "Live")):
@@ -186,28 +215,16 @@ class PromptsView(QWidget):
         p = current_palette()
         # In dark mode the bar uses our nav_bg for contrast. In light
         # mode it uses the strong-border surface so it reads as elevated.
-        if p.name == "dark":
-            bar_bg = p.nav_bg
-            label_fg = p.text_muted
-            radio_fg = p.text
-            unchecked_border = p.text
-        else:
-            bar_bg = p.surface_alt
-            label_fg = p.text_muted
-            radio_fg = p.text
-            unchecked_border = p.border_strong
+        bar_bg = p.nav_bg if p.name == "dark" else p.surface_alt
+        # Only style the bar itself by objectName so the QSS does NOT
+        # cascade into the qfluentwidgets SegmentedWidget living inside
+        # (a bare `QWidget {bg:...}` rule made its tabs invisible —
+        # dark-on-dark — and that's what blanked the prompt selector).
+        # Labels and the fallback QRadioButtons pick up colors from the
+        # global stylesheet.
         self._sel_bar.setStyleSheet(
-            "QWidget { background-color: %s; border-radius: 6px; }"
-            "QLabel { color: %s; font-weight: 600; padding: 0 6px; }"
-            "QRadioButton { color: %s; padding: 6px 10px; }"
-            "QRadioButton::indicator { width: 14px; height: 14px;"
-            " border-radius: 8px; background: transparent;"
-            " border: 2px solid %s; }"
-            "QRadioButton::indicator:hover { border: 2px solid %s; }"
-            "QRadioButton::indicator:checked { background: %s;"
-            " border: 2px solid %s; }"
-            % (bar_bg, label_fg, radio_fg, unchecked_border,
-               p.accent, p.accent, unchecked_border)
+            "QWidget#PromptsSelBar { background-color: %s; border-radius: 6px; }"
+            % bar_bg
         )
 
     def _on_prompt_changed(self, checked: bool) -> None:
@@ -217,6 +234,13 @@ class PromptsView(QWidget):
         if btn is None:
             return
         self._selected = btn.property("prompt_id")
+        self._refresh()
+
+    def _select_prompt(self, prompt_id: str) -> None:
+        """SegmentedWidget click handler — bridges to _refresh()."""
+        if prompt_id == self._selected:
+            return
+        self._selected = prompt_id
         self._refresh()
 
     def _on_mode_changed(self, checked: bool) -> None:

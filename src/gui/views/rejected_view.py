@@ -213,6 +213,11 @@ class _RejectedListModel(QAbstractTableModel):
         else:
             self._filtered = [r for r in self._all if r.reason_category == self._filter_category]
 
+    def rejected_at(self, row: int) -> _Rejected | None:
+        if 0 <= row < len(self._filtered):
+            return self._filtered[row]
+        return None
+
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self._filtered)
 
@@ -249,12 +254,22 @@ class _RejectedListModel(QAbstractTableModel):
             return row.source_text
         if role == Qt.ItemDataRole.TextAlignmentRole and col == 0:
             return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        # Arabic source-message column reads correctly only when
+        # right-aligned (REVIEW.md §3 RTL).
+        if role == Qt.ItemDataRole.TextAlignmentRole and col == 3:
+            return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         if role == Qt.ItemDataRole.ForegroundRole and col == 2:
             return QColor("#ef5350")
         return None
 
 
 class RejectedView(QWidget):
+    # Emitted when the operator clicks "Replay" on a selected rejected
+    # row. MainWindow listens and switches to ReplayView + preloads the
+    # message (REVIEW.md §4.3).
+    from PySide6.QtCore import Signal as _Signal
+    replay_message_requested = _Signal(int)
+
     def __init__(self, stack: Stack) -> None:
         super().__init__()
         self._stack = stack
@@ -317,6 +332,8 @@ class RejectedView(QWidget):
         top = QHBoxLayout()
         title = QLabel("<span style='font-size:16px; font-weight:700;'>REJECTED</span>")
         title.setTextFormat(Qt.TextFormat.RichText)
+        from src.gui.panels._a11y import mark_heading
+        mark_heading(title, "Rejected")
         top.addWidget(title)
         hint = QLabel("<span style='color:#787b86;'>prompt-drift detector — investigate spikes</span>")
         hint.setTextFormat(Qt.TextFormat.RichText)
@@ -357,7 +374,19 @@ class RejectedView(QWidget):
         body = QHBoxLayout()
 
         left = QVBoxLayout()
-        left.addWidget(QLabel("Reasons"))
+        # Mirror the right pane's header row height (QLabel + Replay
+        # button) so the two tables start at the same Y. Otherwise the
+        # right side's button pushes its table ~10 px down.
+        left_header = QHBoxLayout()
+        left_header.addWidget(QLabel("Reasons"))
+        left_header.addStretch()
+        spacer_btn = QPushButton("")
+        spacer_btn.setEnabled(False)
+        spacer_btn.setFlat(True)
+        spacer_btn.setStyleSheet("QPushButton { background: transparent; border: none; }")
+        spacer_btn.setFixedSize(0, 28)
+        left_header.addWidget(spacer_btn)
+        left.addLayout(left_header)
         self._reasons_table = QTableView()
         self._reasons_table.setModel(self._reasons_model)
         self._reasons_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -380,10 +409,25 @@ class RejectedView(QWidget):
         body.addLayout(left)
 
         right = QVBoxLayout()
-        right.addWidget(QLabel("Rejected actions"))
+        right_header = QHBoxLayout()
+        right_header.addWidget(QLabel("Rejected actions"))
+        right_header.addStretch()
+        # Replay button — switches to ReplayView preloaded with the
+        # selected row's source message (REVIEW.md §4.3). Enabled only
+        # when a row with a source_msg_id is selected.
+        self._replay_btn = QPushButton("Replay")
+        self._replay_btn.setToolTip(
+            "Re-run the selected rejected message through the current AI in "
+            "the Replay view (no DB writes)."
+        )
+        self._replay_btn.setEnabled(False)
+        self._replay_btn.clicked.connect(self._on_replay_clicked)
+        right_header.addWidget(self._replay_btn)
+        right.addLayout(right_header)
         self._list_table = QTableView()
         self._list_table.setModel(self._list_model)
         self._list_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._list_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._list_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._list_table.verticalHeader().setVisible(False)
         apply_full_width_headers(
@@ -392,6 +436,9 @@ class RejectedView(QWidget):
         )
         self._list_table.setAlternatingRowColors(True)
         self._list_table.setShowGrid(False)
+        self._list_table.selectionModel().currentRowChanged.connect(
+            self._on_rejected_row_changed
+        )
         right.addWidget(self._list_table)
         body.addLayout(right, 1)
 
@@ -406,6 +453,25 @@ class RejectedView(QWidget):
             return
         category = self._reasons_model.category_at(current.row())
         self._list_model.filter_category(category)
+
+    def _on_rejected_row_changed(self, current, _previous) -> None:
+        """Toggle the Replay button based on the selected row's
+        source_msg_id — rows without an originating message (e.g.
+        EA-side ALERT inserts) can't be replayed."""
+        if not current.isValid():
+            self._replay_btn.setEnabled(False)
+            return
+        row = self._list_model.rejected_at(current.row())
+        self._replay_btn.setEnabled(bool(row and row.source_msg_id))
+
+    def _on_replay_clicked(self) -> None:
+        idx = self._list_table.currentIndex()
+        if not idx.isValid():
+            return
+        row = self._list_model.rejected_at(idx.row())
+        if row is None or row.source_msg_id is None:
+            return
+        self.replay_message_requested.emit(int(row.source_msg_id))
 
     def _update_stats(self, rows: list[_Rejected]) -> None:
         counter = Counter(r.reason_category for r in rows)
