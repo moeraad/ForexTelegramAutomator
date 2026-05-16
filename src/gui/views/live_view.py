@@ -65,7 +65,7 @@ class LiveView(QWidget):
         indicators = QWidget()
         indicators.setFixedHeight(22)
         indicators.setStyleSheet(
-            "QLabel { color: #586e75; padding: 0 12px; font-size: 11px; }"
+            "QLabel { color: #787b86; padding: 0 12px; font-size: 11px; }"
         )
         ind_layout = QHBoxLayout(indicators)
         ind_layout.setContentsMargins(0, 0, 0, 0)
@@ -124,11 +124,11 @@ class LiveView(QWidget):
             text = f"{age // 60}m ago"
         else:
             text = f"{age // 3600}h ago"
-        color = "#586e75"
+        color = "#787b86"
         if age >= bad:
-            color = "#dc322f"
+            color = "#ef5350"
         elif age >= warn:
-            color = "#b58900"
+            color = "#ff9800"
         return f"<span style='color:{color};'>{label}: {text}</span>"
 
     def rebind(self, stack: Stack) -> None:

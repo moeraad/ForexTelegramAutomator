@@ -48,7 +48,7 @@ class PositionsTable(QWidget):
         header.addWidget(self._title)
         header.addStretch()
         self._market_lbl = QLabel("no market price")
-        self._market_lbl.setStyleSheet("color: #586e75;")
+        self._market_lbl.setStyleSheet("color: #787b86;")
         header.addWidget(self._market_lbl)
         layout.addLayout(header)
 
@@ -72,7 +72,7 @@ class PositionsTable(QWidget):
             self._model.set_market(rows)
             self._market_lbl.setText(self._model.market_caption())
             css = (
-                "color: #b58900;" if self._model.market_stale() else "color: #586e75;"
+                "color: #ff9800;" if self._model.market_stale() else "color: #787b86;"
             )
             self._market_lbl.setStyleSheet(css)
 

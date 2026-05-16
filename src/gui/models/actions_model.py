@@ -7,8 +7,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from pathlib import Path
+
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 
 
 COL_ID = 0
@@ -23,20 +26,68 @@ _STATUS_DOT = {
     "executed": "●",
     "watching": "◐",
     "rejected": "✕",
-    "pending": "⏳",
+    # "pending" intentionally uses an SVG icon instead of a glyph — see
+    # _hourglass_icon(). Display path skips the prefix for "pending".
     "sent": "▷",
     "claimed": "⇩",
     "failed": "✕",
 }
 
+
+_HOURGLASS_SVG = (
+    Path(__file__).resolve().parent.parent / "resources" / "icons" / "hourglass.svg"
+)
+_hourglass_icon_cache: QIcon | None = None
+
+
+def _hourglass_icon() -> QIcon:
+    """Render the hourglass SVG once, recolored to the muted-text token
+    of the active palette, and cache the QIcon."""
+    global _hourglass_icon_cache
+    if _hourglass_icon_cache is not None:
+        return _hourglass_icon_cache
+    try:
+        from src.gui.theme import current_palette
+        tint = QColor(current_palette().text_muted)
+    except Exception:
+        tint = QColor("#787b86")
+    renderer = QSvgRenderer(str(_HOURGLASS_SVG))
+    size = 16
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    renderer.render(painter)
+    # Re-color: composite the tint over the painted alpha so the SVG's
+    # currentColor (which falls back to black) becomes our muted text.
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    painter.fillRect(pix.rect(), tint)
+    painter.end()
+    _hourglass_icon_cache = QIcon(pix)
+    return _hourglass_icon_cache
+
+
+def _invalidate_icon_cache() -> None:
+    """Clear the icon cache so it re-renders against the new palette
+    on theme toggle."""
+    global _hourglass_icon_cache
+    _hourglass_icon_cache = None
+
+
+# Re-build the cached icon whenever the theme flips.
+try:
+    from src.gui.theme import bus as _theme_bus
+    _theme_bus.theme_changed.connect(lambda _p: _invalidate_icon_cache())
+except Exception:
+    pass
+
 _STATUS_COLOR = {
-    "executed": QColor("#859900"),
-    "watching": QColor("#b58900"),
-    "rejected": QColor("#dc322f"),
-    "pending": QColor("#586e75"),
-    "sent": QColor("#268bd2"),
-    "claimed": QColor("#268bd2"),
-    "failed": QColor("#dc322f"),
+    "executed": QColor("#26a69a"),
+    "watching": QColor("#ff9800"),
+    "rejected": QColor("#ef5350"),
+    "pending": QColor("#787b86"),
+    "sent": QColor("#2962ff"),
+    "claimed": QColor("#2962ff"),
+    "failed": QColor("#ef5350"),
 }
 
 _REJECTED_BG = QColor(220, 50, 47, 28)
@@ -171,8 +222,15 @@ class ActionsModel(QAbstractTableModel):
             if col == COL_TYPE:
                 return row.type_display
             if col == COL_STATUS:
+                if row.status == "pending":
+                    # Icon comes from DecorationRole; show only the
+                    # text here so the cell renders "icon + 'pending'".
+                    return f"  {row.status}"
                 glyph = _STATUS_DOT.get(row.status, "·")
                 return f"{glyph}  {row.status}"
+        if role == Qt.ItemDataRole.DecorationRole and col == COL_STATUS:
+            if row.status == "pending":
+                return _hourglass_icon()
             if col == COL_AGE:
                 return _age_text(row.created_at)
             if col == COL_QUALITY:

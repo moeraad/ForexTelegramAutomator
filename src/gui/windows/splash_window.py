@@ -41,13 +41,13 @@ class _StackRow(QWidget):
         layout.addStretch()
 
     def on_started(self, step: str) -> None:
-        self._set(step, _PILL_BUSY, "color: #b58900;")
+        self._set(step, _PILL_BUSY, "color: #ff9800;")
 
     def on_succeeded(self, step: str) -> None:
-        self._set(step, _PILL_OK, "color: #859900;")
+        self._set(step, _PILL_OK, "color: #26a69a;")
 
     def on_failed(self, step: str, err: str) -> None:
-        self._set(step, _PILL_FAIL, "color: #dc322f;")
+        self._set(step, _PILL_FAIL, "color: #ef5350;")
         self._errors.append(f"{step}: {err}")
 
     def errors(self) -> list[str]:
@@ -72,7 +72,7 @@ class SplashWindow(QWidget):
         self.resize(640, 80 + 36 * max(1, len(stacks)))
         self._rows: dict[str, _StackRow] = {}
         self._error_lbl = QLabel("")
-        self._error_lbl.setStyleSheet("color: #dc322f; padding: 8px;")
+        self._error_lbl.setStyleSheet("color: #ef5350; padding: 8px;")
         self._error_lbl.setWordWrap(True)
         self._error_lbl.setVisible(False)
 

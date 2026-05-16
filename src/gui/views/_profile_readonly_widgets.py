@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 
-_EDIT_NOTE_STYLE = "color: #586e75; font-style: italic;"
+_EDIT_NOTE_STYLE = "color: #787b86; font-style: italic;"
 
 
 class _ReadOnlyBase(QWidget):
@@ -58,13 +58,30 @@ class _ReadOnlyBase(QWidget):
 
         self._frame = QFrame()
         self._frame.setFrameShape(QFrame.Shape.StyledPanel)
-        self._frame.setStyleSheet(
-            "QFrame { background-color: #fdf6e3; border: 1px solid #d6cfb8; border-radius: 4px; }"
-        )
+        self._restyle_frame()
         self._frame_layout = QVBoxLayout(self._frame)
         self._frame_layout.setContentsMargins(8, 8, 8, 8)
         self._frame_layout.setSpacing(4)
         outer.addWidget(self._frame, 1)
+        from src.gui.theme import bus as theme_bus
+        theme_bus.theme_changed.connect(self._on_theme_changed)
+
+    def _on_theme_changed(self, _pal) -> None:
+        # ProfileView rebuilds these widgets on every _load_from_disk,
+        # but the dead Python wrappers stay subscribed to theme_changed
+        # until GC. Swallow the RuntimeError when the C++ side is gone.
+        try:
+            self._restyle_frame()
+        except RuntimeError:
+            pass
+
+    def _restyle_frame(self) -> None:
+        from src.gui.theme import current_palette
+        p = current_palette()
+        self._frame.setStyleSheet(
+            f"QFrame {{ background-color: {p.surface}; border: 1px solid {p.border};"
+            f" border-radius: 4px; }}"
+        )
 
 
 # --- vocabulary_table -----------------------------------------------------
@@ -243,14 +260,14 @@ class ChipFlowView(_ReadOnlyBase):
         } - {""})
         if not phrases:
             placeholder = QLabel("(no trigger phrases yet)")
-            placeholder.setStyleSheet("color: #93a1a1;")
+            placeholder.setStyleSheet("color: #787b86;")
             self._flow.addWidget(placeholder)
             return
         for phrase in phrases:
             chip = QLabel(phrase)
             chip.setStyleSheet(
-                "QLabel { background-color: #eee8d5; color: #073642; "
-                "border: 1px solid #d6cfb8; border-radius: 10px; "
+                "QLabel { background-color: #2a2e39; color: #d1d4dc; "
+                "border: 1px solid #363a45; border-radius: 10px; "
                 "padding: 2px 10px; }"
             )
             chip.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)

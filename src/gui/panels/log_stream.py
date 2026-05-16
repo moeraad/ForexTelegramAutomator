@@ -37,11 +37,11 @@ _LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 _LEVEL_ORDER = {lvl: i for i, lvl in enumerate(_LEVELS)}
 
 _LEVEL_COLOR = {
-    "DEBUG": QColor("#586e75"),
-    "INFO": QColor("#073642"),
-    "WARNING": QColor("#b58900"),
-    "ERROR": QColor("#dc322f"),
-    "CRITICAL": QColor("#dc322f"),
+    "DEBUG": QColor("#787b86"),
+    "INFO": QColor("#d1d4dc"),
+    "WARNING": QColor("#ff9800"),
+    "ERROR": QColor("#ef5350"),
+    "CRITICAL": QColor("#ef5350"),
 }
 
 _MAX_LINES = 5000
@@ -127,7 +127,7 @@ class LogStream(QWidget):
         header.addWidget(clear_btn)
 
         self._rate_lbl = QLabel("· tailing")
-        self._rate_lbl.setStyleSheet("color: #93a1a1; padding-left: 8px;")
+        self._rate_lbl.setStyleSheet("color: #787b86; padding-left: 8px;")
         header.addWidget(self._rate_lbl)
 
         layout.addLayout(header)
@@ -139,7 +139,7 @@ class LogStream(QWidget):
         font.setStyleHint(QFont.StyleHint.Monospace)
         font.setPointSize(9)
         self._view.setFont(font)
-        self._view.setStyleSheet("QPlainTextEdit { background-color: #fdf6e3; }")
+        # Inherits global QSS surface color; no override needed.
         layout.addWidget(self._view, 1)
 
     def _on_source_changed(self, btn) -> None:
@@ -218,7 +218,7 @@ class LogStream(QWidget):
 
     def _append_meta(self, text: str) -> None:
         fmt = QTextCharFormat()
-        fmt.setForeground(QColor("#93a1a1"))
+        fmt.setForeground(QColor("#787b86"))
         fmt.setFontItalic(True)
         cursor = self._view.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)

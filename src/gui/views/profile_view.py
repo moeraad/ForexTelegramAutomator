@@ -107,7 +107,7 @@ class ProfileView(QWidget):
         self._title.setTextFormat(Qt.TextFormat.RichText)
         top.addWidget(self._title)
         self._dirty_marker = QLabel("")
-        self._dirty_marker.setStyleSheet("color: #b58900;")
+        self._dirty_marker.setStyleSheet("color: #ff9800;")
         top.addWidget(self._dirty_marker)
         top.addStretch()
 
@@ -139,7 +139,7 @@ class ProfileView(QWidget):
         layout.addLayout(top)
 
         self._meta_label = QLabel()
-        self._meta_label.setStyleSheet("color: #93a1a1; padding-bottom: 4px;")
+        self._meta_label.setStyleSheet("color: #787b86; padding-bottom: 4px;")
         layout.addWidget(self._meta_label)
 
         self._tabs = QTabWidget()
@@ -169,7 +169,7 @@ class ProfileView(QWidget):
         path = self._stack.profile_path
         self._title.setText(
             f"<span style='font-size:16px; font-weight:700;'>PROFILE</span>"
-            f"&nbsp;&nbsp;<span style='color:#586e75;'>{self._stack.name}</span>"
+            f"&nbsp;&nbsp;<span style='color:#787b86;'>{self._stack.name}</span>"
         )
         self._meta_label.setText(f"file: {path}")
         if not path.exists():
@@ -200,7 +200,7 @@ class ProfileView(QWidget):
     def _render_error(self, message: str) -> None:
         self._clear_content()
         lbl = QLabel(message)
-        lbl.setStyleSheet("color: #dc322f; padding: 32px;")
+        lbl.setStyleSheet("color: #ef5350; padding: 32px;")
         lbl.setWordWrap(True)
         self._content_layout.addWidget(lbl)
         self._content_layout.addStretch()
@@ -229,7 +229,7 @@ class ProfileView(QWidget):
 
         for key, value in data.items():
             section_label = QLabel(
-                f"<span style='color:#93a1a1; font-size:10px; letter-spacing:1px; font-weight:700;'>"
+                f"<span style='color:#787b86; font-size:10px; letter-spacing:1px; font-weight:700;'>"
                 f"{key.upper()}</span>"
             )
             section_label.setTextFormat(Qt.TextFormat.RichText)
@@ -461,7 +461,7 @@ class _PlaygroundTab(QWidget):
         layout.setSpacing(8)
 
         notice = QLabel(
-            "<span style='color:#586e75;'>"
+            "<span style='color:#787b86;'>"
             "Live AI call against the active stack's state (no DB writes). "
             "Save profile changes before running so the prompt picks them up. "
             "Costs real tokens."
@@ -489,7 +489,7 @@ class _PlaygroundTab(QWidget):
         self._run_btn.clicked.connect(self._on_run)
         action_row.addWidget(self._run_btn)
         self._status = QLabel("")
-        self._status.setStyleSheet("color: #93a1a1; padding-left: 12px;")
+        self._status.setStyleSheet("color: #787b86; padding-left: 12px;")
         action_row.addWidget(self._status)
         action_row.addStretch()
         layout.addLayout(action_row)

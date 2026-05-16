@@ -28,9 +28,9 @@ HEADERS = ("Ticket", "Side", "Lots", "Entry", "SL", "TP", "Current", "PnL", "Age
 # XAUUSD: 1 lot = 100 oz; price quoted in USD/oz. PnL = delta * volume * 100.
 _CONTRACT_SIZE = 100.0
 
-_GREEN = QColor("#859900")
-_RED = QColor("#dc322f")
-_MUTED = QColor("#586e75")
+_GREEN = QColor("#26a69a")
+_RED = QColor("#ef5350")
+_MUTED = QColor("#787b86")
 
 
 @dataclass(frozen=True)

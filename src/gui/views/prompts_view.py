@@ -54,12 +54,12 @@ class _PromptSection(QWidget):
         top = QHBoxLayout()
         self._heading = QLabel(
             f"<span style='font-size:11px; font-weight:700; "
-            f"letter-spacing:1px; color:#586e75;'>{heading.upper()}</span>"
+            f"letter-spacing:1px; color:#787b86;'>{heading.upper()}</span>"
         )
         self._heading.setTextFormat(Qt.TextFormat.RichText)
         top.addWidget(self._heading)
         self._counter = QLabel("")
-        self._counter.setStyleSheet("color: #93a1a1; font-size: 11px;")
+        self._counter.setStyleSheet("color: #787b86; font-size: 11px;")
         top.addWidget(self._counter)
         top.addStretch()
         self._copy_btn = QPushButton("Copy")
@@ -109,7 +109,7 @@ class PromptsView(QWidget):
         title.setTextFormat(Qt.TextFormat.RichText)
         title_row.addWidget(title)
         hint = QLabel(
-            "<span style='color:#93a1a1;'>read-only inspection of every AI prompt</span>"
+            "<span style='color:#787b86;'>read-only inspection of every AI prompt</span>"
         )
         hint.setTextFormat(Qt.TextFormat.RichText)
         title_row.addWidget(hint)
@@ -123,17 +123,10 @@ class PromptsView(QWidget):
         # dark "segmented bar" so the white-bordered indicators have
         # contrast to read against.
         sel_bar = QWidget()
-        sel_bar.setStyleSheet(
-            "QWidget { background-color: #073642; border-radius: 6px; }"
-            "QLabel { color: #93a1a1; font-weight: 600; padding: 0 6px; }"
-            "QRadioButton { color: white; padding: 6px 10px; }"
-            "QRadioButton::indicator { width: 14px; height: 14px;"
-            " border-radius: 8px; background: transparent;"
-            " border: 2px solid white; }"
-            "QRadioButton::indicator:hover { border: 2px solid #268bd2; }"
-            "QRadioButton::indicator:checked { background: #268bd2;"
-            " border: 2px solid white; }"
-        )
+        self._sel_bar = sel_bar
+        self._apply_sel_bar_style()
+        from src.gui.theme import bus as theme_bus
+        theme_bus.theme_changed.connect(lambda _pal: self._apply_sel_bar_style())
         sel_row = QHBoxLayout(sel_bar)
         sel_row.setContentsMargins(12, 6, 12, 6)
         sel_row.addWidget(QLabel("Prompt:"))
@@ -163,11 +156,11 @@ class PromptsView(QWidget):
         layout.addWidget(sel_bar)
 
         self._title_lbl = QLabel("")
-        self._title_lbl.setStyleSheet("color: #073642; font-weight: 600;")
+        self._title_lbl.setStyleSheet("font-weight: 600;")  # color from global QSS
         layout.addWidget(self._title_lbl)
 
         self._notes_lbl = QLabel("")
-        self._notes_lbl.setStyleSheet("color: #586e75; font-style: italic;")
+        self._notes_lbl.setStyleSheet("font-style: italic;")  # color from global QSS
         self._notes_lbl.setWordWrap(True)
         layout.addWidget(self._notes_lbl)
 
@@ -187,6 +180,35 @@ class PromptsView(QWidget):
         host_layout.addWidget(self._expected_section, 1)
         scroll.setWidget(host)
         layout.addWidget(scroll, 1)
+
+    def _apply_sel_bar_style(self) -> None:
+        from src.gui.theme import current_palette
+        p = current_palette()
+        # In dark mode the bar uses our nav_bg for contrast. In light
+        # mode it uses the strong-border surface so it reads as elevated.
+        if p.name == "dark":
+            bar_bg = p.nav_bg
+            label_fg = p.text_muted
+            radio_fg = p.text
+            unchecked_border = p.text
+        else:
+            bar_bg = p.surface_alt
+            label_fg = p.text_muted
+            radio_fg = p.text
+            unchecked_border = p.border_strong
+        self._sel_bar.setStyleSheet(
+            "QWidget { background-color: %s; border-radius: 6px; }"
+            "QLabel { color: %s; font-weight: 600; padding: 0 6px; }"
+            "QRadioButton { color: %s; padding: 6px 10px; }"
+            "QRadioButton::indicator { width: 14px; height: 14px;"
+            " border-radius: 8px; background: transparent;"
+            " border: 2px solid %s; }"
+            "QRadioButton::indicator:hover { border: 2px solid %s; }"
+            "QRadioButton::indicator:checked { background: %s;"
+            " border: 2px solid %s; }"
+            % (bar_bg, label_fg, radio_fg, unchecked_border,
+               p.accent, p.accent, unchecked_border)
+        )
 
     def _on_prompt_changed(self, checked: bool) -> None:
         if not checked:

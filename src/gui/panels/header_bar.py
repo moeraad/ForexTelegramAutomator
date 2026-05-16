@@ -10,12 +10,12 @@ from src.gui.services.stack_registry import Stack
 
 
 _HALT_STYLE = (
-    "QPushButton { background-color: #dc322f; color: white; font-weight: 600; "
+    "QPushButton { background-color: #ef5350; color: white; font-weight: 600; "
     "padding: 6px 14px; border-radius: 4px; } "
     "QPushButton:hover { background-color: #b3271f; }"
 )
 _RUN_STYLE = (
-    "QPushButton { background-color: #859900; color: white; font-weight: 600; "
+    "QPushButton { background-color: #26a69a; color: white; font-weight: 600; "
     "padding: 6px 14px; border-radius: 4px; } "
     "QPushButton:hover { background-color: #6d7e00; }"
 )
@@ -45,9 +45,16 @@ class HeaderBar(QWidget):
         layout.addWidget(self.switcher)
 
         self.summary = QLabel("Today  +$0.00  ·  Signals 0  ·  Wins 0/0")
-        self.summary.setStyleSheet("color: #586e75; padding-left: 16px;")
+        self.summary.setStyleSheet("color: #787b86; padding-left: 16px;")
         layout.addWidget(self.summary)
         layout.addStretch()
+
+        self.theme_btn = QPushButton()
+        self.theme_btn.setFixedWidth(40)
+        self.theme_btn.setToolTip("Toggle light / dark theme")
+        self.theme_btn.clicked.connect(self._on_theme_clicked)
+        layout.addWidget(self.theme_btn)
+        self._refresh_theme_btn()
 
         self.halt_btn = QPushButton()
         self.halt_btn.setShortcut("Ctrl+H")
@@ -56,6 +63,22 @@ class HeaderBar(QWidget):
 
         halt.state_changed.connect(self._on_state_changed)
         self._render(halt.is_halted())
+
+        # Re-render whenever the global theme changes so the icon flips.
+        from src.gui.theme import bus as theme_bus
+        theme_bus.theme_changed.connect(lambda _pal: self._refresh_theme_btn())
+
+    def _on_theme_clicked(self) -> None:
+        from PySide6.QtWidgets import QApplication
+        from src.gui.theme import apply_theme, current_palette, persist
+        new = "light" if current_palette().name == "dark" else "dark"
+        apply_theme(QApplication.instance(), new)
+        persist(new)
+
+    def _refresh_theme_btn(self) -> None:
+        from src.gui.theme import current_palette
+        # Sun glyph means "click to go light"; moon means "click to go dark".
+        self.theme_btn.setText("☀" if current_palette().name == "dark" else "☾")
 
     def set_summary(self, text: str) -> None:
         self.summary.setText(text)

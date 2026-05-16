@@ -47,24 +47,20 @@ _RANGES: list[tuple[str, int | None]] = [
 ]
 
 
-def _stat_box(label: str, value: str, color: str = "#073642") -> QWidget:
-    box = QFrame()
-    box.setFrameShape(QFrame.Shape.StyledPanel)
-    box.setStyleSheet("QFrame { background: #fdf6e3; border-radius: 4px; }")
-    box.setFixedSize(140, 80)
-    layout = QVBoxLayout(box)
-    layout.setContentsMargins(10, 8, 10, 8)
-    layout.setSpacing(2)
-    k = QLabel(label.upper())
-    k.setStyleSheet("color: #93a1a1; font-size: 9px; letter-spacing: 1px;")
-    v = QLabel(value)
-    v.setStyleSheet(f"color: {color}; font-size: 16px; font-weight: 700;")
-    v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-    v.setWordWrap(True)
-    layout.addWidget(k)
-    layout.addWidget(v)
-    layout.addStretch()
-    return box
+def _hex_to_accent(color: str) -> str:
+    """Map a legacy hex color into a StatCard semantic accent key."""
+    if not color:
+        return ""
+    c = color.lower()
+    if c in ("#26a69a", "#859900", "#00e676", "#00897b"):
+        return "success"
+    if c in ("#ef5350", "#dc322f", "#ff5252", "#d32f2f"):
+        return "danger"
+    if c in ("#ff9800", "#b58900", "#ffd740", "#f57c00"):
+        return "warning"
+    if c in ("#2962ff", "#268bd2", "#448aff", "#1976d2"):
+        return "accent"
+    return ""
 
 
 def _fmt_tokens(n: int) -> str:
@@ -121,7 +117,7 @@ class _TopCallsModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.TextAlignmentRole and col in (3, 4, 5, 6):
             return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         if role == Qt.ItemDataRole.ForegroundRole and col == 2 and r.is_error:
-            return QColor("#dc322f")
+            return QColor("#ef5350")
         return None
 
 
@@ -134,6 +130,13 @@ class CostView(QWidget):
         self._stat_boxes: dict[str, QWidget] = {}
         self._top_model = _TopCallsModel()
         self._build_ui()
+        self.refresh()
+        from src.gui.theme import bus as theme_bus
+        theme_bus.theme_changed.connect(self._on_theme)
+
+    def _on_theme(self, _pal=None) -> None:
+        from src.gui.views._chart_theme import apply_dark_theme
+        apply_dark_theme(self._chart, self._chart_view)
         self.refresh()
 
     def rebind(self, stack: Stack) -> None:
@@ -157,20 +160,24 @@ class CostView(QWidget):
         self._budget_spin.blockSignals(True)
         self._budget_spin.setValue(float(budget))
         self._budget_spin.blockSignals(False)
+        cap_mult = db_settings.get_float(self._stack.db_path, "cost_cap_multiplier", 1.2)
+        self._cap_spin.blockSignals(True)
+        self._cap_spin.setValue(float(cap_mult or 1.2))
+        self._cap_spin.blockSignals(False)
         today = datetime.now(timezone.utc).date().isoformat()
         today_cost = float(s.per_day.get(today, 0.0))
         pct = (today_cost / budget * 100) if budget > 0 else 0
         if budget <= 0:
             self._budget_status.setText(
-                "<span style='color:#586e75;'>budget disabled (set > $0 to enable alerts)</span>"
+                "<span style='color:#787b86;'>budget disabled (set > $0 to enable alerts)</span>"
             )
             self._budget_banner.hide()
             return
-        color = "#586e75"
+        color = "#787b86"
         if pct >= 100:
-            color = "#dc322f"
+            color = "#ef5350"
         elif pct >= 80:
-            color = "#b58900"
+            color = "#ff9800"
         self._budget_status.setText(
             f"<span style='color:{color};'>"
             f"today: ${today_cost:.2f} / ${budget:.2f}  ({pct:.0f}%)"
@@ -192,6 +199,12 @@ class CostView(QWidget):
         db_settings.set_str(self._stack.db_path, "cost_daily_budget_usd", f"{value:.2f}")
         self.refresh()
 
+    def _on_cap_changed(self) -> None:
+        from src import db_settings
+        value = self._cap_spin.value()
+        db_settings.set_str(self._stack.db_path, "cost_cap_multiplier", f"{value:.1f}")
+        self.refresh()
+
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -202,7 +215,7 @@ class CostView(QWidget):
         title.setTextFormat(Qt.TextFormat.RichText)
         top.addWidget(title)
         hint = QLabel(
-            "<span style='color:#93a1a1;'>token usage from logs/ai_calls.jsonl  ·  "
+            "<span style='color:#787b86;'>token usage from logs/ai_calls.jsonl  ·  "
             "cost is an estimate using reference rates</span>"
         )
         hint.setTextFormat(Qt.TextFormat.RichText)
@@ -222,7 +235,7 @@ class CostView(QWidget):
         layout.addLayout(top)
 
         self._meta_label = QLabel()
-        self._meta_label.setStyleSheet("color: #93a1a1; padding-bottom: 4px;")
+        self._meta_label.setStyleSheet("color: #787b86; padding-bottom: 4px;")
         layout.addWidget(self._meta_label)
 
         # Daily budget controls + alert banner
@@ -235,6 +248,20 @@ class CostView(QWidget):
         self._budget_spin.setPrefix("$ ")
         self._budget_spin.editingFinished.connect(self._on_budget_changed)
         budget_row.addWidget(self._budget_spin)
+        budget_row.addSpacing(12)
+        budget_row.addWidget(QLabel("Hard cap multiplier:"))
+        self._cap_spin = QDoubleSpinBox()
+        self._cap_spin.setRange(1.0, 5.0)
+        self._cap_spin.setDecimals(1)
+        self._cap_spin.setSingleStep(0.1)
+        self._cap_spin.setSuffix("×")
+        self._cap_spin.setToolTip(
+            "When today's spend exceeds budget × this multiplier, the bot "
+            "auto-halts trading and DMs the operator. Set 1.0 to halt at "
+            "exact budget. Default 1.2 allows a small overshoot."
+        )
+        self._cap_spin.editingFinished.connect(self._on_cap_changed)
+        budget_row.addWidget(self._cap_spin)
         self._budget_status = QLabel("")
         self._budget_status.setTextFormat(Qt.TextFormat.RichText)
         budget_row.addWidget(self._budget_status, 1)
@@ -243,27 +270,30 @@ class CostView(QWidget):
         self._budget_banner = QLabel("")
         self._budget_banner.setTextFormat(Qt.TextFormat.RichText)
         self._budget_banner.setStyleSheet(
-            "QLabel { background: #dc322f; color: white; "
+            "QLabel { background: #ef5350; color: white; "
             "padding: 8px 12px; border-radius: 4px; font-weight: 600; }"
         )
         self._budget_banner.hide()
         layout.addWidget(self._budget_banner)
 
+        from src.gui.panels._stat_card import StatCard
         self._stat_row_layout = QHBoxLayout()
         self._stat_row_layout.setSpacing(8)
         for key in ("calls", "cost", "in", "out", "cache", "keep_rate", "err_rate"):
-            box = _stat_box(key, "—")
-            self._stat_boxes[key] = box
-            self._stat_row_layout.addWidget(box)
+            card = StatCard(label=key, value="—")
+            self._stat_boxes[key] = card
+            self._stat_row_layout.addWidget(card)
         self._stat_row_layout.addStretch()
         layout.addLayout(self._stat_row_layout)
 
+        from src.gui.views._chart_theme import apply_dark_theme
         self._chart = QChart()
         self._chart.setTitle("Estimated daily spend")
         self._chart.legend().hide()
         self._chart_view = QChartView(self._chart)
         self._chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self._chart_view.setMinimumHeight(180)
+        apply_dark_theme(self._chart, self._chart_view)
         layout.addWidget(self._chart_view, 1)
 
         layout.addWidget(QLabel("Top 10 most expensive calls"))
@@ -288,14 +318,14 @@ class CostView(QWidget):
 
     def _update_stats(self, s: CostSummary, total_records: int) -> None:
         replacements = (
-            ("calls", "Total calls", str(s.calls), "#073642"),
-            ("cost", "Est cost (USD)", f"${s.estimated_cost_usd:.2f}", "#073642"),
-            ("in", "Input tokens", _fmt_tokens(s.input_tokens), "#073642"),
-            ("out", "Output tokens", _fmt_tokens(s.output_tokens), "#073642"),
-            ("cache", "Cache hit", f"{s.cache_hit_rate * 100:.0f}%", "#073642"),
-            ("keep_rate", "Triage keep", f"{s.triage_keep_rate * 100:.0f}%", "#073642"),
+            ("calls", "Total calls", str(s.calls), "#d1d4dc"),
+            ("cost", "Est cost (USD)", f"${s.estimated_cost_usd:.2f}", "#d1d4dc"),
+            ("in", "Input tokens", _fmt_tokens(s.input_tokens), "#d1d4dc"),
+            ("out", "Output tokens", _fmt_tokens(s.output_tokens), "#d1d4dc"),
+            ("cache", "Cache hit", f"{s.cache_hit_rate * 100:.0f}%", "#d1d4dc"),
+            ("keep_rate", "Triage keep", f"{s.triage_keep_rate * 100:.0f}%", "#d1d4dc"),
             ("err_rate", "Error rate", f"{s.error_rate * 100:.0f}%",
-             "#dc322f" if s.error_rate > 0.05 else "#073642"),
+             "#ef5350" if s.error_rate > 0.05 else "#d1d4dc"),
         )
         for key, label, value, color in replacements:
             self._replace_box(key, label, value, color)
@@ -303,14 +333,12 @@ class CostView(QWidget):
             self._chart.setTitle("Estimated daily spend  ·  no AI calls in range")
 
     def _replace_box(self, key: str, label: str, value: str, color: str) -> None:
-        assert self._stat_row_layout is not None
-        old = self._stat_boxes[key]
-        new = _stat_box(label, value, color)
-        idx = self._stat_row_layout.indexOf(old)
-        self._stat_row_layout.removeWidget(old)
-        old.deleteLater()
-        self._stat_row_layout.insertWidget(idx, new)
-        self._stat_boxes[key] = new
+        accent = _hex_to_accent(color)
+        card = self._stat_boxes[key]
+        card.set_value(value, accent)
+        # The label may have changed (e.g. "calls" → "5,210 calls").
+        if hasattr(card, "_label") and label:
+            card._label.setText(label.upper())
 
     def _update_chart(self, s: CostSummary) -> None:
         self._chart.removeAllSeries()
@@ -321,7 +349,7 @@ class CostView(QWidget):
             return
 
         bar_set = QBarSet("USD")
-        bar_set.setColor(QColor("#268bd2"))
+        bar_set.setColor(QColor("#2962ff"))
         for day in s.per_day:
             bar_set.append(s.per_day[day])
         series = QBarSeries()
@@ -341,6 +369,9 @@ class CostView(QWidget):
         axis_y.setRange(0, ymax * 1.15)
         self._chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
         series.attachAxis(axis_y)
+        from src.gui.views._chart_theme import theme_axis
+        theme_axis(axis_x)
+        theme_axis(axis_y)
 
         days = len(s.per_day)
         last_day_cost = list(s.per_day.values())[-1]

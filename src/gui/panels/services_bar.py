@@ -34,9 +34,9 @@ class _Health:
     snapshot_caption: str
 
 
-_OK_COLOR = "#859900"
-_WARN_COLOR = "#b58900"
-_BAD_COLOR = "#dc322f"
+_OK_COLOR = "#26a69a"
+_WARN_COLOR = "#ff9800"
+_BAD_COLOR = "#ef5350"
 
 
 def _human_age(seconds: int) -> str:
@@ -180,9 +180,9 @@ class _Pill(QLabel):
 
     def _set(self, glyph: str, color: str, caption: str) -> None:
         self.setText(
-            f"<span style='color:#586e75; font-weight:600;'>{self._label}</span>"
+            f"<span style='color:#787b86; font-weight:600;'>{self._label}</span>"
             f"&nbsp;<span style='color:{color}; font-size:13px;'>{glyph}</span>"
-            f"&nbsp;<span style='color:#586e75;'>{caption}</span>"
+            f"&nbsp;<span style='color:#787b86;'>{caption}</span>"
         )
 
 

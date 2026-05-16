@@ -12,6 +12,7 @@ class AppState:
     last_stack: str | None = None
     window_geometry: str | None = None
     last_active_view: str = "live"
+    theme: str = "dark"
 
 
 def state_path() -> Path:
@@ -28,6 +29,7 @@ def load_state() -> AppState:
         last_stack=data.get("last_stack"),
         window_geometry=data.get("window_geometry"),
         last_active_view=data.get("last_active_view", "live"),
+        theme=data.get("theme", "dark"),
     )
 
 

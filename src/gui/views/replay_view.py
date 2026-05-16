@@ -47,31 +47,27 @@ _AI_OPTIONS: list[tuple[str, str, str]] = [
 ]
 
 _DRIFT_COLOR = {
-    "none":     QColor("#586e75"),
-    "type":     QColor("#dc322f"),
-    "side":     QColor("#dc322f"),
-    "count":    QColor("#cb4b16"),
-    "decision": QColor("#b58900"),
+    "none":     QColor("#787b86"),
+    "type":     QColor("#ef5350"),
+    "side":     QColor("#ef5350"),
+    "count":    QColor("#ff7043"),
+    "decision": QColor("#ff9800"),
 }
 
 
-def _stat_box(label: str, value: str, color: str = "#073642") -> QWidget:
-    box = QFrame()
-    box.setFrameShape(QFrame.Shape.StyledPanel)
-    box.setStyleSheet("QFrame { background: #fdf6e3; border-radius: 4px; }")
-    box.setFixedSize(140, 80)
-    layout = QVBoxLayout(box)
-    layout.setContentsMargins(10, 8, 10, 8)
-    layout.setSpacing(2)
-    k = QLabel(label.upper())
-    k.setStyleSheet("color: #93a1a1; font-size: 9px; letter-spacing: 1px;")
-    v = QLabel(value)
-    v.setStyleSheet(f"color: {color}; font-size: 16px; font-weight: 700;")
-    v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-    layout.addWidget(k)
-    layout.addWidget(v)
-    layout.addStretch()
-    return box
+def _hex_to_accent(color: str) -> str:
+    if not color:
+        return ""
+    c = color.lower()
+    if c in ("#26a69a", "#859900", "#00e676", "#00897b"):
+        return "success"
+    if c in ("#ef5350", "#dc322f", "#ff5252", "#d32f2f"):
+        return "danger"
+    if c in ("#ff9800", "#b58900", "#ffd740", "#f57c00"):
+        return "warning"
+    if c in ("#2962ff", "#268bd2", "#448aff", "#1976d2"):
+        return "accent"
+    return ""
 
 
 def _summarize_original(actions: list) -> str:
@@ -152,7 +148,7 @@ class _ReplayModel(QAbstractTableModel):
             if col == 5:
                 return r.drift
         if role == Qt.ItemDataRole.ForegroundRole and col == 5:
-            return _DRIFT_COLOR.get(r.drift, QColor("#586e75"))
+            return _DRIFT_COLOR.get(r.drift, QColor("#787b86"))
         if role == Qt.ItemDataRole.ToolTipRole and col == 2:
             return r.msg.text
         return None
@@ -245,7 +241,7 @@ class ReplayView(QWidget):
         title.setTextFormat(Qt.TextFormat.RichText)
         top.addWidget(title)
         hint = QLabel(
-            "<span style='color:#93a1a1;'>rerun historical messages through current AI  ·  "
+            "<span style='color:#787b86;'>rerun historical messages through current AI  ·  "
             "no DB writes  ·  costs real tokens</span>"
         )
         hint.setTextFormat(Qt.TextFormat.RichText)
@@ -277,7 +273,7 @@ class ReplayView(QWidget):
         controls.addWidget(self._ai_combo)
 
         self._estimate_lbl = QLabel("")
-        self._estimate_lbl.setStyleSheet("color: #586e75; padding-left: 12px;")
+        self._estimate_lbl.setStyleSheet("color: #787b86; padding-left: 12px;")
         controls.addWidget(self._estimate_lbl)
         controls.addStretch()
 
@@ -293,12 +289,13 @@ class ReplayView(QWidget):
         controls.addWidget(self._clear_btn)
         layout.addLayout(controls)
 
+        from src.gui.panels._stat_card import StatCard
         self._stat_row_layout = QHBoxLayout()
         self._stat_row_layout.setSpacing(8)
         for key in ("processed", "drift", "cost", "rate"):
-            box = _stat_box(key, "—")
-            self._stat_boxes[key] = box
-            self._stat_row_layout.addWidget(box)
+            card = StatCard(label=key, value="—")
+            self._stat_boxes[key] = card
+            self._stat_row_layout.addWidget(card)
         self._stat_row_layout.addStretch()
         layout.addLayout(self._stat_row_layout)
 
@@ -397,7 +394,7 @@ class ReplayView(QWidget):
         self._cum_cost += row.cost_estimate
         self._replace_box(
             "drift", "Drift", str(self._cum_drift),
-            "#dc322f" if self._cum_drift else "#073642",
+            "#ef5350" if self._cum_drift else "#d1d4dc",
         )
         self._replace_box("cost", "Cost (est)", f"${self._cum_cost:.4f}")
 
@@ -422,12 +419,9 @@ class ReplayView(QWidget):
             return
         _DetailDialog(self, row).exec()
 
-    def _replace_box(self, key: str, label: str, value: str, color: str = "#073642") -> None:
+    def _replace_box(self, key: str, label: str, value: str, color: str = "#d1d4dc") -> None:
         assert self._stat_row_layout is not None
-        old = self._stat_boxes[key]
-        new = _stat_box(label, value, color)
-        idx = self._stat_row_layout.indexOf(old)
-        self._stat_row_layout.removeWidget(old)
-        old.deleteLater()
-        self._stat_row_layout.insertWidget(idx, new)
-        self._stat_boxes[key] = new
+        card = self._stat_boxes[key]
+        card.set_value(value, _hex_to_accent(color))
+        if hasattr(card, "_label") and label:
+            card._label.setText(label.upper())

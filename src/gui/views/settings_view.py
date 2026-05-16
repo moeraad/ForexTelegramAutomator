@@ -57,7 +57,7 @@ class SettingsView(QWidget):
         title.setTextFormat(Qt.TextFormat.RichText)
         title_row.addWidget(title)
         self._status_label = QLabel("")
-        self._status_label.setStyleSheet("color: #586e75; padding-left: 16px;")
+        self._status_label.setStyleSheet("color: #787b86; padding-left: 16px;")
         title_row.addWidget(self._status_label)
         title_row.addStretch()
         self._wizard_btn = QPushButton("Setup wizard")
@@ -80,9 +80,12 @@ class SettingsView(QWidget):
         self._channels_tab = _ChannelsTab()
         self._tuning_tab = _TuningTab(stack)
         self._services_tab = _ServicesTab(stack)
+        from src.gui.views._backup_tab import BackupTab
+        self._backup_tab = BackupTab()
         self._tabs.addTab(self._channels_tab, "Channels")
         self._tabs.addTab(self._tuning_tab, "Tuning")
         self._tabs.addTab(self._services_tab, "Services")
+        self._tabs.addTab(self._backup_tab, "Backup")
         layout.addWidget(self._tabs, 1)
 
         self._refresh_status()
@@ -113,7 +116,7 @@ class SettingsView(QWidget):
         missing = db_settings.missing_critical_keys(self._stack.db_path)
         if missing:
             self._status_label.setText(
-                f"<span style='color:#dc322f;'>setup incomplete · "
+                f"<span style='color:#ef5350;'>setup incomplete · "
                 f"{len(missing)} critical key(s) missing</span>"
             )
             self._status_label.setTextFormat(Qt.TextFormat.RichText)
@@ -127,7 +130,7 @@ class SettingsView(QWidget):
             )
             total = len(self._stack.service_names)
             self._status_label.setText(
-                f"<span style='color:#586e75;'>services: {running}/{total} running</span>"
+                f"<span style='color:#787b86;'>services: {running}/{total} running</span>"
             )
             self._status_label.setTextFormat(Qt.TextFormat.RichText)
             self._start_btn.setEnabled(running < total)
@@ -180,7 +183,7 @@ class _ChannelsTab(QWidget):
         layout.setContentsMargins(0, 8, 0, 0)
 
         info = QLabel(
-            f"<span style='color:#93a1a1;'>file: {stacks_config_path()}  ·  "
+            f"<span style='color:#787b86;'>file: {stacks_config_path()}  ·  "
             "edits require an app restart to take effect</span>"
         )
         info.setTextFormat(Qt.TextFormat.RichText)
@@ -391,7 +394,7 @@ class _TuningTab(QWidget):
         layout.setContentsMargins(0, 8, 0, 0)
 
         self._meta = QLabel()
-        self._meta.setStyleSheet("color: #93a1a1;")
+        self._meta.setStyleSheet("color: #787b86;")
         layout.addWidget(self._meta)
 
         actions = QHBoxLayout()
@@ -403,7 +406,7 @@ class _TuningTab(QWidget):
         actions.addWidget(reload_btn)
         actions.addStretch()
         note = QLabel(
-            "<span style='color:#586e75;'>changes apply on the next service restart</span>"
+            "<span style='color:#787b86;'>changes apply on the next service restart</span>"
         )
         note.setTextFormat(Qt.TextFormat.RichText)
         actions.addWidget(note)
@@ -428,8 +431,8 @@ class _TuningTab(QWidget):
     def _make_section_label(self, text: str) -> QLabel:
         lbl = QLabel(text)
         lbl.setStyleSheet(
-            "color: #586e75; font-size: 11px; font-weight: 700; "
-            "letter-spacing: 1.5px; padding-top: 4px; border-bottom: 1px solid #eee8d5;"
+            "color: #787b86; font-size: 11px; font-weight: 700; "
+            "letter-spacing: 1.5px; padding-top: 4px; border-bottom: 1px solid #2a2e39;"
         )
         return lbl
 
@@ -444,7 +447,7 @@ class _TuningTab(QWidget):
         grid.setColumnStretch(2, 0)
         for row, f in enumerate(fields):
             label = QLabel(f.label)
-            label.setStyleSheet("color: #073642; padding: 4px 0;")
+            label.setStyleSheet("padding: 4px 0;")  # color inherits from global QSS
             label.setFixedWidth(_LABEL_COL_WIDTH)
             widget = self._make_widget(f)
             self._widgets[f.key] = widget
@@ -494,7 +497,7 @@ class _TuningTab(QWidget):
     def _info_icon(self, tooltip: str) -> QLabel:
         icon = QLabel("ⓘ")
         icon.setStyleSheet(
-            "color: #93a1a1; padding: 0 6px; font-size: 14px;"
+            "color: #787b86; padding: 0 6px; font-size: 14px;"
         )
         icon.setCursor(Qt.CursorShape.WhatsThisCursor)
         icon.setToolTip(tooltip or "(no description yet)")
@@ -868,7 +871,7 @@ class _ServicesTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 8, 0, 0)
         info = QLabel(
-            "<span style='color:#93a1a1;'>NSSM service lifecycle for the active stack  ·  "
+            "<span style='color:#787b86;'>NSSM service lifecycle for the active stack  ·  "
             "stop/start may need admin privileges</span>"
         )
         info.setTextFormat(Qt.TextFormat.RichText)

@@ -292,10 +292,16 @@ def process_message(
         execute_after = (
             datetime.now(timezone.utc) + timedelta(seconds=auto_execute_delay_sec)
         ).isoformat()
+        # Short-circuit straight to 'sent' when the operator has set the
+        # grace delay to 0. Skips the 1s promoter sweep + lets the EA
+        # pick the action up on its very next /actions?status=sent poll.
+        # When a delay > 0 is set we still insert as 'pending' so the
+        # /cancel-via-DM window works as designed.
+        initial_status = "sent" if auto_execute_delay_sec <= 0 else "pending"
         cur = conn.execute(
             "INSERT INTO actions(source_msg_id, action_type, payload_json, "
-            "status, execute_after, fingerprint) VALUES(?, ?, ?, 'pending', ?, ?)",
-            (msg_id, _action_type(action), payload, execute_after, fp),
+            "status, execute_after, fingerprint) VALUES(?, ?, ?, ?, ?, ?)",
+            (msg_id, _action_type(action), payload, initial_status, execute_after, fp),
         )
         inserted.append(cur.lastrowid)
         trades.info(

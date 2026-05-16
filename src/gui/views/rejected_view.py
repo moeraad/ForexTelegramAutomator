@@ -113,24 +113,19 @@ def _load(db_path: Path, days: int | None) -> list[_Rejected]:
     return out
 
 
-def _stat_box(label: str, value: str, color: str = "#073642") -> QWidget:
-    box = QFrame()
-    box.setFrameShape(QFrame.Shape.StyledPanel)
-    box.setStyleSheet("QFrame { background: #fdf6e3; border-radius: 4px; }")
-    box.setFixedSize(140, 80)
-    layout = QVBoxLayout(box)
-    layout.setContentsMargins(10, 8, 10, 8)
-    layout.setSpacing(2)
-    k = QLabel(label.upper())
-    k.setStyleSheet("color: #93a1a1; font-size: 9px; letter-spacing: 1px;")
-    v = QLabel(value)
-    v.setStyleSheet(f"color: {color}; font-size: 16px; font-weight: 700;")
-    v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-    v.setWordWrap(True)
-    layout.addWidget(k)
-    layout.addWidget(v)
-    layout.addStretch()
-    return box
+def _hex_to_accent(color: str) -> str:
+    if not color:
+        return ""
+    c = color.lower()
+    if c in ("#26a69a", "#859900", "#00e676", "#00897b"):
+        return "success"
+    if c in ("#ef5350", "#dc322f", "#ff5252", "#d32f2f"):
+        return "danger"
+    if c in ("#ff9800", "#b58900", "#ffd740", "#f57c00"):
+        return "warning"
+    if c in ("#2962ff", "#268bd2", "#448aff", "#1976d2"):
+        return "accent"
+    return ""
 
 
 class _ReasonsModel(QAbstractTableModel):
@@ -182,7 +177,7 @@ class _ReasonsModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.TextAlignmentRole and col in (1, 2):
             return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         if role == Qt.ItemDataRole.ForegroundRole and col == 0:
-            return QColor("#dc322f") if cat != "(unknown)" else QColor("#586e75")
+            return QColor("#ef5350") if cat != "(unknown)" else QColor("#787b86")
         return None
 
     def category_at(self, row: int) -> str | None:
@@ -255,7 +250,7 @@ class _RejectedListModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.TextAlignmentRole and col == 0:
             return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         if role == Qt.ItemDataRole.ForegroundRole and col == 2:
-            return QColor("#dc322f")
+            return QColor("#ef5350")
         return None
 
 
@@ -323,7 +318,7 @@ class RejectedView(QWidget):
         title = QLabel("<span style='font-size:16px; font-weight:700;'>REJECTED</span>")
         title.setTextFormat(Qt.TextFormat.RichText)
         top.addWidget(title)
-        hint = QLabel("<span style='color:#93a1a1;'>prompt-drift detector — investigate spikes</span>")
+        hint = QLabel("<span style='color:#787b86;'>prompt-drift detector — investigate spikes</span>")
         hint.setTextFormat(Qt.TextFormat.RichText)
         top.addWidget(hint)
         top.addSpacing(16)
@@ -340,19 +335,20 @@ class RejectedView(QWidget):
         top.addWidget(refresh)
         layout.addLayout(top)
 
+        from src.gui.panels._stat_card import StatCard
         self._stat_row_layout = QHBoxLayout()
         self._stat_row_layout.setSpacing(8)
         for key in ("total", "categories", "top_reason", "topmost_recent"):
-            box = _stat_box(key, "—")
-            self._stat_boxes[key] = box
-            self._stat_row_layout.addWidget(box)
+            card = StatCard(label=key, value="—")
+            self._stat_boxes[key] = card
+            self._stat_row_layout.addWidget(card)
         self._stat_row_layout.addStretch()
         layout.addLayout(self._stat_row_layout)
 
         self._spike_banner = QLabel("")
         self._spike_banner.setTextFormat(Qt.TextFormat.RichText)
         self._spike_banner.setStyleSheet(
-            "QLabel { background: #dc322f; color: white; "
+            "QLabel { background: #ef5350; color: white; "
             "padding: 8px 12px; border-radius: 4px; font-weight: 600; }"
         )
         self._spike_banner.hide()
@@ -419,20 +415,17 @@ class RejectedView(QWidget):
         most_recent = rows[0].created_at[:19].replace("T", " ") if rows else "—"
 
         replacements = (
-            ("total", "Total rejected", str(total), "#dc322f" if total else "#073642"),
-            ("categories", "Reason types", str(categories), "#073642"),
-            ("top_reason", "Top reason", f"{top_reason}  ({top_count})", "#073642"),
-            ("topmost_recent", "Most recent", most_recent, "#073642"),
+            ("total", "Total rejected", str(total), "#ef5350" if total else "#d1d4dc"),
+            ("categories", "Reason types", str(categories), "#d1d4dc"),
+            ("top_reason", "Top reason", f"{top_reason}  ({top_count})", "#d1d4dc"),
+            ("topmost_recent", "Most recent", most_recent, "#d1d4dc"),
         )
         for key, label, value, color in replacements:
             self._replace_box(key, label, value, color)
 
     def _replace_box(self, key: str, label: str, value: str, color: str) -> None:
         assert self._stat_row_layout is not None
-        old = self._stat_boxes[key]
-        new = _stat_box(label, value, color)
-        idx = self._stat_row_layout.indexOf(old)
-        self._stat_row_layout.removeWidget(old)
-        old.deleteLater()
-        self._stat_row_layout.insertWidget(idx, new)
-        self._stat_boxes[key] = new
+        card = self._stat_boxes[key]
+        card.set_value(value, _hex_to_accent(color))
+        if hasattr(card, "_label") and label:
+            card._label.setText(label.upper())

@@ -161,9 +161,10 @@ def run(argv: list[str] | None = None) -> int:
     app.setApplicationName("CopyTrades")
     app.setOrganizationName("CopyTrades")
 
-    qss_path = Path(__file__).resolve().parent / "styles.qss"
-    if qss_path.exists():
-        app.setStyleSheet(qss_path.read_text(encoding="utf-8"))
+    # Apply the persisted theme BEFORE any view is built so qfluentwidgets
+    # and inline-styled widgets get the right palette on first paint.
+    from src.gui.theme import apply_theme, load_persisted
+    apply_theme(app, load_persisted())
 
     icon_path = _icon_path()
     if icon_path is not None and icon_path.exists():

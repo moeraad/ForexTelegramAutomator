@@ -100,7 +100,7 @@ class _IntroPage(QWizardPage):
         self._lookback.setSuffix(" days")
 
         cost = QLabel(
-            "<span style='color:#586e75;'>Each unique message ~1k tokens "
+            "<span style='color:#787b86;'>Each unique message ~1k tokens "
             "× cheap-tier model. 500 msgs at Haiku ≈ $0.10 - $0.30.</span>"
         )
         cost.setTextFormat(Qt.TextFormat.RichText)
@@ -113,19 +113,19 @@ class _IntroPage(QWizardPage):
         self._settings_note = QLabel("")
         self._settings_note.setTextFormat(Qt.TextFormat.RichText)
         self._settings_note.setWordWrap(True)
-        self._settings_note.setStyleSheet("color:#586e75;")
+        self._settings_note.setStyleSheet("color:#787b86;")
 
         # Collapsible custom-rules editor (hidden by default).
         self._rules_toggle = QPushButton("▸ Custom classifier rules (optional)")
         self._rules_toggle.setFlat(True)
         self._rules_toggle.setStyleSheet(
-            "QPushButton { text-align: left; color: #073642; padding: 4px 0; }"
-            "QPushButton:hover { color: #268bd2; }"
+            "QPushButton { text-align: left; color: #d1d4dc; padding: 4px 0; }"
+            "QPushButton:hover { color: #2962ff; }"
         )
         self._rules_toggle.clicked.connect(self._toggle_rules)
         self._rules_expanded = False
         self._rules_hint = QLabel(
-            "<span style='color:#586e75;'>Free-form guidance for the "
+            "<span style='color:#787b86;'>Free-form guidance for the "
             "classifier. Plain language. Edits save back to the DB so "
             "the same rules apply to future runs.</span>"
         )
@@ -143,7 +143,7 @@ class _IntroPage(QWizardPage):
         self._rules_edit.setMaximumHeight(220)
         self._rules_edit.hide()
         self._rules_counter = QLabel("")
-        self._rules_counter.setStyleSheet("color: #93a1a1; font-size: 11px;")
+        self._rules_counter.setStyleSheet("color: #787b86; font-size: 11px;")
         self._rules_counter.hide()
         self._rules_edit.textChanged.connect(self._refresh_rules_counter)
 
@@ -170,7 +170,7 @@ class _IntroPage(QWizardPage):
 
     def _refresh_rules_counter(self) -> None:
         n = len(self._rules_edit.toPlainText())
-        color = "#dc322f" if n > 2000 else "#93a1a1"
+        color = "#ef5350" if n > 2000 else "#787b86"
         self._rules_counter.setText(
             f"<span style='color:{color};'>{n} chars · soft limit 2000</span>"
         )
@@ -242,7 +242,7 @@ class _ProgressPage(QWizardPage):
         self._bar = QProgressBar()
         self._bar.setRange(0, 100)
         self._counts = QLabel("")
-        self._counts.setStyleSheet("color: #586e75;")
+        self._counts.setStyleSheet("color: #787b86;")
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.clicked.connect(self._on_cancel)
         self._done = False

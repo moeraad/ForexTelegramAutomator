@@ -163,7 +163,7 @@ class _BasePage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
         self._error = QLabel("")
-        self._error.setStyleSheet("color: #dc322f;")
+        self._error.setStyleSheet("color: #ef5350;")
         self._error.setWordWrap(True)
         self._error.setVisible(False)
 
@@ -250,7 +250,7 @@ class _PhonePage(_BasePage):
         self._send_btn = QPushButton("Send code")
         self._send_btn.clicked.connect(self._on_send)
         self._busy = QLabel("")
-        self._busy.setStyleSheet("color: #586e75;")
+        self._busy.setStyleSheet("color: #787b86;")
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Phone number"))
@@ -333,7 +333,7 @@ class _CodePage(_BasePage):
         self._submit_btn = QPushButton("Sign in")
         self._submit_btn.clicked.connect(self._on_submit)
         self._busy = QLabel("")
-        self._busy.setStyleSheet("color: #586e75;")
+        self._busy.setStyleSheet("color: #787b86;")
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Code"))
@@ -418,9 +418,9 @@ class _DialogsPage(_BasePage):
         self._model = QStandardItemModel()
         self._list.setModel(self._model)
         self._me_label = QLabel("")
-        self._me_label.setStyleSheet("color: #586e75;")
+        self._me_label.setStyleSheet("color: #787b86;")
         self._busy = QLabel("loading dialogs…")
-        self._busy.setStyleSheet("color: #586e75;")
+        self._busy.setStyleSheet("color: #787b86;")
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._me_label)
@@ -798,7 +798,7 @@ class _WelcomePage(_BasePage):
             "<li><b>MT5 installed</b> with the CopyTrades EA compiled "
             "(handled outside this wizard — last page has the checklist).</li>"
             "</ul>"
-            "<p style='color:#586e75;'>Each step validates your input before "
+            "<p style='color:#787b86;'>Each step validates your input before "
             "moving on. You can re-run this wizard later from Settings → Setup "
             "wizard to change any value.</p>"
         )
@@ -829,7 +829,7 @@ class _StackIdentityPage(_BasePage):
         self._symbol.setPlaceholderText("XAUUSD")
 
         info = QLabel(
-            "<span style='color:#586e75;'>The stack folder will be created at "
+            "<span style='color:#787b86;'>The stack folder will be created at "
             "<code>%APPDATA%/CopyTrades/&lt;name&gt;/</code> with its own DB "
             "and logs. A blank channel profile will be created at "
             "<code>channels/&lt;name&gt;.json</code> — fill in the AI prompt "
@@ -930,7 +930,7 @@ class _ServicesInstallPage(_BasePage):
         self._install_btn = QPushButton("Install + start services")
         self._install_btn.clicked.connect(self._on_install)
         self._busy = QLabel("")
-        self._busy.setStyleSheet("color: #586e75;")
+        self._busy.setStyleSheet("color: #787b86;")
         self._done = False
         self._mgr = None
 
@@ -1012,7 +1012,7 @@ class _DonePage(_BasePage):
         self._copy_btn.clicked.connect(self._copy_url)
 
         self._copied = QLabel("")
-        self._copied.setStyleSheet("color: #859900;")
+        self._copied.setStyleSheet("color: #26a69a;")
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._summary)
@@ -1037,14 +1037,14 @@ class _DonePage(_BasePage):
             "<li>In MT5 → <b>Tools → Options → Expert Advisors</b>: tick "
             "<b>Allow WebRequest for listed URL</b> and add:</li>"
             "</ol>"
-            f"<p style='font-family:Consolas,monospace; background:#fdf6e3; "
-            f"padding:8px; border-left:3px solid #859900;'>{self._api_url}</p>"
+            f"<p style='font-family:Consolas,monospace; background:#1e222d; "
+            f"padding:8px; border-left:3px solid #26a69a;'>{self._api_url}</p>"
             "<ol start='4'>"
             "<li>Enable <b>AutoTrading</b> on the MT5 toolbar.</li>"
             "<li>Watch the EA's Experts tab — first GET on "
             f"<code>{self._api_url}/actions?status=sent</code> means it's wired up.</li>"
             "</ol>"
-            "<p style='color:#586e75;'>You can re-open this wizard anytime from "
+            "<p style='color:#787b86;'>You can re-open this wizard anytime from "
             "Settings → Setup wizard.</p>"
         )
 

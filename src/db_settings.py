@@ -60,6 +60,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "classifier_anthropic_model": "claude-haiku-4-5-20251001",
     "classifier_openai_model": "gpt-5-nano",
     "cost_daily_budget_usd": "5.00",
+    "cost_cap_multiplier": "1.2",
     "classifier_custom_prompt": "",
     "bot_telegram_ok_at": "",
     "listener_telegram_ok_at": "",

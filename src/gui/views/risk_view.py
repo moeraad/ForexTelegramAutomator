@@ -21,23 +21,19 @@ from src.gui.services.risk_budget import RiskConfig, RiskMetrics, RiskMonitor
 from src.gui.services.stack_registry import Stack
 
 
-def _stat_box(label: str, value: str, color: str = "#073642") -> QWidget:
-    box = QFrame()
-    box.setFrameShape(QFrame.Shape.StyledPanel)
-    box.setStyleSheet("QFrame { background: #fdf6e3; border-radius: 4px; }")
-    box.setFixedSize(170, 80)
-    layout = QVBoxLayout(box)
-    layout.setContentsMargins(10, 8, 10, 8)
-    layout.setSpacing(2)
-    k = QLabel(label.upper())
-    k.setStyleSheet("color: #93a1a1; font-size: 9px; letter-spacing: 1px;")
-    v = QLabel(value)
-    v.setStyleSheet(f"color: {color}; font-size: 16px; font-weight: 700;")
-    v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-    layout.addWidget(k)
-    layout.addWidget(v)
-    layout.addStretch()
-    return box
+def _hex_to_accent(color: str) -> str:
+    if not color:
+        return ""
+    c = color.lower()
+    if c in ("#26a69a", "#859900", "#00e676", "#00897b"):
+        return "success"
+    if c in ("#ef5350", "#dc322f", "#ff5252", "#d32f2f"):
+        return "danger"
+    if c in ("#ff9800", "#b58900", "#ffd740", "#f57c00"):
+        return "warning"
+    if c in ("#2962ff", "#268bd2", "#448aff", "#1976d2"):
+        return "accent"
+    return ""
 
 
 class RiskView(QWidget):
@@ -68,7 +64,7 @@ class RiskView(QWidget):
         title.setTextFormat(Qt.TextFormat.RichText)
         top.addWidget(title)
         hint = QLabel(
-            "<span style='color:#93a1a1;'>auto-halts trading when any limit is breached  ·  "
+            "<span style='color:#787b86;'>auto-halts trading when any limit is breached  ·  "
             "must be manually cleared via HALT button</span>"
         )
         hint.setTextFormat(Qt.TextFormat.RichText)
@@ -78,7 +74,7 @@ class RiskView(QWidget):
 
         self._banner = QLabel()
         self._banner.setStyleSheet(
-            "QLabel { background: #dc322f; color: white; padding: 10px 14px; "
+            "QLabel { background: #ef5350; color: white; padding: 10px 14px; "
             "border-radius: 4px; font-weight: 600; }"
         )
         self._banner.setWordWrap(True)
@@ -86,12 +82,13 @@ class RiskView(QWidget):
         layout.addWidget(self._banner)
 
         layout.addWidget(QLabel("Current state"))
+        from src.gui.panels._stat_card import StatCard
         self._stat_row_layout = QHBoxLayout()
         self._stat_row_layout.setSpacing(8)
         for key in ("today_pnl", "week_pnl", "open_lots", "today_trades"):
-            box = _stat_box(key, "—")
-            self._stat_boxes[key] = box
-            self._stat_row_layout.addWidget(box)
+            card = StatCard(label=key, value="—")
+            self._stat_boxes[key] = card
+            self._stat_row_layout.addWidget(card)
         self._stat_row_layout.addStretch()
         layout.addLayout(self._stat_row_layout)
 
@@ -113,7 +110,7 @@ class RiskView(QWidget):
             row.addWidget(bar)
             cap = QLabel("—")
             cap.setMinimumWidth(220)
-            cap.setStyleSheet("color: #586e75; padding-left: 8px;")
+            cap.setStyleSheet("color: #787b86; padding-left: 8px;")
             row.addWidget(cap)
             row.addStretch()
             layout.addLayout(row)
@@ -190,8 +187,8 @@ class RiskView(QWidget):
 
     def _on_metrics(self, m: RiskMetrics) -> None:
         cfg = self._monitor.config
-        pnl_color_today = "#dc322f" if m.today_pnl < 0 else "#859900" if m.today_pnl > 0 else "#073642"
-        pnl_color_week = "#dc322f" if m.week_pnl < 0 else "#859900" if m.week_pnl > 0 else "#073642"
+        pnl_color_today = "#ef5350" if m.today_pnl < 0 else "#26a69a" if m.today_pnl > 0 else "#d1d4dc"
+        pnl_color_week = "#ef5350" if m.week_pnl < 0 else "#26a69a" if m.week_pnl > 0 else "#d1d4dc"
         self._replace_box("today_pnl", "Today realized", f"${m.today_pnl:+.2f}", pnl_color_today)
         self._replace_box("week_pnl", "Week realized", f"${m.week_pnl:+.2f}", pnl_color_week)
         self._replace_box("open_lots", "Open lots", f"{m.open_lots:.2f}")
@@ -223,16 +220,21 @@ class RiskView(QWidget):
             bar.setStyleSheet(self._bar_css(pct))
 
     def _bar_css(self, pct: int) -> str:
-        chunk = "#859900"
+        chunk = "#26a69a"
         if pct >= 100:
-            chunk = "#dc322f"
+            chunk = "#ef5350"
         elif pct >= 75:
-            chunk = "#cb4b16"
+            chunk = "#ff7043"
         elif pct >= 50:
-            chunk = "#b58900"
+            chunk = "#ff9800"
+        from src.gui.theme import current_palette
+        p = current_palette()
         return (
-            "QProgressBar { background: #fdf6e3; border: 1px solid #eee8d5; border-radius: 3px; "
-            "height: 14px; text-align: center; color: #073642; } "
+            "QProgressBar { "
+            f"background: {p.surface}; border: 1px solid {p.border};"
+            f" border-radius: 3px; height: 14px; text-align: center;"
+            f" color: {p.text}; "
+            "} "
             f"QProgressBar::chunk {{ background: {chunk}; border-radius: 2px; }}"
         )
 
@@ -248,12 +250,9 @@ class RiskView(QWidget):
     def _clear_banner(self) -> None:
         self._banner.setVisible(False)
 
-    def _replace_box(self, key: str, label: str, value: str, color: str = "#073642") -> None:
+    def _replace_box(self, key: str, label: str, value: str, color: str = "#d1d4dc") -> None:
         assert self._stat_row_layout is not None
-        old = self._stat_boxes[key]
-        new = _stat_box(label, value, color)
-        idx = self._stat_row_layout.indexOf(old)
-        self._stat_row_layout.removeWidget(old)
-        old.deleteLater()
-        self._stat_row_layout.insertWidget(idx, new)
-        self._stat_boxes[key] = new
+        card = self._stat_boxes[key]
+        card.set_value(value, _hex_to_accent(color))
+        if hasattr(card, "_label") and label:
+            card._label.setText(label.upper())

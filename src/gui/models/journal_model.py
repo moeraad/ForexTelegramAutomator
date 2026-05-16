@@ -21,8 +21,8 @@ COL_DURATION = 7
 COL_REASON = 8
 HEADERS = ("Closed", "Ticket", "Side", "Lots", "Entry", "Exit", "PnL", "Duration", "Reason")
 
-_GREEN = QColor("#859900")
-_RED = QColor("#dc322f")
+_GREEN = QColor("#26a69a")
+_RED = QColor("#ef5350")
 
 
 def _duration(opened_at: str, closed_at: str) -> str:

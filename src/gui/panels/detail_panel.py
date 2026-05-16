@@ -20,17 +20,17 @@ from src.gui.services.db_subscriber import DBSubscriber
 
 
 _VERDICT_COLOR = {
-    "recommend": "#859900",
-    "acceptable": "#b58900",
-    "caution": "#cb4b16",
-    "avoid": "#dc322f",
+    "recommend": "#26a69a",
+    "acceptable": "#ff9800",
+    "caution": "#ff7043",
+    "avoid": "#ef5350",
 }
 
 
 def _section_title(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setStyleSheet(
-        "color: #93a1a1; font-size: 11px; font-weight: 700; "
+        "color: #787b86; font-size: 11px; font-weight: 700; "
         "letter-spacing: 1px; padding-top: 12px;"
     )
     return lbl
@@ -40,7 +40,7 @@ def _body(text: str, css: str = "") -> QLabel:
     lbl = QLabel(text)
     lbl.setWordWrap(True)
     lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-    lbl.setStyleSheet(f"color: #073642; padding: 4px 0; {css}")
+    lbl.setStyleSheet(f"color: #d1d4dc; padding: 4px 0; {css}")
     lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
     return lbl
 
@@ -138,9 +138,9 @@ class DetailPanel(QWidget):
         h.setContentsMargins(0, 2, 0, 2)
         h.setSpacing(0)
         k = QLabel(key.upper())
-        k.setStyleSheet("color: #93a1a1; font-size: 10px; letter-spacing: 1px;")
+        k.setStyleSheet("color: #787b86; font-size: 10px; letter-spacing: 1px;")
         v = QLabel(value)
-        v.setStyleSheet("color: #073642;")
+        v.setStyleSheet("color: #d1d4dc;")
         v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         v.setWordWrap(True)
         h.addWidget(k)
@@ -153,25 +153,25 @@ class DetailPanel(QWidget):
         score_text = ""
         if action.is_open and action.quality_score is not None:
             verdict = action.quality_verdict or ""
-            color = _VERDICT_COLOR.get(verdict, "#586e75")
+            color = _VERDICT_COLOR.get(verdict, "#787b86")
             score_text = (
                 f"<span style='color:{color}; font-weight:700; font-size:18px;'>"
                 f"{action.quality_score}</span>"
-                f"<span style='color:#93a1a1;'>/100</span>"
+                f"<span style='color:#787b86;'>/100</span>"
                 f"&nbsp;<span style='color:{color};'>{verdict}</span>"
             )
 
         title = QLabel(
-            f"<span style='font-size:14px; font-weight:700; color:#073642;'>"
+            f"<span style='font-size:14px; font-weight:700; color:#d1d4dc;'>"
             f"#{action.id}  ·  {action.type_display}</span>"
-            f"&nbsp;&nbsp;<span style='color:#586e75;'>{action.status}</span>"
+            f"&nbsp;&nbsp;<span style='color:#787b86;'>{action.status}</span>"
             + (f"&nbsp;&nbsp;{score_text}" if score_text else "")
         )
         title.setTextFormat(Qt.TextFormat.RichText)
         self._add(title)
 
         meta = QLabel(
-            f"<span style='color:#93a1a1;'>{action.created_at}  ·  age {_age_text(action.created_at)}</span>"
+            f"<span style='color:#787b86;'>{action.created_at}  ·  age {_age_text(action.created_at)}</span>"
         )
         meta.setTextFormat(Qt.TextFormat.RichText)
         self._add(meta)
@@ -183,7 +183,7 @@ class DetailPanel(QWidget):
             self._add_kv("from", f"{sender}  ·  {msg.get('received_at', '')}")
             self._add(_body(
                 msg.get("text") or "(empty)",
-                "background: #fdf6e3; padding: 8px; border-left: 3px solid #b58900;",
+                "background: rgba(255,152,0,0.10); padding: 8px; border-left: 3px solid #ff9800;",
             ))
 
         if action.is_open:
@@ -288,15 +288,15 @@ class DetailPanel(QWidget):
     def _render_synth_state(self) -> None:
         self._clear()
         title = QLabel(
-            "<span style='font-size:14px; font-weight:700; color:#073642;'>LIVE STATE</span>"
+            "<span style='font-size:14px; font-weight:700; color:#d1d4dc;'>LIVE STATE</span>"
         )
         title.setTextFormat(Qt.TextFormat.RichText)
         self._add(title)
-        self._add(_body("Select an action on the left for full detail.", "color: #93a1a1;"))
+        self._add(_body("Select an action on the left for full detail.", "color: #787b86;"))
 
         self._add(_section_title("OPEN POSITIONS"))
         if not self._open_positions:
-            self._add(_body("(none)", "color: #93a1a1;"))
+            self._add(_body("(none)", "color: #787b86;"))
         else:
             for p in self._open_positions:
                 line = (
@@ -312,7 +312,7 @@ class DetailPanel(QWidget):
 
         self._add(_section_title("LAST EXECUTED OPEN"))
         if self._last_open is None:
-            self._add(_body("(none in this DB)", "color: #93a1a1;"))
+            self._add(_body("(none in this DB)", "color: #787b86;"))
         else:
             try:
                 p = json.loads(self._last_open["payload_json"] or "{}")
@@ -332,7 +332,7 @@ class DetailPanel(QWidget):
 
         self._add(_section_title("OPEN WATCHING (pending limits)"))
         if not self._watching:
-            self._add(_body("(none)", "color: #93a1a1;"))
+            self._add(_body("(none)", "color: #787b86;"))
         else:
             for w in self._watching:
                 try:

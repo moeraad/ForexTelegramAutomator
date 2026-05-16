@@ -134,7 +134,7 @@ class TriggersView(QWidget):
 
         toolbar = QHBoxLayout()
         self._dirty_label = QLabel("")
-        self._dirty_label.setStyleSheet("color: #b58900;")
+        self._dirty_label.setStyleSheet("color: #ff9800;")
         toolbar.addWidget(self._dirty_label)
         toolbar.addStretch()
         self._save_btn = QPushButton("Save")
@@ -457,7 +457,7 @@ class _BulkImportDialog(QDialog):
         self.resize(640, 480)
 
         info = QLabel(
-            "<span style='color:#586e75;'>Paste one message per line "
+            "<span style='color:#787b86;'>Paste one message per line "
             "(or separate by blank lines). Each message is classified via "
             "AI; results are appended as triggers. You can move "
             "misclassified entries afterward.</span>"

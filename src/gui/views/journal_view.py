@@ -54,26 +54,6 @@ _RANGES: list[tuple[str, int | None]] = [
 ]
 
 
-def _stat_box(label: str, value: str, color: str = "#073642") -> QWidget:
-    box = QFrame()
-    box.setFrameShape(QFrame.Shape.StyledPanel)
-    box.setStyleSheet("QFrame { background: #fdf6e3; border-radius: 4px; }")
-    box.setFixedSize(120, 80)
-    layout = QVBoxLayout(box)
-    layout.setContentsMargins(10, 8, 10, 8)
-    layout.setSpacing(2)
-    k = QLabel(label.upper())
-    k.setStyleSheet("color: #93a1a1; font-size: 9px; letter-spacing: 1px;")
-    v = QLabel(value)
-    v.setStyleSheet(f"color: {color}; font-size: 16px; font-weight: 700;")
-    v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-    v.setWordWrap(True)
-    layout.addWidget(k)
-    layout.addWidget(v)
-    layout.addStretch()
-    return box
-
-
 class JournalView(QWidget):
     def __init__(self, stack: Stack) -> None:
         super().__init__()
@@ -84,10 +64,28 @@ class JournalView(QWidget):
         self._stat_boxes: dict[str, QWidget] = {}
         self._build_ui()
         self.refresh()
+        from src.gui.theme import bus as theme_bus
+        theme_bus.theme_changed.connect(self._on_theme)
 
     def rebind(self, stack: Stack) -> None:
         self._stack = stack
         self.refresh()
+
+    def _on_theme(self, _pal=None) -> None:
+        from src.gui.views._chart_theme import apply_dark_theme
+        apply_dark_theme(self._chart, self._chart_view)
+        apply_dark_theme(self._daily_chart, self._daily_view)
+        self._restyle_reason_table()
+        self.refresh()
+
+    def _restyle_reason_table(self) -> None:
+        from src.gui.theme import current_palette
+        p = current_palette()
+        self._reason_table.setStyleSheet(
+            f"QLabel {{ background: {p.surface}; color: {p.text};"
+            f" border: 1px solid {p.border}; padding: 6px;"
+            f" font-family: Consolas, monospace; }}"
+        )
 
     def refresh(self) -> None:
         trades = closed_trades(self._stack.db_path, days=self._days)
@@ -125,19 +123,20 @@ class JournalView(QWidget):
         top.addWidget(self._export_btn)
         layout.addLayout(top)
 
+        from src.gui.panels._stat_card import StatCard
         self._stats_row = QHBoxLayout()
         self._stats_row.setSpacing(8)
-        for key, label in (
-            ("total_pnl", "Total PnL"),
-            ("trades", "Trades"),
-            ("win_rate", "Win rate"),
-            ("avg", "Avg"),
-            ("best", "Best"),
-            ("worst", "Worst"),
+        for key, label, accent in (
+            ("total_pnl", "Total PnL", ""),
+            ("trades", "Trades", ""),
+            ("win_rate", "Win rate", ""),
+            ("avg", "Avg", ""),
+            ("best", "Best", "success"),
+            ("worst", "Worst", "danger"),
         ):
-            box = _stat_box(label, "—")
-            self._stat_boxes[key] = box
-            self._stats_row.addWidget(box)
+            card = StatCard(label=label, value="—", accent=accent)
+            self._stat_boxes[key] = card
+            self._stats_row.addWidget(card)
         self._stats_row.addStretch()
         layout.addLayout(self._stats_row)
 
@@ -159,11 +158,13 @@ class JournalView(QWidget):
         charts_row = QHBoxLayout()
         charts_row.setSpacing(8)
 
+        from src.gui.views._chart_theme import apply_dark_theme
         self._chart = QChart()
         self._chart.setTitle("Equity curve")
         self._chart.legend().hide()
         self._chart_view = QChartView(self._chart)
         self._chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        apply_dark_theme(self._chart, self._chart_view)
         charts_row.addWidget(self._chart_view, 2)
 
         self._daily_chart = QChart()
@@ -171,6 +172,7 @@ class JournalView(QWidget):
         self._daily_chart.legend().hide()
         self._daily_view = QChartView(self._daily_chart)
         self._daily_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        apply_dark_theme(self._daily_chart, self._daily_view)
         charts_row.addWidget(self._daily_view, 1)
 
         layout.addLayout(charts_row, 1)
@@ -179,10 +181,8 @@ class JournalView(QWidget):
         self._reason_label.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(self._reason_label)
         self._reason_table = QLabel("(no closed trades in range)")
-        self._reason_table.setStyleSheet(
-            "QLabel { background: #fdf6e3; border: 1px solid #d6cfb8; "
-            "padding: 6px; font-family: Consolas, monospace; }"
-        )
+        # Card style is rebuilt on theme toggle below.
+        self._restyle_reason_table()
         self._reason_table.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(self._reason_table)
 
@@ -193,23 +193,21 @@ class JournalView(QWidget):
 
     def _update_stats(self) -> None:
         s = self._summary
-        pnl_color = "#859900" if s.total_pnl >= 0 else "#dc322f"
-
-        def _replace(key: str, label: str, value: str, color: str = "#073642") -> None:
-            old = self._stat_boxes[key]
-            new = _stat_box(label, value, color)
-            idx = self._stats_row.indexOf(old)
-            self._stats_row.removeWidget(old)
-            old.deleteLater()
-            self._stats_row.insertWidget(idx, new)
-            self._stat_boxes[key] = new
-
-        _replace("total_pnl", "Total PnL", f"${s.total_pnl:+.2f}", pnl_color)
-        _replace("trades", "Trades", str(s.total_trades))
-        _replace("win_rate", "Win rate", f"{s.win_rate * 100:.0f}%  ({s.win_count}/{s.total_trades})")
-        _replace("avg", "Avg / trade", f"${s.avg_pnl:+.2f}" if s.total_trades else "—")
-        _replace("best", "Best", f"${s.best:+.2f}" if s.total_trades else "—", "#859900")
-        _replace("worst", "Worst", f"${s.worst:+.2f}" if s.total_trades else "—", "#dc322f")
+        pnl_accent = "success" if s.total_pnl >= 0 else "danger"
+        self._stat_boxes["total_pnl"].set_value(f"${s.total_pnl:+.2f}", pnl_accent)
+        self._stat_boxes["trades"].set_value(str(s.total_trades))
+        self._stat_boxes["win_rate"].set_value(
+            f"{s.win_rate * 100:.0f}%  ({s.win_count}/{s.total_trades})"
+        )
+        self._stat_boxes["avg"].set_value(
+            f"${s.avg_pnl:+.2f}" if s.total_trades else "—"
+        )
+        self._stat_boxes["best"].set_value(
+            f"${s.best:+.2f}" if s.total_trades else "—", "success",
+        )
+        self._stat_boxes["worst"].set_value(
+            f"${s.worst:+.2f}" if s.total_trades else "—", "danger",
+        )
 
     def _update_chart(self, points: list[EquityPoint]) -> None:
         self._chart.removeAllSeries()
@@ -221,7 +219,7 @@ class JournalView(QWidget):
             return
 
         series = QLineSeries()
-        pen = QPen(QColor("#268bd2"))
+        pen = QPen(QColor("#2962ff"))
         pen.setWidth(2)
         series.setPen(pen)
         for p in points:
@@ -243,6 +241,9 @@ class JournalView(QWidget):
         axis_y.setRange(ymin - pad, ymax + pad)
         self._chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
         series.attachAxis(axis_y)
+        from src.gui.views._chart_theme import theme_axis
+        theme_axis(axis_x)
+        theme_axis(axis_y)
 
         self._chart.setTitle(
             f"Equity curve  ·  {len(points)} trades  ·  "
@@ -258,8 +259,8 @@ class JournalView(QWidget):
             return
         win_set = QBarSet("Wins")
         loss_set = QBarSet("Losses")
-        win_set.setColor(QColor("#859900"))
-        loss_set.setColor(QColor("#dc322f"))
+        win_set.setColor(QColor("#26a69a"))
+        loss_set.setColor(QColor("#ef5350"))
         labels: list[str] = []
         for d in days:
             labels.append(d.day[5:])  # "MM-DD"
@@ -281,6 +282,9 @@ class JournalView(QWidget):
         axis_y.setTitleText("PnL ($)")
         self._daily_chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
         series.attachAxis(axis_y)
+        from src.gui.views._chart_theme import theme_axis
+        theme_axis(axis_x)
+        theme_axis(axis_y)
         total = sum(d.pnl for d in days)
         self._daily_chart.setTitle(f"PnL per day  ·  net ${total:+.2f}")
 
@@ -291,7 +295,7 @@ class JournalView(QWidget):
         items = sorted(by_reason.items(), key=lambda kv: -kv[1][1])
         rows = []
         for reason, (pnl, n) in items:
-            color = "#859900" if pnl >= 0 else "#dc322f"
+            color = "#26a69a" if pnl >= 0 else "#ef5350"
             rows.append(
                 f"<tr><td style='padding:2px 12px;'>{reason}</td>"
                 f"<td style='padding:2px 12px;'>{n}</td>"

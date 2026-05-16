@@ -334,6 +334,34 @@ async def claim_sweeper_loop(app: Application):
         await asyncio.sleep(15.0)
 
 
+async def cost_guard_loop(app: Application):
+    """Once a minute, compare today's AI spend against the configured
+    daily cap. If breached, force kill_switch=on and DM the operator.
+    The watchdog is silent on every clean tick so it doesn't spam the
+    log when the budget is healthy.
+    """
+    from datetime import datetime, timezone
+    from src.cost_guard import check_and_enforce
+    from src.logging_setup import LOGS_DIR
+    conn: sqlite3.Connection = app.bot_data["conn"]
+    ai_calls_log = LOGS_DIR / "ai_calls.jsonl"
+    while True:
+        try:
+            halted_now, reason = check_and_enforce(conn, ai_calls_log)
+            if halted_now:
+                from src.notify import notify_owner
+                notify_owner(
+                    "⚠ Cost cap hit — auto-halted\n\n"
+                    f"{reason}\n\n"
+                    f"At UTC {datetime.now(timezone.utc).isoformat(timespec='seconds')}. "
+                    "Investigate REJECTED/COST views, raise the budget if "
+                    "warranted, then click RESUME."
+                )
+        except Exception as e:  # noqa: BLE001
+            log.exception("cost_guard_loop error: %s", e)
+        await asyncio.sleep(60.0)
+
+
 async def telegram_heartbeat_loop(app: Application):
     """Probes Telegram every 30s via bot.get_me() and writes
     settings.bot_telegram_ok_at on success. The GUI's service-bar reads
@@ -441,6 +469,7 @@ async def post_init(app: Application):
     _supervise(asyncio.create_task(claim_sweeper_loop(app)), "claim_sweeper_loop")
     _supervise(asyncio.create_task(macro_feed_loop(app)), "macro_feed_loop")
     _supervise(asyncio.create_task(telegram_heartbeat_loop(app)), "telegram_heartbeat_loop")
+    _supervise(asyncio.create_task(cost_guard_loop(app)), "cost_guard_loop")
 
 
 def main() -> None:
