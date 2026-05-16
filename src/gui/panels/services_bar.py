@@ -6,7 +6,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from PySide6.QtCore import Qt, QObject, QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QObject, QSize, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -206,8 +206,21 @@ class ServicesBar(QWidget):
             layout.addWidget(w)
         layout.addStretch()
 
-        self._restart_btn = QPushButton("Restart ▾")
-        self._restart_btn.setMenu(self._build_restart_menu())
+        # Replace the single "Restart ▾" combo with three icon buttons
+        # (Start / Stop / Restart). Each opens the same per-service +
+        # "all" submenu. Colors track the active palette via the
+        # `role` property + QSS so light/dark both look right.
+        self._start_btn = self._make_action_button(
+            "start", "Start service…", self._build_start_menu,
+        )
+        self._stop_btn = self._make_action_button(
+            "stop", "Stop service…", self._build_stop_menu,
+        )
+        self._restart_btn = self._make_action_button(
+            "restart", "Restart service…", self._build_restart_menu,
+        )
+        layout.addWidget(self._start_btn)
+        layout.addWidget(self._stop_btn)
         layout.addWidget(self._restart_btn)
 
         self._poller = _HealthPoller(parent=self)
@@ -222,10 +235,76 @@ class ServicesBar(QWidget):
         self._kick_timer.timeout.connect(self._kick_poll)
         self._kick_timer.start()
 
+        # Tint the action buttons to match the active palette so the
+        # operator can scan start/stop/restart at a glance in both
+        # light and dark modes.
+        self._apply_action_styles()
+        try:
+            from src.gui.theme import bus as _theme_bus
+            _theme_bus.theme_changed.connect(lambda _pal: self._apply_action_styles())
+        except Exception:
+            pass
+
+    def _apply_action_styles(self) -> None:
+        """Tint each button's icon with its semantic colour. Pure-icon
+        affordance — no border or background, the colour is the only
+        visual cue: green=start, red=stop, orange=restart. Works in
+        both light and dark palettes because the icons are SVG and
+        FluentIcon.icon() colours them directly."""
+        from src.gui.theme import current_palette
+        from PySide6.QtGui import QColor
+        try:
+            from qfluentwidgets import FluentIcon
+        except Exception:
+            return
+        p = current_palette()
+        icon_map = (
+            (self._start_btn,   FluentIcon.PLAY,   p.success),
+            (self._stop_btn,    FluentIcon.CLOSE,  p.danger),
+            (self._restart_btn, FluentIcon.UPDATE, p.warning),
+        )
+        for btn, glyph, color in icon_map:
+            try:
+                btn.setIcon(glyph.icon(color=QColor(color)))
+            except Exception:
+                # FluentIcon.icon(color=...) is the typical API; if a
+                # particular qfluentwidgets release dropped it, fall
+                # back to the uncoloured icon so the button still works.
+                btn.setIcon(glyph.icon())
+
     def rebind(self, stack: Stack) -> None:
         self._stack = stack
+        self._start_btn.setMenu(self._build_start_menu())
+        self._stop_btn.setMenu(self._build_stop_menu())
         self._restart_btn.setMenu(self._build_restart_menu())
         self._poller.set_stack(stack)
+
+    def _make_action_button(self, kind: str, tooltip: str, menu_builder):
+        """Build one of the three service-action buttons as a pure
+        coloured icon (no border, no background, no chevron). Click
+        pops the per-service menu. Falls back to a labelled QPushButton
+        on stripped installs.
+        """
+        try:
+            from qfluentwidgets import TransparentToolButton
+            btn = TransparentToolButton()
+            btn.setFixedSize(28, 28)
+            btn.setIconSize(QSize(18, 18))
+            btn.setProperty("svcAction", kind)
+            # Hide the menu chevron drawn by Qt when setMenu() is used.
+            # `::menu-indicator { image: none; width: 0; }` strips the
+            # arrow, and the transparent base means no border to clip.
+            btn.setStyleSheet(
+                "QToolButton { background: transparent; border: none; padding: 0; }"
+                "QToolButton::menu-indicator { image: none; width: 0; }"
+                "QToolButton:hover { background: rgba(127, 127, 127, 0.12); border-radius: 4px; }"
+            )
+        except Exception:
+            text_map = {"start": "Start", "stop": "Stop", "restart": "Restart"}
+            btn = QPushButton(text_map[kind])
+        btn.setToolTip(tooltip)
+        btn.setMenu(menu_builder())
+        return btn
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         self._poller.stop()
@@ -242,23 +321,46 @@ class ServicesBar(QWidget):
         self._ea.set_state(h.ea_state, h.ea_caption)
         self._snapshot.set_state(h.snapshot_state, h.snapshot_caption)
 
-    def _build_restart_menu(self) -> QMenu:
+    def _build_service_menu(self, verb: str, handler) -> QMenu:
+        """Shared per-service + all-services submenu. `verb` is the
+        leading word ("Start"/"Stop"/"Restart"); `handler` is the
+        callable that receives the list of service names to act on."""
         menu = QMenu(self)
         api_svc, bot_svc, listener_svc = self._stack.service_names
         for label, name in (
-            (f"Restart API ({api_svc})", api_svc),
-            (f"Restart Bot ({bot_svc})", bot_svc),
-            (f"Restart Listener ({listener_svc})", listener_svc),
+            (f"{verb} API ({api_svc})", api_svc),
+            (f"{verb} Bot ({bot_svc})", bot_svc),
+            (f"{verb} Listener ({listener_svc})", listener_svc),
         ):
             act = menu.addAction(label)
-            act.triggered.connect(lambda _checked=False, n=name: self._do_restart([n]))
+            act.triggered.connect(lambda _checked=False, n=name: handler([n]))
         menu.addSeparator()
         all_names = list(self._stack.service_names)
-        act_all = menu.addAction("Restart All")
-        act_all.triggered.connect(lambda _checked=False: self._do_restart(all_names))
+        act_all = menu.addAction(f"{verb} all")
+        act_all.triggered.connect(lambda _checked=False: handler(all_names))
         return menu
+
+    def _build_start_menu(self) -> QMenu:
+        return self._build_service_menu("Start", self._do_start)
+
+    def _build_stop_menu(self) -> QMenu:
+        return self._build_service_menu("Stop", self._do_stop)
+
+    def _build_restart_menu(self) -> QMenu:
+        return self._build_service_menu("Restart", self._do_restart)
+
+    def _do_start(self, names: list[str]) -> None:
+        for n in names:
+            nssm_client.nssm_start(n)
+        self._kick_poll()
+
+    def _do_stop(self, names: list[str]) -> None:
+        for n in names:
+            nssm_client.nssm_stop(n)
+        self._kick_poll()
 
     def _do_restart(self, names: list[str]) -> None:
         for n in names:
             nssm_client.nssm_restart(n)
+        self._kick_poll()
         self._kick_poll()
