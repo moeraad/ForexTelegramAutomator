@@ -1,6 +1,9 @@
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from src.db import get_setting
+
+_trades_log = logging.getLogger("trades")
 
 
 def promote_due_actions(conn: sqlite3.Connection) -> int:
@@ -43,11 +46,27 @@ def release_stale_claims(conn: sqlite3.Connection, max_age_sec: int = 300) -> in
     re-check before dispatch is a complementary fix tracked in FIXES_TODO.md.
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_sec)).isoformat()
+    # Capture ids BEFORE the UPDATE so we can audit each released row.
+    # Even one released claim is interesting: it's the precondition for
+    # the duplicate-order risk that the api.py post_result guard now
+    # blocks (REVIEW.md P3 #9). Without this line, a re-claim that fires
+    # a second broker order leaves no breadcrumb tying the new claim to
+    # the released one.
+    released = conn.execute(
+        "SELECT id, claimed_at, action_type FROM actions "
+        "WHERE status='claimed' AND claimed_at IS NOT NULL AND claimed_at < ?",
+        (cutoff,),
+    ).fetchall()
     cur = conn.execute(
         "UPDATE actions SET status='sent', claimed_at=NULL "
         "WHERE status='claimed' AND claimed_at IS NOT NULL AND claimed_at < ?",
         (cutoff,),
     )
+    for r in released:
+        _trades_log.warning(
+            "claim_released id=%s type=%s claimed_at=%s max_age_sec=%s",
+            r["id"], r["action_type"], r["claimed_at"], max_age_sec,
+        )
     return cur.rowcount
 
 

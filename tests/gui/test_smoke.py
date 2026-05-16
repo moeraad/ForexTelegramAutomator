@@ -132,8 +132,11 @@ def test_cost_guard_no_op_when_budget_zero(tmp_stack):
     conn = sqlite3.connect(str(tmp_stack.db_path))
     conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('cost_daily_budget_usd', '0')")
     conn.commit()
-    halted, _ = check_and_enforce(conn, Path(tmp_stack.project_path) / "nonexistent.jsonl")
-    assert halted is False
+    # cost_guard.check_and_enforce returns (event, reason) where event is
+    # "" | "halted" | "resumed" (REVIEW.md Q7 contract change). Budget=0
+    # disables the guard so no event ever fires.
+    event, _ = check_and_enforce(conn, Path(tmp_stack.project_path) / "nonexistent.jsonl")
+    assert event == ""
     conn.close()
 
 
@@ -154,8 +157,8 @@ def test_cost_guard_trips_when_over_cap(tmp_stack, tmp_path):
     ts = datetime.now(timezone.utc).isoformat()
     log.write_text(json.dumps({"ts": ts, "cost": 1.50}) + "\n", encoding="utf-8")
 
-    halted, reason = check_and_enforce(conn, log)
-    assert halted is True
+    event, reason = check_and_enforce(conn, log)
+    assert event == "halted"
     assert "$1.50" in reason
     row = conn.execute("SELECT value FROM settings WHERE key='kill_switch'").fetchone()
     assert row[0] == "on"

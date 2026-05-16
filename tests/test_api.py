@@ -33,6 +33,33 @@ def test_get_actions_returns_only_sent(tmp_path):
     assert body["actions"][0]["action_type"] == "OPEN"
 
 
+def test_auth_bind_policy_allows_loopback_without_token():
+    """Empty token + loopback bind is fine (single-host install)."""
+    from src.api import _enforce_auth_bind_policy
+    _enforce_auth_bind_policy("127.0.0.1", "")
+    _enforce_auth_bind_policy("localhost", "")
+    _enforce_auth_bind_policy("::1", "")
+
+
+def test_auth_bind_policy_allows_non_loopback_with_token():
+    """A token covers non-loopback binds — operator opted in."""
+    from src.api import _enforce_auth_bind_policy
+    _enforce_auth_bind_policy("0.0.0.0", "shared-secret-xyz")
+
+
+def test_auth_bind_policy_refuses_non_loopback_without_token():
+    """REVIEW.md P2 — refuse to start when API would be unauthenticated
+    AND bound to a routable interface. The default .env.example ships
+    with a blank token; the moment someone exposes the port, the API
+    must not silently allow it."""
+    import pytest
+    from src.api import _enforce_auth_bind_policy
+    with pytest.raises(SystemExit):
+        _enforce_auth_bind_policy("0.0.0.0", "")
+    with pytest.raises(SystemExit):
+        _enforce_auth_bind_policy("192.168.1.20", "   ")
+
+
 def test_get_kill_switch(tmp_path):
     conn = _setup(tmp_path)
     app = build_app(conn)
@@ -45,8 +72,9 @@ def test_get_kill_switch(tmp_path):
 def test_post_result_executed(tmp_path):
     conn = _setup(tmp_path)
     cur = conn.execute(
-        "INSERT INTO actions(action_type, payload_json, status) "
-        "VALUES('OPEN', '{}', 'sent')"
+        "INSERT INTO actions(action_type, payload_json, status, claimed_at) "
+        "VALUES('OPEN', '{}', 'claimed', ?)",
+        (datetime.now(timezone.utc).isoformat(),),
     )
     aid = cur.lastrowid
     app = build_app(conn)
@@ -107,6 +135,40 @@ def test_claim_race_only_one_winner(tmp_path):
     assert {r1.status_code, r2.status_code} == {200, 409}
 
 
+def test_post_result_after_release_returns_409_no_position_insert(tmp_path):
+    """REVIEW.md P0 — release_stale_claims has flipped the action back to
+    'sent' (NULLing claimed_at) while the EA was still executing. A late
+    result POST from that stale executor must be refused so it can't
+    overwrite a freshly re-claimed row and cause two broker orders."""
+    conn = _setup(tmp_path)
+    # Action was claimed, then released by promoter.release_stale_claims
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status, claimed_at) "
+        "VALUES('OPEN', '{}', 'sent', NULL)"
+    )
+    aid = cur.lastrowid
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{aid}/result", json={
+        "status": "executed",
+        "mt5_ticket": 55501,
+        "snapshot": {
+            "symbol": "XAUUSD", "side": "BUY", "volume": 0.10,
+            "entry_price": 4700.0, "sl": 4690.0, "tp": 4720.0,
+        },
+    })
+    assert r.status_code == 409
+    detail = r.json().get("detail", {})
+    assert detail.get("error") == "claim_expired"
+    # No position row was created from the rejected POST
+    n = conn.execute(
+        "SELECT COUNT(*) FROM positions WHERE mt5_ticket=55501"
+    ).fetchone()[0]
+    assert n == 0
+    # Action status is unchanged (still 'sent', ready for re-claim)
+    row = conn.execute("SELECT status FROM actions WHERE id=?", (aid,)).fetchone()
+    assert row["status"] == "sent"
+
+
 def test_post_result_with_legs_inserts_all_positions(tmp_path):
     conn = _setup(tmp_path)
     cur = conn.execute(
@@ -159,7 +221,9 @@ def test_post_result_does_not_resurrect_closed_position(tmp_path):
             "entry_price": 4865.0, "sl": 4855.0, "tp": 4880.0,
         },
     })
-    assert r.status_code == 200
+    # Action is already terminal (executed) — the result-POST guard refuses
+    # the duplicate so the closed position is not resurrected.
+    assert r.status_code == 409
     pos = conn.execute("SELECT status, close_reason FROM positions WHERE mt5_ticket=777").fetchone()
     assert pos["status"] == "closed"
     assert pos["close_reason"] == "tp"
@@ -211,8 +275,9 @@ def _open_position(conn, ticket: int, *, volume: float = 0.30, sl: float = 4855.
 def test_post_result_populates_original_volume(tmp_path):
     conn = _setup(tmp_path)
     cur = conn.execute(
-        "INSERT INTO actions(action_type, payload_json, status) "
-        "VALUES('OPEN', '{}', 'sent')"
+        "INSERT INTO actions(action_type, payload_json, status, claimed_at) "
+        "VALUES('OPEN', '{}', 'claimed', ?)",
+        (datetime.now(timezone.utc).isoformat(),),
     )
     aid = cur.lastrowid
     client = TestClient(build_app(conn))
@@ -267,6 +332,42 @@ def test_update_position_no_increment_on_volume_unchanged_or_increased(tmp_path)
         "SELECT partial_close_count FROM positions WHERE mt5_ticket=4003"
     ).fetchone()
     assert pos["partial_close_count"] == 0
+
+
+def test_update_position_heals_low_original_volume(tmp_path):
+    """REVIEW.md P2 — if the original_volume snapshot was stamped at a
+    partial fill (e.g. 0.05), a subsequent /update reflecting the broker's
+    completed fill (0.10) must lift original_volume so the AI prompt's
+    "X of orig" reasoning stays accurate."""
+    conn = _setup(tmp_path)
+    _open_position(conn, 4099, volume=0.05)
+    client = TestClient(build_app(conn))
+    r = client.post("/positions/4099/update", json={"volume": 0.10})
+    assert r.status_code == 200
+    pos = conn.execute(
+        "SELECT volume, original_volume, partial_close_count "
+        "FROM positions WHERE mt5_ticket=4099"
+    ).fetchone()
+    assert pos["volume"] == 0.10
+    assert pos["original_volume"] == 0.10
+    # Volume went up, not down — partial counter must not have moved.
+    assert pos["partial_close_count"] == 0
+
+
+def test_update_position_does_not_lower_original_volume(tmp_path):
+    """A partial close lowering `volume` must NOT reduce original_volume."""
+    conn = _setup(tmp_path)
+    _open_position(conn, 4100, volume=0.10)
+    client = TestClient(build_app(conn))
+    r = client.post("/positions/4100/update", json={"volume": 0.05})
+    assert r.status_code == 200
+    pos = conn.execute(
+        "SELECT volume, original_volume, partial_close_count "
+        "FROM positions WHERE mt5_ticket=4100"
+    ).fetchone()
+    assert pos["volume"] == 0.05
+    assert pos["original_volume"] == 0.10
+    assert pos["partial_close_count"] == 1
 
 
 def test_update_position_sets_sl_moved_at_on_first_change(tmp_path):
@@ -594,7 +695,10 @@ def test_post_alert_inserts_alert_row(tmp_path):
         "FROM actions WHERE id=?", (aid,)
     ).fetchone()
     assert row["action_type"] == "ALERT"
-    assert row["status"] == "pending"
+    # ALERTs are notification-only: they go in terminal so the bot's
+    # notification_dispatcher (executed-only) DMs them on the next tick.
+    # REVIEW.md P1 — previously inserted as 'pending' and silently swallowed.
+    assert row["status"] == "executed"
     assert row["source_msg_id"] is None
     assert row["execute_after"] is None  # never auto-promoted
     payload = json.loads(row["payload_json"])
@@ -822,8 +926,9 @@ def test_post_result_naked_sets_is_naked(tmp_path):
     stamps naked_opened_at."""
     conn = _setup(tmp_path)
     cur = conn.execute(
-        "INSERT INTO actions(action_type, payload_json, status) "
-        "VALUES('OPEN_INSTANT', '{}', 'sent')"
+        "INSERT INTO actions(action_type, payload_json, status, claimed_at) "
+        "VALUES('OPEN_INSTANT', '{}', 'claimed', ?)",
+        (datetime.now(timezone.utc).isoformat(),),
     )
     aid = cur.lastrowid
     client = TestClient(build_app(conn))

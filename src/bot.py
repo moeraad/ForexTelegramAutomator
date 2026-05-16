@@ -29,6 +29,18 @@ def _kb_for_action(action_id: int, action_type: str) -> InlineKeyboardMarkup | N
     ]])
 
 
+def _kb_for_relaunch(action_id: int) -> InlineKeyboardMarkup:
+    """Keyboard offered for actions found in non-terminal state when the
+    bot starts up — i.e. the previous session crashed before promoting /
+    executing them. Operator decides whether to fire the action now or
+    skip it (REVIEW.md P1 / Q2).
+    """
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("Execute", callback_data=f"relexec:{action_id}"),
+        InlineKeyboardButton("Ignore", callback_data=f"relskip:{action_id}"),
+    ]])
+
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _owner_only(update.effective_user.id):
         return
@@ -53,6 +65,9 @@ async def cmd_halt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     conn = ctx.application.bot_data["conn"]
     set_setting(conn, "kill_switch", "on")
+    # Tag the halt so cost_guard's auto-resume sweeper leaves operator-set
+    # halts alone (REVIEW.md Q7).
+    set_setting(conn, "kill_switch_reason", "operator")
     await update.message.reply_text("🛑 KILL SWITCH ON. Already-sent actions will still run.")
 
 
@@ -61,6 +76,9 @@ async def cmd_resume(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     conn = ctx.application.bot_data["conn"]
     set_setting(conn, "kill_switch", "off")
+    # Clear the halt-reason marker so cost_guard auto-resume logic
+    # treats the next halt cleanly (REVIEW.md Q7).
+    conn.execute("DELETE FROM settings WHERE key='kill_switch_reason'")
     await update.message.reply_text("✅ Kill switch OFF.")
 
 
@@ -126,7 +144,7 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # crashing, and the `op` whitelist makes a malformed callback fail
     # cleanly instead of leaving the button stuck in a spinner.
     parts = q.data.split(":", 1)
-    if len(parts) != 2 or parts[0] not in ("cancel", "execute"):
+    if len(parts) != 2 or parts[0] not in ("cancel", "execute", "relexec", "relskip"):
         log.warning("on_button: invalid callback_data=%r", q.data)
         await q.edit_message_text("Invalid callback.")
         return
@@ -142,6 +160,10 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _do_cancel(conn, aid, lambda t: q.edit_message_text(t))
     elif op == "execute":
         await _do_execute(conn, aid, lambda t: q.edit_message_text(t))
+    elif op == "relexec":
+        await _do_relaunch_execute(conn, aid, lambda t: q.edit_message_text(t))
+    elif op == "relskip":
+        await _do_relaunch_skip(conn, aid, lambda t: q.edit_message_text(t))
 
 
 async def _do_cancel(conn, aid, reply):
@@ -168,6 +190,60 @@ async def _do_execute(conn, aid, reply):
     await reply(f"Promoted action #{aid} to sent.")
 
 
+async def _do_relaunch_execute(conn, aid, reply):
+    """Operator chose Execute on a recovery DM (REVIEW.md P1 / Q2).
+
+    The recovery scan parked the action by clearing execute_after; this
+    restores it to "now" so the next promoter sweep picks it up. We do
+    NOT skip pending → sent here directly — the promoter may still hold
+    it back if kill_switch is on, and we want that policy to apply.
+    """
+    row = conn.execute(
+        "SELECT status, action_type FROM actions WHERE id=?", (aid,)
+    ).fetchone()
+    if row is None:
+        await reply(f"Action #{aid} not found.")
+        return
+    if row["status"] != "pending":
+        await reply(
+            f"Action #{aid} is {row['status']} now, recovery decision no "
+            "longer applies."
+        )
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE actions SET execute_after=? WHERE id=? AND status='pending'",
+        (now, aid),
+    )
+    await reply(f"Recovery: action #{aid} ({row['action_type']}) re-armed for execution.")
+
+
+async def _do_relaunch_skip(conn, aid, reply):
+    """Operator chose Ignore on a recovery DM (REVIEW.md P1 / Q2)."""
+    row = conn.execute(
+        "SELECT status, action_type FROM actions WHERE id=?", (aid,)
+    ).fetchone()
+    if row is None:
+        await reply(f"Action #{aid} not found.")
+        return
+    if row["status"] != "pending":
+        await reply(
+            f"Action #{aid} is {row['status']} now, recovery decision no "
+            "longer applies."
+        )
+        return
+    conn.execute(
+        "UPDATE actions SET status='rejected', "
+        "ea_response='operator_skipped_after_relaunch', "
+        "executed_at=? WHERE id=? AND status='pending'",
+        (datetime.now(timezone.utc).isoformat(), aid),
+    )
+    await reply(
+        f"Recovery: action #{aid} ({row['action_type']}) skipped "
+        "(operator_skipped_after_relaunch)."
+    )
+
+
 async def notification_dispatcher(app: Application):
     """Polls for actions that just reached a terminal state and DMs the owner.
 
@@ -191,6 +267,63 @@ async def notification_dispatcher(app: Application):
 
     while True:
         try:
+            # Parked rows: status='pending' with execute_after=NULL come from
+            # the backfill-management guard in orchestrator (REVIEW.md P1 /
+            # Q5). DM them with the relaunch keyboard so the operator can
+            # Execute (re-arm) or Ignore (reject).
+            parked = conn.execute(
+                "SELECT id, action_type, payload_json, source_msg_id, "
+                "       created_at, ea_response "
+                "FROM actions "
+                "WHERE status='pending' AND execute_after IS NULL "
+                "  AND notified_at IS NULL "
+                "  AND COALESCE(ea_response,'') = 'backfill_management_review_required' "
+                "ORDER BY id ASC LIMIT 20"
+            ).fetchall()
+            for r in parked:
+                try:
+                    payload = json.loads(r["payload_json"]) if r["payload_json"] else {}
+                except (TypeError, ValueError):
+                    payload = {}
+                from src.telegram_format import _payload_summary
+                summary = _payload_summary(r["action_type"], payload) or "(no payload)"
+                src_text = ""
+                if r["source_msg_id"]:
+                    mrow = conn.execute(
+                        "SELECT text, received_at FROM messages WHERE id=?",
+                        (r["source_msg_id"],),
+                    ).fetchone()
+                    if mrow is not None:
+                        snippet = (mrow["text"] or "").strip().replace("\n", " ")
+                        if len(snippet) > 240:
+                            snippet = snippet[:240] + "..."
+                        src_text = (
+                            f"\nSignal at {mrow['received_at']}:\n  \"{snippet}\""
+                        )
+                text = (
+                    f"♻️ Backfill review - action #{r['id']}\n"
+                    f"Type: {r['action_type']}\n"
+                    f"Created: {r['created_at']}\n"
+                    f"Payload: {summary}"
+                    f"{src_text}\n\n"
+                    f"This management action arrived via backfill replay "
+                    f"(listener was offline when the original signal posted). "
+                    f"Auto-execution was suppressed to avoid re-firing a "
+                    f"stale instruction. Execute now or ignore?"
+                )
+                try:
+                    await app.bot.send_message(
+                        chat_id=config.TG_BOT_OWNER_USER_ID,
+                        text=text,
+                        reply_markup=_kb_for_relaunch(r["id"]),
+                    )
+                    conn.execute(
+                        "UPDATE actions SET notified_at=CURRENT_TIMESTAMP "
+                        "WHERE id=?",
+                        (r["id"],),
+                    )
+                except Exception as e:
+                    log.warning("backfill-review DM failed for #%s: %s", r["id"], e)
             rows = conn.execute(
                 "SELECT id, action_type, payload_json, status, ea_response, source_msg_id "
                 "FROM actions WHERE notified_at IS NULL "
@@ -347,8 +480,8 @@ async def cost_guard_loop(app: Application):
     ai_calls_log = LOGS_DIR / "ai_calls.jsonl"
     while True:
         try:
-            halted_now, reason = check_and_enforce(conn, ai_calls_log)
-            if halted_now:
+            event, reason = check_and_enforce(conn, ai_calls_log)
+            if event == "halted":
                 from src.notify import notify_owner
                 notify_owner(
                     "⚠ Cost cap hit — auto-halted\n\n"
@@ -356,6 +489,16 @@ async def cost_guard_loop(app: Application):
                     f"At UTC {datetime.now(timezone.utc).isoformat(timespec='seconds')}. "
                     "Investigate REJECTED/COST views, raise the budget if "
                     "warranted, then click RESUME."
+                )
+            elif event == "resumed":
+                # REVIEW.md Q7 — UTC midnight (or a budget raise) brings
+                # today's spend back under cap. cost_guard cleared its
+                # own halt; tell the operator so they know trading is live.
+                from src.notify import notify_owner
+                notify_owner(
+                    "▶ Cost cap cleared — auto-resumed\n\n"
+                    f"{reason}\n\n"
+                    f"At UTC {datetime.now(timezone.utc).isoformat(timespec='seconds')}."
                 )
         except Exception as e:  # noqa: BLE001
             log.exception("cost_guard_loop error: %s", e)
@@ -452,6 +595,91 @@ def _supervise(task: asyncio.Task, name: str) -> None:
     task.add_done_callback(_cb)
 
 
+async def recover_orphan_pending_actions(app: Application) -> int:
+    """At bot startup, find pending actions left over from a prior session
+    (listener / bot crashed before they could be promoted) and ask the
+    operator whether to execute or ignore each one.
+
+    REVIEW.md P1 (Q2 / Q5):
+      - Q2: "When listener crashes it should check the last non-executed
+            actions from the prior session and ask me execute/ignore with
+            full context."
+      - Q5: "An old REINFORCE reminder arriving on listener relaunch must
+            NOT re-close-and-reopen automatically."
+
+    Strategy:
+      1. Parks every pending action by NULLing execute_after — the promoter
+         filter (`execute_after IS NOT NULL`) ignores parked rows, so they
+         cannot auto-fire while the operator decides.
+      2. DMs the operator one message per orphan, with an inline keyboard
+         (Execute / Ignore). The callbacks (`relexec:` / `relskip:`) flip
+         the action back to a promotable state or mark it
+         operator_skipped_after_relaunch.
+
+    Returns the number of orphan actions parked + DMed.
+    """
+    from src.telegram_format import _payload_summary
+    conn: sqlite3.Connection = app.bot_data["conn"]
+    rows = conn.execute(
+        "SELECT id, action_type, payload_json, source_msg_id, "
+        "       created_at, execute_after "
+        "FROM actions "
+        "WHERE status='pending' AND execute_after IS NOT NULL "
+        "ORDER BY id ASC"
+    ).fetchall()
+    if not rows:
+        return 0
+    # Park each row so the promoter cannot pick them up between now and
+    # the operator's button press.
+    ids = [r["id"] for r in rows]
+    conn.executemany(
+        "UPDATE actions SET execute_after=NULL WHERE id=? AND status='pending'",
+        [(i,) for i in ids],
+    )
+    sent = 0
+    for r in rows:
+        try:
+            payload = json.loads(r["payload_json"]) if r["payload_json"] else {}
+        except (TypeError, ValueError):
+            payload = {}
+        summary = _payload_summary(r["action_type"], payload) or "(no payload)"
+        # Original message text for context, if we have it.
+        src_text = ""
+        if r["source_msg_id"]:
+            mrow = conn.execute(
+                "SELECT text, received_at FROM messages WHERE id=?",
+                (r["source_msg_id"],),
+            ).fetchone()
+            if mrow is not None:
+                snippet = (mrow["text"] or "").strip().replace("\n", " ")
+                if len(snippet) > 240:
+                    snippet = snippet[:240] + "…"
+                src_text = (
+                    f"\nSignal at {mrow['received_at']}:\n  \"{snippet}\""
+                )
+        text = (
+            f"♻️ Recovery — orphan action #{r['id']}\n"
+            f"Type: {r['action_type']}\n"
+            f"Created: {r['created_at']}\n"
+            f"Was due: {r['execute_after']}\n"
+            f"Payload: {summary}"
+            f"{src_text}\n\n"
+            f"This action did not run in the previous session. "
+            f"Execute it now or ignore?"
+        )
+        try:
+            await app.bot.send_message(
+                chat_id=config.TG_BOT_OWNER_USER_ID,
+                text=text,
+                reply_markup=_kb_for_relaunch(r["id"]),
+            )
+            sent += 1
+        except Exception as e:
+            log.warning("recovery DM failed for action #%s: %s", r["id"], e)
+    log.info("recover_orphan_pending_actions parked=%s dmed=%s", len(ids), sent)
+    return sent
+
+
 async def post_init(app: Application):
     # Startup ping — operator wants to know the system is up. Best-effort:
     # if the owner hasn't /start-ed yet, send_message raises Forbidden which
@@ -463,6 +691,14 @@ async def post_init(app: Application):
         )
     except Exception as e:
         log.warning("startup ping failed: %s", e)
+    # Crash recovery (REVIEW.md P1 / Q2): scan for pending actions from a
+    # prior session and ask the operator before any auto-promotion can
+    # fire. Parks orphans by NULLing execute_after BEFORE promotion_loop
+    # starts so there is no window where the promoter could pick them up.
+    try:
+        await recover_orphan_pending_actions(app)
+    except Exception as e:
+        log.exception("recover_orphan_pending_actions failed: %s", e)
     _supervise(asyncio.create_task(notification_dispatcher(app)), "notification_dispatcher")
     _supervise(asyncio.create_task(position_close_notifier(app)), "position_close_notifier")
     _supervise(asyncio.create_task(promotion_loop(app)), "promotion_loop")

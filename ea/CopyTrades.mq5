@@ -39,6 +39,11 @@ input double MaxLotsPerSignal        = 100.0;
 input double MaxSlLossPercent        = 2.0;
 input int    SlippagePoints          = 50;
 input string Symbol_Override         = "XAUUSD";
+// Magic number tags positions opened by this EA so reconciliation, plan
+// management, and singleton-position lookups can ignore unrelated orders on
+// the same account. Override per stack when running multiple CopyTrades
+// stacks against one MT5 terminal (REVIEW.md P2 / Q3).
+input ulong  Magic                   = 919191;
 // Effective entry zone is widened by this many price units on EACH side
 // of [entry_low, entry_high] before the in-zone check. Lets a signal that
 // arrived a few ticks late still fill at market instead of being rejected.
@@ -225,7 +230,7 @@ PendingOrder g_pending_orders[];
 int g_retry_counter = 0;
 
 int OnInit() {
-   trade.SetExpertMagicNumber(919191);
+   trade.SetExpertMagicNumber(Magic);
    trade.SetDeviationInPoints(SlippagePoints);
    EventSetTimer(PollIntervalSec);
    LoadPersistedPlans();
@@ -726,7 +731,7 @@ void AggregateOpenPositions(int &count, double &lots, double &pnl,
    for(int i = 0; i < PositionsTotal(); i++) {
       ulong t = PositionGetTicket(i);
       if(t == 0) continue;
-      if(PositionGetInteger(POSITION_MAGIC) != 919191) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != Magic) continue;
       count++;
       double vol   = PositionGetDouble(POSITION_VOLUME);
       double entry = PositionGetDouble(POSITION_PRICE_OPEN);
@@ -819,7 +824,7 @@ void BuildStats(DashboardStats &s) {
    for(int i = 0; i < PositionsTotal(); i++) {
       ulong t = PositionGetTicket(i);
       if(t == 0) continue;
-      if(PositionGetInteger(POSITION_MAGIC) != 919191) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != Magic) continue;
       s.open_trades_count++;
       if(slot >= DSH_MAX_TRADES) continue;
       DashboardTrade dt;
@@ -2206,7 +2211,7 @@ int CountOurOpenPositions() {
    for(int i = 0; i < PositionsTotal(); i++) {
       ulong t = PositionGetTicket(i);
       if(t == 0) continue;
-      if(PositionGetInteger(POSITION_MAGIC) == 919191) n++;
+      if(PositionGetInteger(POSITION_MAGIC) == Magic) n++;
    }
    return n;
 }
@@ -2217,14 +2222,14 @@ int CountOurOpenPositions() {
 // without a ticket, because there's at most one open trade at a time.
 // These helpers + handlers resolve "the open position" implicitly.
 
-// Returns the ticket of our (magic-919191) open position on `symbol`, or 0
+// Returns the ticket of our (Magic) open position on `symbol`, or 0
 // if none. If multiple are open (shouldn't happen in single-position mode
 // but guard anyway), returns the first encountered.
 long FindSingletonOpenTicket(string symbol) {
    for(int i = 0; i < PositionsTotal(); i++) {
       ulong t = PositionGetTicket(i);
       if(t == 0) continue;
-      if(PositionGetInteger(POSITION_MAGIC) != 919191) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != Magic) continue;
       if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
       return (long)t;
    }

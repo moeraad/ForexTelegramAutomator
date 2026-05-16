@@ -114,7 +114,12 @@ def test_process_message_ai_exception_writes_alert(tmp_path):
     assert len(ids) == 1
     row = conn.execute("SELECT * FROM actions WHERE id=?", (ids[0],)).fetchone()
     assert row["action_type"] == "ALERT"
-    assert row["status"] == "pending"
+    # REVIEW.md P1: ALERTs are notification-only and now inserted as
+    # terminal 'executed' so the bot's notification_dispatcher (which
+    # only DMs terminal rows) picks them up. Previously 'pending', which
+    # left them silently stranded forever.
+    assert row["status"] == "executed"
+    assert row["executed_at"] is not None
     assert row["execute_after"] is None
     payload = json.loads(row["payload_json"])
     assert "AI error" in payload["text"]

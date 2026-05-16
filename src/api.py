@@ -366,28 +366,66 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
         # insert wins.
         conn.execute("BEGIN")
         try:
-            conn.execute(
-                "UPDATE actions SET status=?, executed_at=?, ea_response=? WHERE id=?",
+            # Only accept result POSTs from non-terminal owning states:
+            #   - 'claimed' is the normal path (EA claimed then executed)
+            #   - 'watching' is the limit-order path (EA placed BuyLimit
+            #     earlier with status='watching', limit fires later and the
+            #     EA POSTs the executed result)
+            # If the row is in 'sent' (release_stale_claims recycled the
+            # claim) or already terminal (executed/failed/rejected — a
+            # duplicate retry), refuse the POST. This is the safety net
+            # against double broker orders from one AI signal (REVIEW.md
+            # P0).
+            cur = conn.execute(
+                "UPDATE actions SET status=?, executed_at=?, ea_response=? "
+                "WHERE id=? AND status IN ('claimed','watching')",
                 (body.status, now, body.error, action_id),
             )
-            for leg in legs:
-                s = leg.snapshot
-                is_naked = 1 if s.get("is_naked") else 0
-                naked_opened_at = now if is_naked else None
-                conn.execute(
-                    "INSERT OR IGNORE INTO positions(action_id, mt5_ticket, symbol, side, "
-                    "volume, original_volume, entry_price, sl, tp, status, opened_at, "
-                    "is_naked, naked_opened_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?, 'open', ?, ?, ?)",
-                    (action_id, leg.mt5_ticket, s.get("symbol"), s.get("side"),
-                     s.get("volume"), s.get("volume"),
-                     s.get("entry_price"), s.get("sl"), s.get("tp"), now,
-                     is_naked, naked_opened_at),
-                )
+            claim_expired = cur.rowcount == 0
+            if not claim_expired:
+                for leg in legs:
+                    s = leg.snapshot
+                    is_naked = 1 if s.get("is_naked") else 0
+                    naked_opened_at = now if is_naked else None
+                    conn.execute(
+                        "INSERT OR IGNORE INTO positions(action_id, mt5_ticket, symbol, side, "
+                        "volume, original_volume, entry_price, sl, tp, status, opened_at, "
+                        "is_naked, naked_opened_at) "
+                        "VALUES(?,?,?,?,?,?,?,?,?, 'open', ?, ?, ?)",
+                        (action_id, leg.mt5_ticket, s.get("symbol"), s.get("side"),
+                         s.get("volume"), s.get("volume"),
+                         s.get("entry_price"), s.get("sl"), s.get("tp"), now,
+                         is_naked, naked_opened_at),
+                    )
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
             raise
+
+        if claim_expired:
+            # The claim was released by release_stale_claims (or the row was
+            # never in `claimed` state). Refuse the late POST so a stale
+            # executor cannot overwrite a fresher claim's status — the same
+            # action may already have been re-claimed and is mid-flight on
+            # the EA. Safety net against double broker orders from one AI
+            # signal (REVIEW.md P0).
+            current = conn.execute(
+                "SELECT status FROM actions WHERE id=?", (action_id,)
+            ).fetchone()
+            trades.info(
+                "action_result_rejected id=%s reason=claim_expired current=%s incoming=%s ticket=%s",
+                action_id,
+                current["status"] if current else "missing",
+                body.status,
+                body.mt5_ticket or "",
+            )
+            raise HTTPException(
+                409,
+                detail={
+                    "error": "claim_expired",
+                    "current_status": current["status"] if current else None,
+                },
+            )
 
         # Trades log AFTER commit so a rolled-back transaction doesn't
         # leave phantom lifecycle lines in trades.log.
@@ -441,7 +479,8 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             been moved at least once" without trying to compare floats.
         """
         row = conn.execute(
-            "SELECT status, volume, sl, sl_moved_at FROM positions WHERE mt5_ticket=?",
+            "SELECT status, volume, original_volume, sl, sl_moved_at "
+            "FROM positions WHERE mt5_ticket=?",
             (ticket,),
         ).fetchone()
         if row is None:
@@ -456,6 +495,19 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             explicit_fields += 1
             if row["volume"] is not None and body.volume < row["volume"]:
                 sets.append("partial_close_count = partial_close_count + 1")
+            # Heal original_volume when the snapshot lower-bound was stamped
+            # before the broker filled the full requested lot (e.g. first
+            # /post_result captured a partial fill, the broker then topped up
+            # the remainder, and this /update is the first reflection of the
+            # true full lot). Without healing, the AI prompt would render
+            # "0.10 of 0.05 orig" — visibly wrong and breaks the
+            # idempotency rules that key off original_volume (REVIEW.md P2).
+            if (
+                row["original_volume"] is not None
+                and body.volume > row["original_volume"]
+            ):
+                sets.append("original_volume=?")
+                args.append(body.volume)
         if body.sl is not None:
             sets.append("sl=?"); args.append(body.sl)
             explicit_fields += 1
@@ -837,10 +889,15 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
         row that the bot's notification_dispatcher already DMs.
         """
         payload = json.dumps({"level": body.level, "text": body.text})
+        now = datetime.now(timezone.utc).isoformat()
+        # Insert ALERT terminal so notification_dispatcher (executed-only)
+        # picks it up. See orchestrator.py + REVIEW.md P1 — ALERTs are
+        # notification-only and must not sit in 'pending' forever.
         cur = conn.execute(
-            "INSERT INTO actions(source_msg_id, action_type, payload_json, status) "
-            "VALUES(NULL, 'ALERT', ?, 'pending')",
-            (payload,),
+            "INSERT INTO actions(source_msg_id, action_type, payload_json, "
+            "status, executed_at) "
+            "VALUES(NULL, 'ALERT', ?, 'executed', ?)",
+            (payload, now),
         )
         trades.info("alert_posted id=%s level=%s", cur.lastrowid, body.level)
         return {"ok": True, "id": cur.lastrowid}
@@ -953,11 +1010,34 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
     return app
 
 
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"})
+
+
+def _enforce_auth_bind_policy(host: str, token: str) -> None:
+    """Refuse to start when the API would be unauthenticated AND bound to
+    a non-loopback interface. Any process on the network could otherwise
+    POST /actions/{id}/result and forge broker fills (REVIEW.md P2).
+
+    Empty token on a loopback bind is allowed (fresh install on a single
+    laptop, EA on the same host). Anything else requires EA_SHARED_TOKEN.
+    """
+    if (token or "").strip():
+        return
+    if (host or "").strip().lower() in _LOOPBACK_HOSTS:
+        return
+    raise SystemExit(
+        f"API refuses to start: EA_SHARED_TOKEN is empty and API_HOST="
+        f"{host!r} is not loopback. Set EA_SHARED_TOKEN in .env, or bind "
+        f"to 127.0.0.1 if this is a single-host install."
+    )
+
+
 def run() -> None:
     import uvicorn
     from src import config
     from src.db import connect, init_schema
     from src.notify import notify_owner
+    _enforce_auth_bind_policy(config.API_HOST, config.EA_SHARED_TOKEN)
     conn = connect(config.DB_PATH)
     init_schema(conn)
     app = build_app(conn)

@@ -146,3 +146,79 @@ def test_process_message_flags_backfill_on_messages_row(tmp_path):
         "SELECT is_backfill FROM messages WHERE tg_message_id=?", (999,)
     ).fetchone()
     assert row["is_backfill"] == 1
+
+
+def test_backfill_management_action_is_parked_for_review(tmp_path):
+    """REVIEW.md P1 / Q5 — a REINFORCE arriving via backfill replay must
+    NOT auto-fire (it would close+reopen the current position based on a
+    stale channel message). Instead it lands `pending` with
+    execute_after=NULL and ea_response='backfill_management_review_required'
+    so the promoter skips it and the bot's notification dispatcher DMs
+    the operator with an Execute/Ignore keyboard."""
+    from unittest.mock import MagicMock
+    from src.ai import AICallResult
+    from src.validators import AIResponse, ReinforceAction
+    from src.orchestrator import process_message
+    conn = _setup(tmp_path)
+    ai = MagicMock()
+    ai.call.return_value = AICallResult(
+        response=AIResponse(
+            actions=[ReinforceAction(side="BUY")],
+            reasoning="",
+        ),
+        raw_text="{}",
+        usage={"input_tokens": 1, "output_tokens": 1,
+               "cache_read_tokens": 0, "cache_creation_tokens": 0},
+        latency_ms=10,
+    )
+    ids = process_message(
+        conn, ai, tg_message_id=500, chat_id=42,
+        sender="Yusuf", text="عزز شراء",
+        ai_log_path=tmp_path / "ai.jsonl",
+        auto_execute_delay_sec=30,
+        is_backfill=True,
+    )
+    assert len(ids) == 1
+    row = conn.execute(
+        "SELECT action_type, status, execute_after, ea_response "
+        "FROM actions WHERE id=?", (ids[0],)
+    ).fetchone()
+    assert row["action_type"] == "REINFORCE"
+    assert row["status"] == "pending"
+    assert row["execute_after"] is None
+    assert row["ea_response"] == "backfill_management_review_required"
+
+
+def test_live_management_action_auto_executes(tmp_path):
+    """The parking rule applies only to backfill. A management action
+    arriving on the live path keeps the normal auto-execute flow."""
+    from unittest.mock import MagicMock
+    from src.ai import AICallResult
+    from src.validators import AIResponse, ReinforceAction
+    from src.orchestrator import process_message
+    conn = _setup(tmp_path)
+    ai = MagicMock()
+    ai.call.return_value = AICallResult(
+        response=AIResponse(
+            actions=[ReinforceAction(side="BUY")],
+            reasoning="",
+        ),
+        raw_text="{}",
+        usage={"input_tokens": 1, "output_tokens": 1,
+               "cache_read_tokens": 0, "cache_creation_tokens": 0},
+        latency_ms=10,
+    )
+    ids = process_message(
+        conn, ai, tg_message_id=501, chat_id=42,
+        sender="Yusuf", text="عزز شراء",
+        ai_log_path=tmp_path / "ai.jsonl",
+        auto_execute_delay_sec=30,
+        is_backfill=False,
+    )
+    row = conn.execute(
+        "SELECT status, execute_after, ea_response FROM actions WHERE id=?",
+        (ids[0],),
+    ).fetchone()
+    assert row["status"] == "pending"
+    assert row["execute_after"] is not None
+    assert row["ea_response"] is None

@@ -177,11 +177,15 @@ def process_message(
     try:
         result = ai.call(context_block, open_positions_block, f"{sender}: {text}")
     except Exception as e:
-        # Persist as ALERT so user is informed
+        # Persist as ALERT so user is informed. Terminal 'executed' so
+        # notification_dispatcher DMs it (REVIEW.md P1).
+        ai_err_now = datetime.now(timezone.utc).isoformat()
         cur = conn.execute(
-            "INSERT INTO actions(source_msg_id, action_type, payload_json, status) "
-            "VALUES(?, 'ALERT', ?, 'pending')",
-            (msg_id, json.dumps({"level": "warning", "text": f"AI error: {e}"})),
+            "INSERT INTO actions(source_msg_id, action_type, payload_json, "
+            "status, executed_at) "
+            "VALUES(?, 'ALERT', ?, 'executed', ?)",
+            (msg_id, json.dumps({"level": "warning", "text": f"AI error: {e}"}),
+             ai_err_now),
         )
         log_call(ai_log_path, {"error": str(e), "msg_id": msg_id})
         return [cur.lastrowid]
@@ -275,16 +279,24 @@ def process_message(
             )
             continue
 
-        # ALERTs do not get auto-executed
+        # ALERTs are notification-only — they have nothing to execute
+        # against MT5 (no broker call, no position mutation). Insert as
+        # terminal 'executed' with executed_at set so the bot's
+        # notification_dispatcher (which only DMs terminal rows) picks
+        # them up immediately. Previously inserted as 'pending' with no
+        # execute_after, which left them invisible forever — neither the
+        # promoter nor the dispatcher would advance them (REVIEW.md P1).
         if isinstance(action, AlertAction):
+            alert_now = datetime.now(timezone.utc).isoformat()
             cur = conn.execute(
-                "INSERT INTO actions(source_msg_id, action_type, payload_json, status) "
-                "VALUES(?, 'ALERT', ?, 'pending')",
-                (msg_id, payload),
+                "INSERT INTO actions(source_msg_id, action_type, payload_json, "
+                "status, executed_at) "
+                "VALUES(?, 'ALERT', ?, 'executed', ?)",
+                (msg_id, payload, alert_now),
             )
             inserted.append(cur.lastrowid)
             trades.info(
-                "action_inserted msg_id=%s action_id=%s type=ALERT status=pending",
+                "action_inserted msg_id=%s action_id=%s type=ALERT status=executed",
                 msg_id, cur.lastrowid,
             )
             continue
@@ -298,10 +310,25 @@ def process_message(
         # When a delay > 0 is set we still insert as 'pending' so the
         # /cancel-via-DM window works as designed.
         initial_status = "sent" if auto_execute_delay_sec <= 0 else "pending"
+        # Backfill-management guard (REVIEW.md P1 / Q5): a non-OPEN
+        # action arriving from backfill replay is almost always a stale
+        # reminder of an instruction that has already been handled. An
+        # old REINFORCE in particular would close+reopen the current
+        # position without operator review. Park these rows
+        # (status=pending, execute_after=NULL) so the promoter cannot
+        # auto-fire them; the bot's notification dispatcher then DMs the
+        # operator with an Execute/Ignore keyboard.
+        ea_response: str | None = None
+        if is_backfill and not isinstance(action, (OpenAction, OpenInstantAction)):
+            initial_status = "pending"
+            execute_after = None
+            ea_response = "backfill_management_review_required"
         cur = conn.execute(
             "INSERT INTO actions(source_msg_id, action_type, payload_json, "
-            "status, execute_after, fingerprint) VALUES(?, ?, ?, ?, ?, ?)",
-            (msg_id, _action_type(action), payload, initial_status, execute_after, fp),
+            "status, execute_after, fingerprint, ea_response) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?)",
+            (msg_id, _action_type(action), payload, initial_status,
+             execute_after, fp, ea_response),
         )
         inserted.append(cur.lastrowid)
         trades.info(
@@ -419,8 +446,34 @@ def _evaluator_worker(action_id: int, signal_dict: dict, db_path: str) -> None:
             action_id, evaluation.get("score"), evaluation.get("verdict"),
             evaluation.get("data_quality"),
         )
-    except Exception:
+    except Exception as e:
         log.exception("evaluator worker: failed for action_id=%s", action_id)
+        # Write an ALERT so the operator sees the failure via the bot's
+        # notification dispatcher. Without this the AI call was billed
+        # (it shows up in ai_calls.jsonl) but no breadcrumb tied it to a
+        # specific action (REVIEW.md P2).
+        if conn is not None:
+            try:
+                conn.execute(
+                    "INSERT INTO actions(source_msg_id, action_type, "
+                    "payload_json, status, executed_at) "
+                    "VALUES(NULL, 'ALERT', ?, 'executed', ?)",
+                    (
+                        json.dumps({
+                            "level": "warning",
+                            "text": (
+                                f"Evaluator crashed for action #{action_id}: "
+                                f"{type(e).__name__}: {e}"
+                            ),
+                        }),
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+            except Exception:
+                log.exception(
+                    "evaluator worker: failed to write ALERT row for action_id=%s",
+                    action_id,
+                )
     finally:
         if conn is not None:
             try:

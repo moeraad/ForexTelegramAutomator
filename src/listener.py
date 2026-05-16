@@ -302,8 +302,10 @@ async def main() -> None:
                 (m.tg_message_id, config.TG_WATCHED_CHAT_ID, m.sender, m.text),
             )
         conn.execute(
-            "INSERT INTO actions(source_msg_id, action_type, payload_json, status) "
-            "VALUES(NULL, 'ALERT', ?, 'pending')",
+            "INSERT INTO actions(source_msg_id, action_type, payload_json, "
+            "status, executed_at) "
+            "VALUES(NULL, 'ALERT', ?, 'executed', "
+            "  strftime('%Y-%m-%dT%H:%M:%S+00:00','now'))",
             (json.dumps({
                 "level": "warning",
                 "text": f"First launch: archived {len(missed)} historical messages "
@@ -327,8 +329,10 @@ async def main() -> None:
             )
         )
         conn.execute(
-            "INSERT INTO actions(source_msg_id, action_type, payload_json, status) "
-            "VALUES(NULL, 'ALERT', ?, 'pending')",
+            "INSERT INTO actions(source_msg_id, action_type, payload_json, "
+            "status, executed_at) "
+            "VALUES(NULL, 'ALERT', ?, 'executed', "
+            "  strftime('%Y-%m-%dT%H:%M:%S+00:00','now'))",
             (json.dumps({
                 "level": "info" if skipped == 0 else "warning",
                 "text": f"Reconnect replay: processed {processed} missed messages "

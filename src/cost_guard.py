@@ -26,7 +26,7 @@ def _today_iso() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
-def _todays_cost_usd(ai_calls_log: Path) -> float:
+def todays_cost_usd(ai_calls_log: Path) -> float:
     """Sum the ``cost`` field of every log row whose ``ts`` falls today
     (UTC). Cheap to compute; jsonl is small and only grows ~1KB/call."""
     if not ai_calls_log.exists():
@@ -59,15 +59,25 @@ def _todays_cost_usd(ai_calls_log: Path) -> float:
 def check_and_enforce(
     conn: sqlite3.Connection,
     ai_calls_log: Path,
-) -> tuple[bool, str]:
-    """Return ``(halted_now, reason)``. ``halted_now`` is True only when
-    this call flipped the kill_switch (so the caller can DM once)."""
+) -> tuple[str, str]:
+    """Return ``(event, reason)`` where ``event`` is one of
+    ``""``, ``"halted"``, ``"resumed"``. The caller DMs the operator
+    once per non-empty event so a single restart-resume cycle yields
+    exactly two messages (REVIEW.md Q7).
+
+    Resume is automatic when today's UTC spend falls back under cap AND
+    the halt was set by this guard (kill_switch_reason='cost_cap').
+    Operator-set halts (kill_switch_reason='operator') stay halted
+    until the operator explicitly resumes.
+    """
     cur = conn.execute(
         "SELECT key, value FROM settings WHERE key IN "
-        "('kill_switch', 'cost_daily_budget_usd', 'cost_cap_multiplier')"
+        "('kill_switch', 'kill_switch_reason', "
+        " 'cost_daily_budget_usd', 'cost_cap_multiplier')"
     )
     rows = dict(cur.fetchall())
     kill_switch = (rows.get("kill_switch") or "off").lower()
+    kill_reason = (rows.get("kill_switch_reason") or "").lower()
     try:
         budget = float(rows.get("cost_daily_budget_usd") or 0.0)
     except ValueError:
@@ -77,27 +87,47 @@ def check_and_enforce(
     except ValueError:
         multiplier = 1.2
 
-    # Budget disabled (0 means "no cap") — never halt on cost.
+    # Budget disabled (0 means "no cap") — never halt or auto-resume.
     if budget <= 0:
-        return False, ""
+        return "", ""
 
     cap = budget * multiplier
-    today_cost = _todays_cost_usd(ai_calls_log)
-    if today_cost <= cap:
-        return False, ""
+    today_cost = todays_cost_usd(ai_calls_log)
 
-    # Breach. Only flip if not already halted.
-    if kill_switch == "on":
-        return False, ""
+    if today_cost > cap:
+        if kill_switch == "on":
+            return "", ""
+        conn.execute(
+            "INSERT OR REPLACE INTO settings(key, value) "
+            "VALUES('kill_switch', 'on')"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO settings(key, value) "
+            "VALUES('kill_switch_reason', 'cost_cap')"
+        )
+        conn.commit()
+        reason = (
+            f"AI spend ${today_cost:.2f} exceeded daily cap "
+            f"${cap:.2f} (budget ${budget:.2f} × {multiplier:.1f}). "
+            "Trading auto-halted."
+        )
+        _log.warning("cost_guard tripped: %s", reason)
+        return "halted", reason
 
-    conn.execute(
-        "INSERT OR REPLACE INTO settings(key, value) VALUES('kill_switch', 'on')"
-    )
-    conn.commit()
-    reason = (
-        f"AI spend ${today_cost:.2f} exceeded daily cap "
-        f"${cap:.2f} (budget ${budget:.2f} × {multiplier:.1f}). "
-        "Trading auto-halted."
-    )
-    _log.warning("cost_guard tripped: %s", reason)
-    return True, reason
+    # Today's spend is under the cap. Auto-resume only if WE set the halt.
+    if kill_switch == "on" and kill_reason == "cost_cap":
+        conn.execute(
+            "INSERT OR REPLACE INTO settings(key, value) "
+            "VALUES('kill_switch', 'off')"
+        )
+        conn.execute("DELETE FROM settings WHERE key='kill_switch_reason'")
+        conn.commit()
+        reason = (
+            f"Daily AI spend back under cap "
+            f"(${today_cost:.2f} ≤ ${cap:.2f}); trading auto-resumed. "
+            "Likely UTC midnight roll-over or budget raise."
+        )
+        _log.info("cost_guard auto-resumed: %s", reason)
+        return "resumed", reason
+
+    return "", ""
