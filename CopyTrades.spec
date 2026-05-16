@@ -39,7 +39,37 @@ hiddenimports = [
     "src.profile_render",
     "src.secret_box",
     "src.db_settings",
+    # Service entrypoints — gui_launcher.py routes to these when invoked
+    # with `--service api|bot|listener`. They're behind a runtime branch
+    # so PyInstaller's static analysis won't find them otherwise.
+    "src.api",
+    "src.bot",
+    "src.listener",
+    "src.orchestrator",
+    "src.promoter",
+    "src.cost_guard",
+    "src.notify",
+    "src.ai",
+    "src.ai_triage",
+    "src.ai_evaluator",
+    "src.llm_provider",
+    "src.validators",
+    "src.fingerprint",
+    "src.signal_memory",
+    "src.state_summary",
+    "src.telegram_format",
+    "src.logging_setup",
+    "src.config",
+    "src.db",
 ]
+# Pull every submodule of the providers used by the service paths so
+# lazy imports inside the SDK don't cause MissingModule at runtime.
+from PyInstaller.utils.hooks import collect_submodules as _collect
+hiddenimports += _collect("anthropic")
+hiddenimports += _collect("openai")
+hiddenimports += _collect("telegram")  # python-telegram-bot
+hiddenimports += _collect("fastapi")
+hiddenimports += _collect("uvicorn")
 
 from PyInstaller.utils.hooks import collect_submodules
 hiddenimports += collect_submodules("telethon")

@@ -34,11 +34,15 @@ def test_get_actions_returns_only_sent(tmp_path):
 
 
 def test_auth_bind_policy_allows_loopback_without_token():
-    """Empty token + loopback bind is fine (single-host install)."""
+    """Empty token + loopback bind is fine (single-host install). Empty
+    host is also treated as loopback (will fall back to the default
+    127.0.0.1 in run() before binding)."""
     from src.api import _enforce_auth_bind_policy
     _enforce_auth_bind_policy("127.0.0.1", "")
     _enforce_auth_bind_policy("localhost", "")
     _enforce_auth_bind_policy("::1", "")
+    _enforce_auth_bind_policy("", "")  # unset host -> default loopback
+    _enforce_auth_bind_policy("   ", "")  # whitespace -> default loopback
 
 
 def test_auth_bind_policy_allows_non_loopback_with_token():
@@ -47,11 +51,11 @@ def test_auth_bind_policy_allows_non_loopback_with_token():
     _enforce_auth_bind_policy("0.0.0.0", "shared-secret-xyz")
 
 
-def test_auth_bind_policy_refuses_non_loopback_without_token():
+def test_auth_bind_policy_refuses_explicit_non_loopback_without_token():
     """REVIEW.md P2 — refuse to start when API would be unauthenticated
-    AND bound to a routable interface. The default .env.example ships
-    with a blank token; the moment someone exposes the port, the API
-    must not silently allow it."""
+    AND bound to an explicitly non-loopback interface (0.0.0.0, LAN IP).
+    Empty / unset host is allowed because run() substitutes the loopback
+    default before calling bind."""
     import pytest
     from src.api import _enforce_auth_bind_policy
     with pytest.raises(SystemExit):

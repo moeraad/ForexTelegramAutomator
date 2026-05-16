@@ -1012,18 +1012,23 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"})
 
+DEFAULT_API_HOST = "127.0.0.1"
+DEFAULT_API_PORT = 8765
+
 
 def _enforce_auth_bind_policy(host: str, token: str) -> None:
     """Refuse to start when the API would be unauthenticated AND bound to
     a non-loopback interface. Any process on the network could otherwise
     POST /actions/{id}/result and forge broker fills (REVIEW.md P2).
 
-    Empty token on a loopback bind is allowed (fresh install on a single
-    laptop, EA on the same host). Anything else requires EA_SHARED_TOKEN.
+    An empty/unset host is treated as the safe loopback default (see
+    DEFAULT_API_HOST). Anything explicitly non-loopback requires a
+    non-empty EA_SHARED_TOKEN.
     """
     if (token or "").strip():
         return
-    if (host or "").strip().lower() in _LOOPBACK_HOSTS:
+    h = (host or "").strip().lower()
+    if not h or h in _LOOPBACK_HOSTS:
         return
     raise SystemExit(
         f"API refuses to start: EA_SHARED_TOKEN is empty and API_HOST="
@@ -1037,14 +1042,19 @@ def run() -> None:
     from src import config
     from src.db import connect, init_schema
     from src.notify import notify_owner
-    _enforce_auth_bind_policy(config.API_HOST, config.EA_SHARED_TOKEN)
+    # Fall back to safe defaults when the operator hasn't populated
+    # api_host / api_port in the stack DB yet (fresh install path):
+    # this lets the service start with 127.0.0.1:8765 instead of
+    # exiting on an empty-host failure. The Settings UI still drives
+    # the real values once the wizard / Tuning tab is filled in.
+    host = (config.API_HOST or "").strip() or DEFAULT_API_HOST
+    port = int(config.API_PORT) if config.API_PORT else DEFAULT_API_PORT
+    _enforce_auth_bind_policy(host, config.EA_SHARED_TOKEN)
     conn = connect(config.DB_PATH)
     init_schema(conn)
     app = build_app(conn)
-    notify_owner(
-        f"🌐 API started on http://{config.API_HOST}:{config.API_PORT}"
-    )
-    uvicorn.run(app, host=config.API_HOST, port=config.API_PORT)
+    notify_owner(f"🌐 API started on http://{host}:{port}")
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":
