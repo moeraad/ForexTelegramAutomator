@@ -37,14 +37,22 @@ from src.gui.services.stack_registry import Stack
 
 _SHORT_FIELDS = ("name", "symbol", "language", "price_range_hint")
 _PROSE_FIELDS = ("description", "header", "compound_messages")
+# Triggers-derived prompt fragments — `vocabulary_table`,
+# `commentary_filter`, `worked_examples`, `triage_keep_triggers` — are
+# baked from `triggers` by profile_io.render(). Editing them inline
+# would be overwritten on the next render, so the Editor used to show
+# read-only views. With the dedicated Triggers tab (source of truth)
+# and the Prompts tab (rendered preview), those read-only views were
+# the weakest of three surfaces and added a "why is there an 'Edit
+# elsewhere' button here?" footgun. Drop them from the Editor entirely
+# — `_EDITOR_HIDDEN` filters them out on load.
 _DERIVED_FIELDS = (
     "vocabulary_table",
     "commentary_filter",
     "worked_examples",
     "triage_keep_triggers",
 )
-# Hidden from the Editor entirely — managed in the Triggers tab.
-_EDITOR_HIDDEN = frozenset({"triggers"})
+_EDITOR_HIDDEN = frozenset({"triggers", *_DERIVED_FIELDS})
 _LANGUAGES = ("ar", "en", "fr", "es", "ru", "tr", "de", "pt")
 _FIELD_ORDER = (
     "name",
@@ -63,9 +71,64 @@ _FIELD_ORDER = (
 )
 _REQUIRED = ("name", "symbol", "header", "vocabulary_table", "worked_examples")
 
+# Logical groupings for the Editor — drives the SettingCardGroup layout
+# so the Editor uses the same Fluent shell as Settings → Tuning. Each
+# tuple is (group_title, (field_key, ...)). Fields present in the data
+# but not listed here fall through to "_PROFILE_EDITOR_FALLBACK_GROUP".
+_PROFILE_EDITOR_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Identity",        ("name", "symbol", "language", "price_range_hint")),
+    ("Prompt content",  ("description", "shorthand_decode_example", "header",
+                         "compound_messages", "directional_command_flow")),
+    # `vocabulary_table`, `commentary_filter`, `worked_examples`, and
+    # `triage_keep_triggers` are intentionally absent here — they're
+    # derived from the Triggers tab. See _EDITOR_HIDDEN above.
+)
+_PROFILE_EDITOR_FALLBACK_GROUP = "Other"
+
+# Per-key metadata: icon + one-line subtitle for the card. Anything not
+# listed falls back to (FluentIcon.EDIT, "") so the row still renders.
+# Subtitle reads as the operator's tooltip-at-a-glance hint.
+def _profile_field_meta(key: str):
+    # Import inside the function so module import time doesn't cost the
+    # qfluentwidgets icon set when this file is just being parsed by
+    # tests that don't render UI.
+    from qfluentwidgets import FluentIcon
+    table: dict[str, tuple[object, str]] = {
+        "name":           (FluentIcon.TAG,      "Profile name shown in the AI prompt header."),
+        "description":    (FluentIcon.INFO,     "One-paragraph description of the channel character."),
+        "symbol":         (FluentIcon.PIE_SINGLE, "Trading symbol (single-symbol invariant — XAUUSD only)."),
+        "language":       (FluentIcon.LANGUAGE, "Source-channel language code (drives language-specific rules)."),
+        "price_range_hint": (FluentIcon.UNIT,   "Hint for the AI's price-range decoder (e.g. \"4500-5500\")."),
+        "shorthand_decode_example": (FluentIcon.CODE, "Example of two-digit shorthand expansion anchored on market mid."),
+        "header":         (FluentIcon.DOCUMENT, "Top of the SYSTEM prompt — sets persona and invariants."),
+        "compound_messages": (FluentIcon.MESSAGE, "Compound-emit rules (e.g. MOVE_SL_BE + CLOSE_PARTIAL)."),
+        "directional_command_flow": (FluentIcon.SCROLL, "How directional commands map to OPEN actions."),
+    }
+    return table.get(key, (FluentIcon.EDIT, ""))
+
 
 def _is_long_field(key: str) -> bool:
     return key not in _SHORT_FIELDS
+
+
+# Per-key sizing for the editor inside an ExpandSettingCard's expanded
+# panel. Prose fields (description) read better short; mono blobs
+# (header, vocabulary_table) need more room. Derived widgets (tables,
+# chip flows) need the most.
+def _editor_min_height(key: str) -> int:
+    if key == "header":
+        return 200
+    if key == "description":
+        return 80
+    if key in _PROSE_FIELDS:
+        return 120
+    return 160
+
+
+def _editor_max_height(key: str) -> int:
+    if key in ("header", "compound_messages", "directional_command_flow"):
+        return 360
+    return 240
 
 
 def _mono_font() -> QFont:
@@ -105,13 +168,19 @@ class ProfileView(QWidget):
         top = QHBoxLayout()
         self._title = QLabel()
         self._title.setTextFormat(Qt.TextFormat.RichText)
+        from src.gui.panels._a11y import mark_heading
+        mark_heading(self._title, "Profile")
         top.addWidget(self._title)
         self._dirty_marker = QLabel("")
         self._dirty_marker.setStyleSheet("color: #ff9800;")
         top.addWidget(self._dirty_marker)
         top.addStretch()
 
-        self._reload_btn = QPushButton("Save")
+        try:
+            from qfluentwidgets import PrimaryPushButton
+            self._reload_btn = PrimaryPushButton("Save")
+        except Exception:
+            self._reload_btn = QPushButton("Save")
         self._reload_btn.clicked.connect(self._save)
         top.addWidget(self._reload_btn)
 
@@ -215,85 +284,91 @@ class ProfileView(QWidget):
 
     def _render_form(self, data: OrderedDict[str, str]) -> None:
         self._clear_content()
-        # Load triggers once for derived widgets — they pull from the
-        # structured array rather than re-parsing rendered prompt text.
-        from src.gui.services import profile_io
-        from src.gui.views._profile_readonly_widgets import (
-            BulletListView,
-            ChipFlowView,
-            ExamplesTableView,
-            TreeFieldView,
-        )
-        profile_dict = profile_io.load_profile(self._stack.name)
-        triggers = profile_io.load_triggers(profile_dict)
+        from src.gui.panels._setting_cards import make_setting_card
+        from qfluentwidgets import SettingCardGroup
 
-        for key, value in data.items():
-            section_label = QLabel(
-                f"<span style='color:#787b86; font-size:10px; letter-spacing:1px; font-weight:700;'>"
-                f"{key.upper()}</span>"
-            )
-            section_label.setTextFormat(Qt.TextFormat.RichText)
-            self._content_layout.addWidget(section_label)
+        # Partition the keys we have into the predefined sections;
+        # anything unrecognised tails into a fallback group so unknown
+        # JSON fields still appear in the UI.
+        remaining = OrderedDict(data)
+        section_map: dict[str, list[str]] = {}
+        section_order: list[str] = []
+        for title, keys in _PROFILE_EDITOR_SECTIONS:
+            buckets = [k for k in keys if k in remaining]
+            if buckets:
+                section_map[title] = buckets
+                section_order.append(title)
+                for k in buckets:
+                    remaining.pop(k, None)
+        if remaining:
+            section_map[_PROFILE_EDITOR_FALLBACK_GROUP] = list(remaining.keys())
+            section_order.append(_PROFILE_EDITOR_FALLBACK_GROUP)
 
-            if key in _DERIVED_FIELDS:
-                widget = self._build_derived_widget(key)
-                if widget is not None:
-                    widget.set_triggers(triggers)
-                    widget.editRequested.connect(self._jump_to_triggers_tab)
-                    self._editors[key] = widget
-                    self._content_layout.addWidget(widget)
+        for title in section_order:
+            group = SettingCardGroup(title)
+            for key in section_map[title]:
+                value = data[key]
+                widget, kind = self._build_editor_widget(key, value, None)
+                if widget is None:
                     continue
-            if key == "language":
-                combo = QComboBox()
-                combo.setEditable(True)
-                for lang in _LANGUAGES:
-                    combo.addItem(lang)
-                if value:
-                    idx = combo.findText(value)
-                    if idx >= 0:
-                        combo.setCurrentIndex(idx)
-                    else:
-                        combo.setEditText(value)
-                combo.currentTextChanged.connect(self._on_changed)
-                self._editors[key] = combo
-                self._content_layout.addWidget(combo)
-                continue
-            if key in _SHORT_FIELDS:
-                line = QLineEdit(value)
-                line.textChanged.connect(self._on_changed)
-                self._editors[key] = line
-                self._content_layout.addWidget(line)
-                continue
-
-            edit = QPlainTextEdit()
-            if key in _PROSE_FIELDS:
-                edit.setFont(_prose_font())
-                edit.setMinimumHeight(60 if key == "description" else 100)
-            else:
-                edit.setFont(_mono_font())
-                edit.setMinimumHeight(140 if key == "header" else 80)
-            edit.setPlainText(value)
-            edit.textChanged.connect(self._on_changed)
-            self._editors[key] = edit
-            self._content_layout.addWidget(edit)
+                icon, subtitle = _profile_field_meta(key)
+                # Use a humanised title for the card while keeping the
+                # uppercase legend visible to operators familiar with the
+                # raw JSON keys.
+                pretty = key.replace("_", " ").title()
+                card_title = f"{pretty}  ·  {key}"
+                card = make_setting_card(
+                    icon=icon,
+                    title=card_title,
+                    subtitle=subtitle,
+                    widget=widget,
+                    kind=kind,
+                    expand_min_height=_editor_min_height(key),
+                    expand_max_height=_editor_max_height(key),
+                )
+                group.addSettingCard(card)
+            self._content_layout.addWidget(group)
         self._content_layout.addStretch()
 
-    def _build_derived_widget(self, key: str):
-        from src.gui.views._profile_readonly_widgets import (
-            BulletListView,
-            ChipFlowView,
-            ExamplesTableView,
-            TreeFieldView,
-        )
-        if key == "vocabulary_table":
-            return TreeFieldView()
-        if key == "commentary_filter":
-            return BulletListView()
-        if key == "worked_examples":
-            return ExamplesTableView()
-        if key == "triage_keep_triggers":
-            return ChipFlowView()
-        return None
+    def _build_editor_widget(self, key: str, value: str, triggers):
+        """Construct the editor widget for one profile key, register it
+        in ``self._editors``, and wire dirty-tracking. Returns
+        ``(widget, kind)`` where ``kind`` is ``"compact"`` for short
+        single-line controls and ``"expand"`` for everything else.
+
+        Note: derived prompt-fragment keys (vocabulary_table etc.) are
+        filtered out via ``_EDITOR_HIDDEN`` before reaching this method —
+        the Triggers tab is their source of truth.
+        """
+        if key == "language":
+            combo = QComboBox()
+            combo.setEditable(True)
+            combo.setMinimumWidth(180)
+            for lang in _LANGUAGES:
+                combo.addItem(lang)
+            if value:
+                idx = combo.findText(value)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                else:
+                    combo.setEditText(value)
+            combo.currentTextChanged.connect(self._on_changed)
+            self._editors[key] = combo
+            return combo, "compact"
+        if key in _SHORT_FIELDS:
+            line = QLineEdit(value)
+            line.textChanged.connect(self._on_changed)
+            self._editors[key] = line
+            return line, "compact"
+        edit = QPlainTextEdit()
+        if key in _PROSE_FIELDS:
+            edit.setFont(_prose_font())
+        else:
+            edit.setFont(_mono_font())
+        edit.setPlainText(value)
+        edit.textChanged.connect(self._on_changed)
+        self._editors[key] = edit
+        return edit, "expand"
 
     def _jump_to_triggers_tab(self) -> None:
         for idx in range(self._tabs.count()):

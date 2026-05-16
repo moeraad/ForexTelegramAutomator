@@ -55,9 +55,14 @@ class SettingsView(QWidget):
         title_row = QHBoxLayout()
         title = QLabel("<span style='font-size:16px; font-weight:700;'>SETTINGS</span>")
         title.setTextFormat(Qt.TextFormat.RichText)
+        from src.gui.panels._a11y import mark_heading
+        mark_heading(title, "Settings")
         title_row.addWidget(title)
         self._status_label = QLabel("")
-        self._status_label.setStyleSheet("color: #787b86; padding-left: 16px;")
+        # Use the muted-role token so light/dark palettes pick up the
+        # right shade automatically (REVIEW.md §3 Theming).
+        self._status_label.setProperty("role", "muted")
+        self._status_label.setStyleSheet("padding-left: 16px;")
         title_row.addWidget(self._status_label)
         title_row.addStretch()
         self._wizard_btn = QPushButton("Setup wizard")
@@ -82,7 +87,7 @@ class SettingsView(QWidget):
         self._services_tab = _ServicesTab(stack)
         from src.gui.views._backup_tab import BackupTab
         self._backup_tab = BackupTab()
-        self._tabs.addTab(self._channels_tab, "Channels")
+        self._tabs.addTab(self._channels_tab, "Stacks")
         self._tabs.addTab(self._tuning_tab, "Tuning")
         self._tabs.addTab(self._services_tab, "Services")
         self._tabs.addTab(self._backup_tab, "Backup")
@@ -102,9 +107,31 @@ class SettingsView(QWidget):
         self._refresh_status()
 
     def _open_telegram_wizard(self) -> None:
+        chat_id_before = db_settings.get_int(
+            self._stack.db_path, "tg_watched_chat_id", 0
+        )
         TelegramWizard(self._stack, self).exec()
+        chat_id_after = db_settings.get_int(
+            self._stack.db_path, "tg_watched_chat_id", 0
+        )
         self._tuning_tab.rebind(self._stack)
         self._refresh_status()
+        if chat_id_before and chat_id_after and chat_id_before != chat_id_after:
+            listener_svc = self._stack.service_names[2]
+            if nssm_client.service_running(listener_svc):
+                QMessageBox.warning(
+                    self,
+                    "Listener restart required",
+                    f"Watched channel changed "
+                    f"({chat_id_before} -> {chat_id_after}).\n\n"
+                    f"The listener service '{listener_svc}' is still "
+                    f"running with the previous channel id and will not "
+                    f"see signals from the new channel until restarted. "
+                    f"This is because Telethon binds the channel filter "
+                    f"at handler-attach time (REVIEW.md P1).\n\n"
+                    f"Stop and start services from this page to apply "
+                    f"the change.",
+                )
 
     def _open_new_stack_wizard(self) -> None:
         # Defer to MainWindow — it owns the stack list, services bar,
@@ -269,7 +296,7 @@ class _ChannelsTab(QWidget):
         save_entries(self._entries)
         QMessageBox.information(
             self, "Saved",
-            "Channels saved. Restart the app for changes to take full effect.",
+            "Stacks saved. Restart the app for changes to take full effect.",
         )
 
 
@@ -398,7 +425,13 @@ class _TuningTab(QWidget):
         layout.addWidget(self._meta)
 
         actions = QHBoxLayout()
-        save_btn = QPushButton("Save")
+        # Promote primary affordance — Save is the page's primary action.
+        # Falls back to QPushButton if qfluentwidgets isn't importable.
+        try:
+            from qfluentwidgets import PrimaryPushButton
+            save_btn = PrimaryPushButton("Save")
+        except Exception:
+            save_btn = QPushButton("Save")
         save_btn.clicked.connect(self._save)
         reload_btn = QPushButton("Reload")
         reload_btn.clicked.connect(self._load)
@@ -421,8 +454,7 @@ class _TuningTab(QWidget):
         content_layout.setSpacing(14)
 
         for title, fields in _TUNING_SECTIONS:
-            content_layout.addWidget(self._make_section_label(title))
-            content_layout.addLayout(self._make_section_grid(fields))
+            content_layout.addWidget(self._make_section_card_group(title, fields))
 
         content_layout.addStretch()
         scroll.setWidget(content)
@@ -435,6 +467,36 @@ class _TuningTab(QWidget):
             "letter-spacing: 1.5px; padding-top: 4px; border-bottom: 1px solid #2a2e39;"
         )
         return lbl
+
+    def _make_section_card_group(self, title: str, fields: list[_Field]) -> QWidget:
+        """Build a Fluent SettingCardGroup with one SettingCard per field.
+
+        Delegates the per-card construction to the shared
+        ``_setting_cards.make_setting_card`` helper so this stays in
+        lockstep with Profile → Editor (REVIEW.md follow-up).
+        """
+        from qfluentwidgets import FluentIcon, SettingCardGroup
+        from src.gui.panels._setting_cards import (
+            make_setting_card,
+            truncate_subtitle,
+        )
+        group = SettingCardGroup(title)
+        for f in fields:
+            widget = self._make_widget(f)
+            self._widgets[f.key] = widget
+            subtitle = truncate_subtitle(f.tooltip)
+            card = make_setting_card(
+                icon=FluentIcon.EDIT if f.kind == "text" else FluentIcon.SETTING,
+                title=f.label,
+                subtitle=subtitle,
+                widget=widget,
+                kind="expand" if f.kind == "text" else "compact",
+            )
+            group.addSettingCard(card)
+            # Visibility plumbing: just the card now (instead of the
+            # old label/value/info triple).
+            self._row_widgets[f.key] = (card, card, card)
+        return group
 
     def _make_section_grid(self, fields: list[_Field]) -> QGridLayout:
         grid = QGridLayout()
@@ -505,9 +567,10 @@ class _TuningTab(QWidget):
 
     def _make_widget(self, f: _Field) -> QWidget:
         if f.kind == "bool":
-            cb = QCheckBox()
-            cb.setToolTip(f.tooltip)
-            return cb
+            from qfluentwidgets import SwitchButton
+            sw = SwitchButton()
+            sw.setToolTip(f.tooltip)
+            return sw
         if f.kind == "int":
             sb = QSpinBox()
             lo, hi = f.opts if f.opts else (0, 1_000_000)
@@ -530,25 +593,64 @@ class _TuningTab(QWidget):
             if f.editable:
                 cb.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
             cb.setToolTip(f.tooltip)
+            # Size to the longest option so labels like
+            # "gpt-5-nano-2025-08-07" aren't clipped behind the dropdown
+            # arrow. Add ~50px for the arrow + padding.
+            fm = cb.fontMetrics()
+            longest = max(
+                (fm.horizontalAdvance(str(v)) for v in (f.opts[0] if f.opts else [])),
+                default=0,
+            )
+            cb.setMinimumWidth(max(220, longest + 50))
             return cb
         if f.kind == "secret":
             container = QWidget()
             row = QHBoxLayout(container)
             row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
             edit = QLineEdit()
             edit.setEchoMode(QLineEdit.EchoMode.Password)
             edit.setObjectName("secret_input")
             edit.setToolTip(f.tooltip)
+            edit.setMinimumWidth(260)
             row.addWidget(edit, 1)
-            btn = QPushButton("show")
-            btn.setCheckable(True)
-            btn.setFixedWidth(64)
-            btn.toggled.connect(
-                lambda on, e=edit, b=btn: (
-                    e.setEchoMode(QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password),
-                    b.setText("hide" if on else "show"),
+            # Eye-icon toggle — qfluentwidgets TransparentToolButton renders
+            # cleanly on both light/dark palettes (the previous textual
+            # "show" QPushButton was invisible against the SettingCard
+            # background on some themes).
+            try:
+                from qfluentwidgets import (
+                    FluentIcon as _FIF,
+                    TransparentToggleToolButton,
                 )
-            )
+                btn = TransparentToggleToolButton(_FIF.VIEW)
+                btn.setFixedSize(32, 28)
+                btn.setToolTip("Show / hide secret")
+
+                def _on_toggle(checked: bool, e=edit, b=btn) -> None:
+                    e.setEchoMode(
+                        QLineEdit.EchoMode.Normal if checked
+                        else QLineEdit.EchoMode.Password
+                    )
+                    try:
+                        b.setIcon(_FIF.HIDE if checked else _FIF.VIEW)
+                    except Exception:
+                        pass
+
+                btn.toggled.connect(_on_toggle)
+            except Exception:
+                btn = QPushButton("Show")
+                btn.setCheckable(True)
+                btn.setMinimumWidth(72)
+                btn.toggled.connect(
+                    lambda on, e=edit, b=btn: (
+                        e.setEchoMode(
+                            QLineEdit.EchoMode.Normal if on
+                            else QLineEdit.EchoMode.Password
+                        ),
+                        b.setText("Hide" if on else "Show"),
+                    )
+                )
             row.addWidget(btn)
             return container
         if f.kind == "text":
@@ -570,7 +672,8 @@ class _TuningTab(QWidget):
                 if w is None:
                     continue
                 if f.kind == "bool":
-                    assert isinstance(w, QCheckBox)
+                    # bool widgets are SwitchButton (or QCheckBox fallback);
+                    # both expose setChecked/isChecked the same way.
                     w.setChecked(db_settings.get_bool(db_path, f.key, False))
                 elif f.kind == "int":
                     assert isinstance(w, QSpinBox)
@@ -903,22 +1006,56 @@ class _ServicesTab(QWidget):
             self._table.setCellWidget(i, 2, self._make_controls(svc, running, exists))
 
     def _make_controls(self, name: str, running: bool, exists: bool) -> QWidget:
+        """Per-service action triplet rendered as pure coloured icons —
+        no border or background, just a glyph (green PLAY / red CLOSE /
+        orange UPDATE). Mirrors the top-level services bar so the
+        operator gets one consistent affordance everywhere."""
         wrap = QWidget()
         layout = QHBoxLayout(wrap)
         layout.setContentsMargins(0, 0, 0, 0)
-        start_btn = QPushButton("Start")
+        layout.setSpacing(2)
+        start_btn = self._make_action_icon("start", "Start service")
         start_btn.setEnabled(exists and not running)
         start_btn.clicked.connect(lambda _checked=False, n=name: self._do_start(n))
-        stop_btn = QPushButton("Stop")
+        stop_btn = self._make_action_icon("stop", "Stop service")
         stop_btn.setEnabled(running)
         stop_btn.clicked.connect(lambda _checked=False, n=name: self._do_stop(n))
-        restart_btn = QPushButton("Restart")
+        restart_btn = self._make_action_icon("restart", "Restart service")
         restart_btn.setEnabled(exists)
         restart_btn.clicked.connect(lambda _checked=False, n=name: self._do_restart(n))
         for b in (start_btn, stop_btn, restart_btn):
             layout.addWidget(b)
         layout.addStretch()
         return wrap
+
+    def _make_action_icon(self, kind: str, tooltip: str):
+        """Build one of the three coloured-icon action buttons."""
+        from PySide6.QtCore import QSize
+        from PySide6.QtGui import QColor
+        try:
+            from qfluentwidgets import FluentIcon, TransparentToolButton
+            from src.gui.theme import current_palette
+            p = current_palette()
+            color_map = {
+                "start":   (FluentIcon.PLAY,   QColor(p.success)),
+                "stop":    (FluentIcon.CLOSE,  QColor(p.danger)),
+                "restart": (FluentIcon.UPDATE, QColor(p.warning)),
+            }
+            glyph, color = color_map[kind]
+            btn = TransparentToolButton()
+            btn.setIcon(glyph.icon(color=color))
+            btn.setIconSize(QSize(16, 16))
+            btn.setFixedSize(26, 26)
+            btn.setStyleSheet(
+                "QToolButton { background: transparent; border: none; padding: 0; }"
+                "QToolButton:hover { background: rgba(127,127,127,0.12); border-radius: 4px; }"
+                "QToolButton:disabled { opacity: 0.4; }"
+            )
+        except Exception:
+            text_map = {"start": "Start", "stop": "Stop", "restart": "Restart"}
+            btn = QPushButton(text_map[kind])
+        btn.setToolTip(tooltip)
+        return btn
 
     def _do_start(self, name: str) -> None:
         ok, msg = nssm_client.nssm_start(name)

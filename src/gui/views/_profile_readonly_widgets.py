@@ -51,7 +51,12 @@ class _ReadOnlyBase(QWidget):
         note_label.setWordWrap(True)
         top_row.addWidget(note_label, 1)
         edit_btn = QPushButton("Edit in Triggers tab")
-        edit_btn.setFixedWidth(170)
+        # Use sizeHint width + a generous padding rather than a fixed
+        # width so the global QSS padding (5px 14px) doesn't clip the
+        # label. Set minimumWidth via the text metric so the button
+        # always shows the full caption.
+        fm = edit_btn.fontMetrics()
+        edit_btn.setMinimumWidth(fm.horizontalAdvance(edit_btn.text()) + 40)
         edit_btn.clicked.connect(self.editRequested)
         top_row.addWidget(edit_btn, 0, Qt.AlignmentFlag.AlignRight)
         outer.addLayout(top_row)
@@ -247,8 +252,14 @@ class ChipFlowView(_ReadOnlyBase):
         self._flow = _FlowLayout(self._chip_host)
         self._scroll.setWidget(self._chip_host)
         self._frame_layout.addWidget(self._scroll)
+        # Cache the last triggers list so we can re-skin on theme swap
+        # without losing the data.
+        self._last_triggers: list[dict] = []
+        from src.gui.theme import bus as _theme_bus
+        _theme_bus.theme_changed.connect(lambda _pal: self.set_triggers(self._last_triggers))
 
     def set_triggers(self, triggers: list[dict]) -> None:
+        self._last_triggers = list(triggers)
         while self._flow.count():
             item = self._flow.takeAt(0)
             if item and item.widget():
@@ -263,13 +274,19 @@ class ChipFlowView(_ReadOnlyBase):
             placeholder.setStyleSheet("color: #787b86;")
             self._flow.addWidget(placeholder)
             return
+        # Pull colours from the active palette so chips swap with the
+        # theme (dark/light). Previously hardcoded to dark-mode hexes
+        # which left them unreadable on the light theme.
+        from src.gui.theme import current_palette
+        p = current_palette()
+        chip_css = (
+            "QLabel { background-color: %s; color: %s; "
+            "border: 1px solid %s; border-radius: 10px; "
+            "padding: 2px 10px; }"
+        ) % (p.surface_hover, p.text, p.border)
         for phrase in phrases:
             chip = QLabel(phrase)
-            chip.setStyleSheet(
-                "QLabel { background-color: #2a2e39; color: #d1d4dc; "
-                "border: 1px solid #363a45; border-radius: 10px; "
-                "padding: 2px 10px; }"
-            )
+            chip.setStyleSheet(chip_css)
             chip.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             self._flow.addWidget(chip)
 
