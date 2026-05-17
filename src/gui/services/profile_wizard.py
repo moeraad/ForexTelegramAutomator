@@ -19,7 +19,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
-from src import ai_discovery, db_settings, secret_box
+from src import ai_discovery, ai_triage, db_settings, prefilter, secret_box
 from src.gui.services.stack_registry import Stack
 
 
@@ -77,12 +77,29 @@ class _Message:
 
 @dataclass
 class ClassifiedMessage:
-    action_type: str
+    """A reviewed/labeled message destined for the profile.
+
+    `action_types` is a tuple to support COMPOUND messages — one channel
+    message may map to multiple buckets ("half close use BE" is both
+    CLOSE_PARTIAL and MOVE_SL_BE). Most messages have a single entry.
+
+    `pending` is meaningful only when "OPEN" is in `action_types`:
+      True  → OPEN with broker-side pending order
+      False → OPEN with market entry
+      None  → not an OPEN or pending intent not derivable
+    """
+    action_types: tuple[str, ...]
     phrase: str
     reasoning: str
     confidence: float
     sample_text: str
     msg_count: int  # how many duplicates collapsed into this entry
+    pending: bool | None = None
+
+    @property
+    def action_type(self) -> str:
+        """Backwards-compat shim — first bucket, or UNKNOWN if empty."""
+        return self.action_types[0] if self.action_types else "UNKNOWN"
 
 
 @dataclass
@@ -98,6 +115,10 @@ class WizardResults:
     classifications: list[ClassifiedMessage] = field(default_factory=list)
     raw_fetched: int = 0
     unique_after_dedup: int = 0
+    prefiltered_symbol: int = 0
+    prefiltered_ad: int = 0
+    triage_kept: int = 0
+    triage_ignored: int = 0
     failed_count: int = 0
 
 
@@ -231,11 +252,151 @@ class ProfileWizardWorker(QThread):
         if self._cancel:
             return results
 
+        # Stage 0: universal, deterministic, no-LLM pre-filter. Drops
+        # messages mentioning ONLY non-target instruments (per
+        # profile.other_instruments) AND messages with ad-shaped layouts
+        # (URL density + length + currency patterns). On a fresh-install
+        # profile both lists are empty → no-op. The same prefilter runs
+        # on the live path so the wizard's IGNORE decisions match what
+        # the listener will filter at trade time.
+        self.stage_changed.emit("prefilter")
+        survivors = self._prefilter_messages(unique, results)
+        if self._cancel:
+            return results
+
+        # Triage gate: LLM keep/ignore mirror of the live pre-filter.
+        # Messages tagged 'ignore' here become IGNORE Classifications
+        # directly (no expensive classifier call), feeding
+        # commentary_filter. 'keep' survivors go to the action-type
+        # classifier below.
+        self.stage_changed.emit("triage")
+        keeps = self._triage_in_parallel(survivors, results)
+        if self._cancel:
+            return results
+
         self.stage_changed.emit("classify")
-        self._classify_in_parallel(unique, results)
+        self._classify_in_parallel(keeps, results)
 
         self.stage_changed.emit("done")
         return results
+
+    def _load_profile_for_prefilter(self) -> dict:
+        """Load the bootstrap profile for prefilter config (symbol_aliases /
+        other_instruments). Empty dict on first-run channels with no profile
+        — both lists default to empty, prefilter becomes a no-op."""
+        from pathlib import Path
+        path = Path(self._stack.db_path).parent / "profile.json"
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _prefilter_messages(
+        self,
+        unique: list["_Message"],
+        results: "WizardResults",
+    ) -> list["_Message"]:
+        """Apply the universal Stage 0 pre-filter. Dropped messages are
+        recorded as IGNORE Classifications so they're still visible in the
+        review tree (operator can review what got auto-dropped)."""
+        profile = self._load_profile_for_prefilter()
+        survivors: list[_Message] = []
+        total = len(unique)
+        for i, m in enumerate(unique):
+            drop_sym, _ = prefilter.should_drop_by_symbol(m.text, profile)
+            if drop_sym:
+                results.prefiltered_symbol += 1
+                results.classifications.append(ClassifiedMessage(
+                    action_types=("IGNORE",),
+                    phrase=m.text.strip().splitlines()[0][:80] if m.text.strip() else "",
+                    reasoning="prefilter:symbol-mismatch",
+                    confidence=1.0,
+                    sample_text=m.text,
+                    msg_count=getattr(m, "_dup_count", 1),
+                ))
+                continue
+            if prefilter.looks_like_ad(m.text):
+                results.prefiltered_ad += 1
+                results.classifications.append(ClassifiedMessage(
+                    action_types=("IGNORE",),
+                    phrase=m.text.strip().splitlines()[0][:80] if m.text.strip() else "",
+                    reasoning="prefilter:ad-shape",
+                    confidence=1.0,
+                    sample_text=m.text,
+                    msg_count=getattr(m, "_dup_count", 1),
+                ))
+                continue
+            survivors.append(m)
+            if (i + 1) % 25 == 0 or i + 1 == total:
+                self.progress.emit(i + 1, total)
+        self.progress.emit(total, total)
+        return survivors
+
+    def _triage_in_parallel(
+        self,
+        unique: list["_Message"],
+        results: "WizardResults",
+    ) -> list["_Message"]:
+        """Run TriageClient.classify on each unique message. Returns the
+        subset whose decision == 'keep'. 'ignore' messages are recorded
+        as IGNORE Classifications inline.
+
+        Uses the bootstrap triage prompt (no channel-specific keep
+        triggers) because the wizard runs BEFORE a profile exists.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        concurrency = max(1, min(16, self._params.concurrency))
+        client = ai_triage.TriageClient(
+            system_prompt=ai_triage.render_bootstrap_triage_prompt(),
+        )
+
+        def run_one(m: "_Message") -> tuple["_Message", str]:
+            try:
+                # open_count=0 (not 1): the wizard analyzes historical
+                # messages without real state context, so the triage
+                # prompt's "Also KEEP when positions are open" bias
+                # would falsely keep every short ambiguous message
+                # ("close", "exit"). Telling triage "no open positions"
+                # lets it reject pure exclamations / status updates that
+                # only matter when actively in a trade.
+                r = client.classify(m.text, open_count=0)
+                return m, r.decision
+            except Exception:
+                # On triage failure, fall back to 'keep' so the message
+                # isn't silently lost. Mirrors live triage's conservative
+                # default (see _parse_decision).
+                return m, "keep"
+
+        keeps: list["_Message"] = []
+        total = len(unique)
+        done_count = 0
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            futures = {pool.submit(run_one, m): m for m in unique}
+            for fut in as_completed(futures):
+                if self._cancel:
+                    for f in futures:
+                        f.cancel()
+                    break
+                m, decision = fut.result()
+                if decision == "keep":
+                    keeps.append(m)
+                else:
+                    results.triage_ignored += 1
+                    results.classifications.append(ClassifiedMessage(
+                        action_types=("IGNORE",),
+                        phrase=m.text.strip().splitlines()[0][:80] if m.text.strip() else "",
+                        reasoning="triage:ignore",
+                        confidence=1.0,
+                        sample_text=m.text,
+                        msg_count=getattr(m, "_dup_count", 1),
+                    ))
+                done_count += 1
+                self.progress.emit(done_count, total)
+        results.triage_kept = len(keeps)
+        return keeps
 
     def _classify_in_parallel(
         self,
@@ -264,7 +425,12 @@ class ProfileWizardWorker(QThread):
                 # Fully failed batch -> mark each as UNKNOWN with the error.
                 from src.ai_discovery import Classification
                 fallback = [
-                    Classification("UNKNOWN", m.text[:60], f"batch error: {e}", 0.0)
+                    Classification(
+                        action_types=("UNKNOWN",),
+                        phrase=m.text[:60],
+                        reasoning=f"batch error: {e}",
+                        confidence=0.0,
+                    )
                     for m in chunk
                 ]
                 return chunk, fallback
@@ -281,12 +447,13 @@ class ProfileWizardWorker(QThread):
                     if c.action_type == "UNKNOWN" and c.reasoning.startswith("batch error"):
                         results.failed_count += 1
                     results.classifications.append(ClassifiedMessage(
-                        action_type=c.action_type,
+                        action_types=c.action_types,
                         phrase=c.phrase or m.text[:60],
                         reasoning=c.reasoning,
                         confidence=c.confidence,
                         sample_text=m.text,
                         msg_count=getattr(m, "_dup_count", 1),
+                        pending=c.pending,
                     ))
                 done_count += len(chunk)
                 self.progress.emit(done_count, total)

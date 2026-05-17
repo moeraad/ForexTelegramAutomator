@@ -73,12 +73,6 @@ _LAZY: dict[str, tuple[str, str]] = {
     "BACKFILL_MAX_AGE_MIN": ("backfill_max_age_min", "int"),
     "DEFAULT_AUTO_EXECUTE_DELAY_SEC": ("default_auto_execute_delay_sec", "int"),
     "RECENT_CHAT_WINDOW": ("recent_chat_window", "int"),
-    "CLASSIFIER_BATCH_SIZE": ("classifier_batch_size", "int"),
-    "CLASSIFIER_CONCURRENCY": ("classifier_concurrency", "int"),
-    "CLASSIFIER_PROVIDER": ("classifier_provider", "str"),
-    "CLASSIFIER_ANTHROPIC_MODEL": ("classifier_anthropic_model", "str"),
-    "CLASSIFIER_OPENAI_MODEL": ("classifier_openai_model", "str"),
-    "CLASSIFIER_CUSTOM_PROMPT": ("classifier_custom_prompt", "str"),
 }
 
 _TYPE_DEFAULT = {"str": "", "int": 0, "float": 0.0, "bool": False}

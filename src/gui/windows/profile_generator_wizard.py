@@ -12,9 +12,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QCheckBox,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -87,8 +85,9 @@ class _IntroPage(QWizardPage):
         super().__init__()
         self.setTitle("Generate channel profile from history")
         self.setSubTitle(
-            "Fetches recent messages from the watched channel, dedupes, "
-            "classifies each via cheap AI, and produces a draft profile JSON."
+            "Fetches recent messages, dedupes them, runs each through the "
+            "live triage filter, then classifies the survivors. Produces a "
+            "draft profile JSON for review."
         )
         self._max = QSpinBox()
         self._max.setRange(50, 5000)
@@ -100,8 +99,9 @@ class _IntroPage(QWizardPage):
         self._lookback.setSuffix(" days")
 
         cost = QLabel(
-            "<span style='color:#787b86;'>Each unique message ~1k tokens "
-            "× cheap-tier model. 500 msgs at Haiku ≈ $0.10 - $0.30.</span>"
+            "<span style='color:#787b86;'>Triage runs cheap on every "
+            "unique message; classifier runs only on triage-keep survivors. "
+            "500 msgs ≈ $0.05 - $0.20 depending on provider.</span>"
         )
         cost.setTextFormat(Qt.TextFormat.RichText)
         cost.setWordWrap(True)
@@ -115,119 +115,39 @@ class _IntroPage(QWizardPage):
         self._settings_note.setWordWrap(True)
         self._settings_note.setStyleSheet("color:#787b86;")
 
-        # Collapsible custom-rules editor (hidden by default).
-        self._rules_toggle = QPushButton("▸ Custom classifier rules (optional)")
-        self._rules_toggle.setFlat(True)
-        self._rules_toggle.setStyleSheet(
-            "QPushButton { text-align: left; color: #d1d4dc; padding: 4px 0; }"
-            "QPushButton:hover { color: #2962ff; }"
-        )
-        self._rules_toggle.clicked.connect(self._toggle_rules)
-        self._rules_expanded = False
-        self._rules_hint = QLabel(
-            "<span style='color:#787b86;'>Free-form guidance for the "
-            "classifier. Plain language. Edits save back to the DB so "
-            "the same rules apply to future runs.</span>"
-        )
-        self._rules_hint.setTextFormat(Qt.TextFormat.RichText)
-        self._rules_hint.setWordWrap(True)
-        self._rules_hint.hide()
-        self._rules_edit = QPlainTextEdit()
-        self._rules_edit.setPlaceholderText(
-            "e.g.\n"
-            "- Messages starting with 📅 are scheduled announcements -> IGNORE.\n"
-            "- The phrase 'احسب نفسك' is colloquial CLOSE_FULL.\n"
-            "- When BUY and SELL both appear with no zone, IGNORE."
-        )
-        self._rules_edit.setMinimumHeight(140)
-        self._rules_edit.setMaximumHeight(220)
-        self._rules_edit.hide()
-        self._rules_counter = QLabel("")
-        self._rules_counter.setStyleSheet("color: #787b86; font-size: 11px;")
-        self._rules_counter.hide()
-        self._rules_edit.textChanged.connect(self._refresh_rules_counter)
-
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addSpacing(8)
         layout.addWidget(self._settings_note)
         layout.addWidget(cost)
-        layout.addSpacing(8)
-        layout.addWidget(self._rules_toggle)
-        layout.addWidget(self._rules_hint)
-        layout.addWidget(self._rules_edit)
-        layout.addWidget(self._rules_counter)
         layout.addStretch()
 
-    def _toggle_rules(self) -> None:
-        self._rules_expanded = not self._rules_expanded
-        for w in (self._rules_hint, self._rules_edit, self._rules_counter):
-            w.setVisible(self._rules_expanded)
-        self._rules_toggle.setText(
-            ("▾" if self._rules_expanded else "▸")
-            + " Custom classifier rules (optional)"
-        )
-
-    def _refresh_rules_counter(self) -> None:
-        n = len(self._rules_edit.toPlainText())
-        color = "#ef5350" if n > 2000 else "#787b86"
-        self._rules_counter.setText(
-            f"<span style='color:{color};'>{n} chars · soft limit 2000</span>"
-        )
-        self._rules_counter.setTextFormat(Qt.TextFormat.RichText)
-
     def initializePage(self) -> None:
-        wiz: "ProfileGeneratorWizard" = self.wizard()  # type: ignore[assignment]
-        bs, conc, prov, model = _resolve_classifier_settings(wiz.stack)
-        self._settings_note.setText(
-            f"<b>Classifier:</b> {prov} · {model} · "
-            f"batch={bs} · concurrency={conc} "
-            "(change in Settings → Tuning → CLASSIFIER)"
-        )
         from src import db_settings
-        existing = db_settings.get_str(wiz.stack.db_path, "classifier_custom_prompt", "")
-        self._rules_edit.blockSignals(True)
-        self._rules_edit.setPlainText(existing)
-        self._rules_edit.blockSignals(False)
-        self._refresh_rules_counter()
+        wiz: "ProfileGeneratorWizard" = self.wizard()  # type: ignore[assignment]
+        prov = (db_settings.get_str(wiz.stack.db_path, "ai_provider", "anthropic")
+                or "anthropic").lower()
+        triage_model = (
+            db_settings.get_str(wiz.stack.db_path, "openai_triage_model", "")
+            or "gpt-5-nano"
+        ) if prov == "openai" else (
+            db_settings.get_str(wiz.stack.db_path, "ai_triage_model", "")
+            or "claude-haiku-4-5-20251001"
+        )
+        classifier_model = "gpt-5-nano" if prov == "openai" else "claude-haiku-4-5-20251001"
+        self._settings_note.setText(
+            f"<b>Pipeline:</b> triage ({prov} · {triage_model}) → "
+            f"classifier ({prov} · {classifier_model})"
+        )
 
     def params(self) -> WizardParameters:
-        wiz: "ProfileGeneratorWizard" = self.wizard()  # type: ignore[assignment]
-        bs, conc, _prov, _model = _resolve_classifier_settings(wiz.stack)
         return WizardParameters(
             max_messages=self._max.value(),
             lookback_days=self._lookback.value(),
-            batch_size=bs,
-            concurrency=conc,
         )
 
     def validatePage(self) -> bool:
-        # Persist any edits to custom rules back to the DB so they take
-        # effect for this run AND survive across runs.
-        wiz: "ProfileGeneratorWizard" = self.wizard()  # type: ignore[assignment]
-        from src import db_settings
-        rules = self._rules_edit.toPlainText().strip()
-        db_settings.set_str(wiz.stack.db_path, "classifier_custom_prompt", rules)
         return True
-
-
-def _resolve_classifier_settings(stack) -> tuple[int, int, str, str]:
-    """Read classifier settings from the stack DB with sane fallbacks."""
-    from src import db_settings
-    db = stack.db_path
-    bs = db_settings.get_int(db, "classifier_batch_size", 10) or 10
-    try:
-        conc = int(db_settings.get_str(db, "classifier_concurrency", "4") or "4")
-    except ValueError:
-        conc = 4
-    prov_raw = (db_settings.get_str(db, "classifier_provider", "") or "").lower()
-    if prov_raw not in ("anthropic", "openai"):
-        prov_raw = (db_settings.get_str(db, "ai_provider", "anthropic") or "anthropic").lower()
-    if prov_raw == "openai":
-        model = db_settings.get_str(db, "classifier_openai_model", "") or "gpt-5-nano"
-    else:
-        model = db_settings.get_str(db, "classifier_anthropic_model", "") or "claude-haiku-4-5-20251001"
-    return bs, conc, prov_raw, model
 
 
 # --- P2 Progress ----------------------------------------------------------
@@ -282,7 +202,9 @@ class _ProgressPage(QWizardPage):
         labels = {
             "fetch": "Fetching messages from Telegram…",
             "dedup": "Deduplicating…",
-            "classify": "Classifying messages via AI…",
+            "prefilter": "Pre-filtering (symbol / ad shape)…",
+            "triage": "Triaging messages (keep / ignore)…",
+            "classify": "Classifying triage-keeps via AI…",
             "done": "Done.",
         }
         self._stage.setText(labels.get(stage, stage))
@@ -333,6 +255,17 @@ class _ReviewPage(QWizardPage):
             "ignored in the generated profile."
         )
 
+        # Funnel summary — fetched → dedup → prefilter → triage → classify
+        # — gives the operator a sense of where messages went and whether
+        # the pre-filter / triage stages caught what they should have.
+        self._summary = QLabel("")
+        self._summary.setTextFormat(Qt.TextFormat.RichText)
+        self._summary.setWordWrap(True)
+        self._summary.setStyleSheet(
+            "QLabel { background: #1a1d29; color: #d1d4dc; padding: 8px 12px; "
+            "border: 1px solid #2a2e39; border-radius: 4px; }"
+        )
+
         self._tree = QTreeWidget()
         self._tree.setHeaderLabels(["Phrase / sample", "Confidence", "Count"])
         self._tree.setColumnWidth(0, 480)
@@ -340,6 +273,7 @@ class _ReviewPage(QWizardPage):
         self._tree.setColumnWidth(2, 60)
 
         layout = QVBoxLayout(self)
+        layout.addWidget(self._summary)
         layout.addWidget(self._tree, 1)
 
     def initializePage(self) -> None:
@@ -348,10 +282,37 @@ class _ReviewPage(QWizardPage):
         self._tree.clear()
         if results is None:
             return
+        # Funnel summary banner.
+        prefiltered = results.prefiltered_symbol + results.prefiltered_ad
+        classified = sum(
+            1 for c in results.classifications
+            if not c.reasoning.startswith(("prefilter:", "triage:"))
+        )
+        self._summary.setText(
+            f"<b>Funnel:</b> fetched {results.raw_fetched} → "
+            f"unique {results.unique_after_dedup} → "
+            f"pre-filter dropped {prefiltered} "
+            f"(symbol={results.prefiltered_symbol}, ad={results.prefiltered_ad}) → "
+            f"triage-ignored {results.triage_ignored}, "
+            f"triage-kept {results.triage_kept} → "
+            f"classifier produced {classified} "
+            f"(failed: {results.failed_count})"
+        )
+        # Multi-label grouping: a classification with action_types=("OPEN",
+        # "MODIFY_TPS") appears under BOTH parent buckets so the operator
+        # can see the full reach of every message. Same `c` instance is
+        # referenced by both child rows; selection in either contributes
+        # the message to that bucket in _build_profile.
         grouped: dict[str, list[ClassifiedMessage]] = defaultdict(list)
         for c in results.classifications:
-            grouped[c.action_type].append(c)
-        for action_type in sorted(grouped.keys()):
+            types = c.action_types or ("UNKNOWN",)
+            for at in types:
+                grouped[at].append(c)
+        # UNKNOWN sorted first — those are low-confidence and need operator
+        # attention; everything else alphabetical for stable layout.
+        def _bucket_order(name: str) -> tuple[int, str]:
+            return (0 if name == "UNKNOWN" else 1, name)
+        for action_type in sorted(grouped.keys(), key=_bucket_order):
             entries = sorted(grouped[action_type], key=lambda c: -c.confidence)
             parent = QTreeWidgetItem([
                 f"{action_type}  ({len(entries)})",
@@ -367,30 +328,61 @@ class _ReviewPage(QWizardPage):
             for e in entries:
                 phrase = e.phrase[:90] + ("…" if len(e.phrase) > 90 else "")
                 sample = e.sample_text.replace("\n", " ")[:140]
+                # Badges: compound (multi-bucket message), pending/market
+                # (only on OPEN rows). Help the operator see at a glance
+                # which rows carry extra metadata.
+                badges: list[str] = []
+                if len(e.action_types) > 1:
+                    badges.append("[compound]")
+                if action_type == "OPEN" and e.pending is True:
+                    badges.append("[pending]")
+                elif action_type == "OPEN" and e.pending is False:
+                    badges.append("[market]")
+                badge_str = (" " + " ".join(badges)) if badges else ""
                 child = QTreeWidgetItem([
-                    f"{phrase}\n   {sample}",
+                    f"{phrase}{badge_str}\n   {sample}",
                     f"{e.confidence:.2f}",
                     str(e.msg_count),
                 ])
                 child.setFlags(child.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 child.setCheckState(0, Qt.CheckState.Checked)
                 child.setData(0, Qt.ItemDataRole.UserRole, e)
+                # Amber tint for confidence-floored rows so operator
+                # prioritizes triage.
+                if e.reasoning.startswith("low_confidence"):
+                    from PySide6.QtGui import QBrush, QColor
+                    amber = QBrush(QColor(255, 193, 7, 60))
+                    for col in range(self._tree.columnCount()):
+                        child.setBackground(col, amber)
                 parent.addChild(child)
             parent.setExpanded(False)
         self._tree.expandAll()
 
-    def selected_classifications(self) -> list[ClassifiedMessage]:
-        out: list[ClassifiedMessage] = []
+    def selected_classifications(self) -> list[tuple[ClassifiedMessage, str]]:
+        """Return (message, bucket) pairs the operator approved.
+
+        A compound message with action_types=("OPEN","MOVE_SL_BE") appears
+        twice in the tree — once under OPEN, once under MOVE_SL_BE. The
+        operator may check/uncheck them independently. This function
+        returns one tuple per APPROVED (message, bucket) pair, preserving
+        per-bucket operator decisions for compound rows.
+        """
+        out: list[tuple[ClassifiedMessage, str]] = []
         root = self._tree.invisibleRootItem()
         for i in range(root.childCount()):
             parent = root.child(i)
             if parent.checkState(0) == Qt.CheckState.Unchecked:
                 continue
+            # Parse the bucket name back out of the parent label
+            # ("OPEN  (12)" -> "OPEN"). This is the only place we depend
+            # on the label format; if it ever changes, update here.
+            label = parent.text(0).strip()
+            bucket = label.split()[0] if label else "UNKNOWN"
             for j in range(parent.childCount()):
                 child = parent.child(j)
                 if child.checkState(0) == Qt.CheckState.Checked:
                     c: ClassifiedMessage = child.data(0, Qt.ItemDataRole.UserRole)
-                    out.append(c)
+                    out.append((c, bucket))
         return out
 
 
@@ -449,50 +441,107 @@ class _SavePage(QWizardPage):
 
     def _build_profile(self) -> OrderedDict:
         wiz: "ProfileGeneratorWizard" = self.wizard()  # type: ignore[assignment]
-        chosen = wiz.review_page.selected_classifications()
+        chosen = wiz.review_page.selected_classifications()  # list[(msg, bucket)]
         symbol = wiz.stack_symbol() or "XAUUSD"
+
+        # Group by the bucket the operator approved each message for, NOT
+        # by message.action_types — a compound message may be approved
+        # under only one of its buckets (operator unchecked the other).
         grouped: dict[str, list[ClassifiedMessage]] = defaultdict(list)
-        for c in chosen:
-            grouped[c.action_type].append(c)
-        # vocabulary_table: per action_type, distinct phrases
+        for c, bucket in chosen:
+            grouped[bucket].append(c)
+
+        # vocabulary_table: per bucket, distinct phrases.
+        # OPEN splits into [OPEN — market] / [OPEN — pending] sub-sections
+        # so the live interpreter prompt has explicit channel-specific
+        # examples of which phrasings map to which pending intent.
         vocab_lines: list[str] = ["VOCABULARY -> ACTION MAP:"]
         for at in sorted(grouped.keys()):
-            if at in ("IGNORE", "UNKNOWN", "ALERT"):
+            if at in ("IGNORE", "UNKNOWN", "ALERT", "CONTEXT"):
                 continue
-            phrases = sorted({c.phrase for c in grouped[at] if c.phrase})
+            entries = grouped[at]
+            if at == "OPEN":
+                market_phrases = sorted({c.phrase for c in entries if c.phrase and c.pending is False})
+                pending_phrases = sorted({c.phrase for c in entries if c.phrase and c.pending is True})
+                ambig_phrases = sorted({c.phrase for c in entries if c.phrase and c.pending is None})
+                if market_phrases:
+                    vocab_lines.append("  [OPEN — market]")
+                    for p in market_phrases[:15]:
+                        vocab_lines.append(f"    - {p}")
+                if pending_phrases:
+                    vocab_lines.append("  [OPEN — pending]")
+                    for p in pending_phrases[:15]:
+                        vocab_lines.append(f"    - {p}")
+                if ambig_phrases:
+                    vocab_lines.append("  [OPEN — pending intent unspecified]")
+                    for p in ambig_phrases[:15]:
+                        vocab_lines.append(f"    - {p}")
+                continue
+            phrases = sorted({c.phrase for c in entries if c.phrase})
             if not phrases:
                 continue
             vocab_lines.append(f"  [{at}]")
             for p in phrases[:15]:
                 vocab_lines.append(f"    - {p}")
-        # worked_examples: top-2 highest-confidence per type
+
+        # worked_examples: top-2 highest-confidence per bucket. Compound
+        # messages still get a single-bucket example per row (one example
+        # per bucket they participate in) — that's the natural reading.
         ex_lines: list[str] = []
         idx = 1
         for at in sorted(grouped.keys()):
-            if at in ("IGNORE", "UNKNOWN"):
+            if at in ("IGNORE", "UNKNOWN", "CONTEXT"):
                 continue
             top = sorted(grouped[at], key=lambda c: -c.confidence)[:2]
             for c in top:
                 msg = c.sample_text.replace("\n", " ").strip()
+                # Use the message's FULL compound types in the example
+                # output — preserves the compound nature for the live
+                # interpreter to learn from.
+                full_types = [t for t in c.action_types if t not in ("IGNORE", "UNKNOWN", "CONTEXT")]
+                if not full_types:
+                    full_types = [at]
+                type_objs = ", ".join(f'{{"type":"{t}"}}' for t in full_types)
                 ex_lines.append(
                     f"Ex{idx} ({at}): \"{msg[:160]}\"\n"
-                    f"  -> [{{\"type\":\"{at}\"}}]"
+                    f"  -> [{type_objs}]"
                 )
                 idx += 1
-        # triage_keep_triggers: all non-IGNORE/UNKNOWN phrases
+
+        # triage_keep_triggers: all phrases from actionable buckets.
         triggers: list[str] = []
         for at, items in grouped.items():
-            if at in ("IGNORE", "UNKNOWN"):
+            if at in ("IGNORE", "UNKNOWN", "CONTEXT"):
                 continue
             triggers.extend(c.phrase for c in items if c.phrase)
         triggers = sorted(set(triggers))[:50]
-        # commentary_filter: IGNORE phrases
+
+        # commentary_filter: IGNORE phrases. CONTEXT is intentionally
+        # excluded — those are analysis posts worth keeping in chat
+        # context, just not acted on directly.
         ignore_phrases = sorted({c.phrase for c in grouped.get("IGNORE", []) if c.phrase})
+
+        # Symbol / instrument config for the universal Stage 0 prefilter.
+        # We surface placeholders the operator can edit in the profile JSON;
+        # the wizard doesn't auto-discover yet (future enhancement: scan
+        # corpus for high-frequency tokens to suggest other_instruments).
+        symbol_aliases_existing: list[str] = []
+        other_instruments_existing: list[str] = []
+        existing_profile_path = Path(wiz.stack.db_path).parent / "profile.json"
+        if existing_profile_path.exists():
+            try:
+                _ex = json.loads(existing_profile_path.read_text(encoding="utf-8"))
+                symbol_aliases_existing = list(_ex.get("symbol_aliases") or [])
+                other_instruments_existing = list(_ex.get("other_instruments") or [])
+            except (OSError, json.JSONDecodeError):
+                pass
 
         return OrderedDict([
             ("name", wiz.stack.name),
             ("description", self._description.toPlainText().strip()),
             ("symbol", symbol),
+            ("symbol_aliases", symbol_aliases_existing),
+            ("other_instruments", other_instruments_existing),
             ("language", _detect_language(chosen)),
             ("price_range_hint", self._price_hint.toPlainText().strip()),
             ("shorthand_decode_example", _BOILERPLATE_SHORTHAND),
@@ -509,12 +558,14 @@ class _SavePage(QWizardPage):
              + " | ".join(triggers)),
             ("triggers", [
                 {
-                    "action_type": c.action_type,
+                    "action_types": list(c.action_types),
                     "phrase": c.phrase,
+                    "pending": c.pending,
                     "samples": [c.sample_text],
+                    "approved_bucket": bucket,
                     "note": "",
                 }
-                for c in chosen
+                for c, bucket in chosen
             ]),
         ])
 
@@ -525,6 +576,27 @@ class _SavePage(QWizardPage):
     def validatePage(self) -> bool:
         wiz: "ProfileGeneratorWizard" = self.wizard()  # type: ignore[assignment]
         profile = dict(self._build_profile())
+        # Hard invariant: refuse to write a profile where the same phrase
+        # is listed as both a vocabulary trigger (do act) and commentary
+        # filter (do NOT act). The interpreter sees contradictory
+        # instructions and the resolution is non-deterministic — money
+        # is at stake. Operator must go back to the review page and pick
+        # one bucket for the conflicting phrase(s).
+        conflicts = _detect_phrase_conflicts(wiz.review_page.selected_classifications())
+        if conflicts:
+            sample = "\n".join(f"  • {p}" for p in conflicts[:10])
+            extra = f"\n  …and {len(conflicts) - 10} more" if len(conflicts) > 10 else ""
+            QMessageBox.critical(
+                self,
+                "Conflicting phrases — cannot save",
+                f"{len(conflicts)} phrase(s) are classified as BOTH a "
+                f"trade trigger AND ignored commentary. The interpreter "
+                f"would see contradictory rules.\n\n"
+                f"Conflicting phrases:\n{sample}{extra}\n\n"
+                f"Go back to Review and uncheck the phrase in one of the "
+                f"two buckets so it appears only once.",
+            )
+            return False
         from src.gui.services import profile_io
         try:
             path = profile_io.save_profile(wiz.stack.name, profile)
@@ -538,12 +610,52 @@ class _SavePage(QWizardPage):
         return True
 
 
-def _detect_language(items: list[ClassifiedMessage]) -> str:
-    """Trivial heuristic: if any sample has Arabic chars, mark 'ar'."""
-    for c in items[:50]:
+def _detect_phrase_conflicts(
+    selected: list[tuple[ClassifiedMessage, str]],
+) -> list[str]:
+    """Return phrases approved as BOTH a trade-action bucket AND IGNORE.
+
+    Operates on (message, approved_bucket) pairs from the review tree —
+    if the operator approved the same phrase under one trade bucket and
+    also under IGNORE, that's a contradiction the interpreter would see.
+    CONTEXT and UNKNOWN are non-actionable but also non-contradictory:
+    a phrase being CONTEXT alongside an action means the message is
+    informational, which is fine and not flagged here.
+    """
+    actionable: set[str] = set()
+    ignored: set[str] = set()
+    for c, bucket in selected:
+        phrase = (c.phrase or "").strip()
+        if not phrase:
+            continue
+        if bucket == "IGNORE":
+            ignored.add(phrase)
+        elif bucket in ("UNKNOWN", "CONTEXT", "ALERT"):
+            continue
+        else:
+            actionable.add(phrase)
+    return sorted(actionable & ignored)
+
+
+def _detect_language(items: list[tuple[ClassifiedMessage, str]]) -> str:
+    """Trivial heuristic: if any sample has Arabic chars, mark 'ar'.
+
+    Accepts the new (message, bucket) tuple shape from
+    selected_classifications. The bucket is ignored — we only need
+    the underlying sample text to detect script.
+    """
+    seen: set[int] = set()
+    count = 0
+    for c, _bucket in items:
+        if id(c) in seen:
+            continue
+        seen.add(id(c))
+        count += 1
         for ch in c.sample_text:
             if "؀" <= ch <= "ۿ":
                 return "ar"
+        if count >= 50:
+            break
     return "en"
 
 

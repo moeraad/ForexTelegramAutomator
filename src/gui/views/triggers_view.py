@@ -66,16 +66,13 @@ class _BulkClassifyWorker(QThread):
     def run(self) -> None:
         try:
             from concurrent.futures import ThreadPoolExecutor, as_completed
-            from src import ai_discovery, db_settings
-            db = self._stack.db_path
-            batch_size = max(1, db_settings.get_int(db, "classifier_batch_size", 10) or 10)
-            try:
-                concurrency = int(
-                    db_settings.get_str(db, "classifier_concurrency", "4") or "4"
-                )
-            except ValueError:
-                concurrency = 4
-            concurrency = max(1, min(16, concurrency))
+            from src import ai_discovery
+            # Wizard-style sensible defaults; the classifier tuning settings
+            # were removed when the wizard moved to a triage-first pipeline.
+            # Triggers view still uses the bucket classifier directly
+            # (no triage gate here) — keep the previous behaviour.
+            batch_size = 10
+            concurrency = 4
             provider = ai_discovery.build_discovery_provider()
 
             chunks: list[list[str]] = [
@@ -91,7 +88,12 @@ class _BulkClassifyWorker(QThread):
                 except Exception as e:  # noqa: BLE001
                     from src.ai_discovery import Classification
                     return chunk, [
-                        Classification("UNKNOWN", m[:60], f"batch error: {e}", 0.0)
+                        Classification(
+                            action_types=("UNKNOWN",),
+                            phrase=m[:60],
+                            reasoning=f"batch error: {e}",
+                            confidence=0.0,
+                        )
                         for m in chunk
                     ]
 

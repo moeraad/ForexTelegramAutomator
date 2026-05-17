@@ -1186,7 +1186,23 @@ void DoOpen(long id, string payload) {
    string pendingField = JsonField(payload, "pending");
    bool isPending = (pendingField == "true");
    if(isPending) {
+      // pending_type chooses Limit vs Stop semantics. Default "limit"
+      // when the field is missing (back-compat with profiles emitted
+      // before pending_type was plumbed). "stop" support is FALLBACK
+      // ONLY for now — we log and place a Limit so breakout-style
+      // signals don't silently fail. Real BuyStop/SellStop plumbing
+      // lands when a channel actually needs it.
+      string pendingTypeField = JsonField(payload, "pending_type");
+      if(pendingTypeField == "" || pendingTypeField == "null") {
+         pendingTypeField = "limit";
+      }
+      if(pendingTypeField == "stop") {
+         Print("CT OPEN id=", id, " pending_type=stop is FALLBACK-ONLY; "
+               "placing as LIMIT (breakout plumbing not implemented).");
+      }
       bool isBuyP = (side == "BUY");
+      // Midpoint formula collapses to entry_low when low == high (the
+      // single-price-entry convention used by SMC-style channels).
       double entryLimit = (entryLow + entryHigh) / 2.0;
       double lotsP = LotsFromRisk(sl, entryLimit);
       if(lotsP <= 0.0) {

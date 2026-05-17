@@ -90,6 +90,17 @@ def _render_triage_prompt(profile_name: str | None = None) -> str:
     )
 
 
+def render_bootstrap_triage_prompt() -> str:
+    """Triage prompt without channel-specific ALWAYS-KEEP triggers.
+
+    Used by the Profile Generator wizard, which runs BEFORE any channel
+    profile exists (chicken-and-egg). The universal IGNORE/KEEP rules
+    above are sufficient on their own; the `${triage_keep_triggers}`
+    block becomes an empty string.
+    """
+    return _TEMPLATE.substitute(triage_keep_triggers="")
+
+
 try:
     TRIAGE_SYSTEM_PROMPT: str | None = _render_triage_prompt()
 except (RuntimeError, FileNotFoundError):
@@ -136,6 +147,7 @@ class TriageClient:
         max_retries: int = 2,
         retry_sleep: float = 1.0,
         provider: LLMProvider | None = None,
+        system_prompt: str | None = None,
     ):
         if provider is not None:
             self._provider: LLMProvider = provider
@@ -145,17 +157,23 @@ class TriageClient:
             self._provider = build_triage_provider(model=model)
         self._max_retries = max_retries
         self._retry_sleep = retry_sleep
+        # Per-instance override: lets the Profile Generator wizard run the
+        # triage classifier against a bootstrap prompt (no profile yet)
+        # without mutating the module-level TRIAGE_SYSTEM_PROMPT used by
+        # the live listener.
+        self._system_prompt = system_prompt
 
     def classify(self, text: str, open_count: int) -> TriageResult:
         user_content = (
             f"OPEN_POSITIONS: {open_count}\n"
             f"MESSAGE:\n{text}"
         )
+        system_prompt = self._system_prompt or TRIAGE_SYSTEM_PROMPT
         last_err: Exception | None = None
         for attempt in range(self._max_retries):
             try:
                 result = self._provider.triage(
-                    system_prompt=TRIAGE_SYSTEM_PROMPT,
+                    system_prompt=system_prompt,
                     user_content=user_content,
                     max_output_tokens=32,
                 )

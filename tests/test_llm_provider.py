@@ -61,7 +61,10 @@ def test_anthropic_interpret_with_medium_reasoning_sets_thinking():
     assert kw["system"][0]["text"] == "SYS"
     blocks = kw["messages"][0]["content"]
     assert len(blocks) == 2
-    assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+    # Only the system prompt carries cache_control. The recent-chat block
+    # used to, but it changes every call so the cache entry was never
+    # actually reused — see llm_provider.py for the rationale.
+    assert "cache_control" not in blocks[0]
     assert blocks[0]["text"] == "chat-prefix"
     assert "cache_control" not in blocks[1]
     assert blocks[1]["text"] == "volatile-msg"

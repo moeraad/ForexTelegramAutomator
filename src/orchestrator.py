@@ -4,7 +4,7 @@ import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from src import signal_memory
+from src import prefilter, signal_memory
 from src.ai import AIClient
 from src.ai_logger import log_call
 from src.ai_triage import TriageClient
@@ -125,6 +125,23 @@ def _cleanup_message_if_orphan(conn: sqlite3.Connection, msg_id: int) -> None:
     conn.execute("DELETE FROM messages WHERE id = ?", (msg_id,))
 
 
+def _load_channel_profile_for_prefilter() -> dict:
+    """Load the active channel profile from disk for the Stage 0 pre-filter.
+
+    Returns empty dict if no profile is configured / found, which makes the
+    pre-filter a no-op (safe default). Cached lookup not needed — this is
+    called once per incoming message and the file is small.
+    """
+    try:
+        from src.ai import _resolve_profile_path
+        path = _resolve_profile_path()
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, RuntimeError):
+        return {}
+
+
 def process_message(
     conn: sqlite3.Connection,
     ai: AIClient,
@@ -143,6 +160,28 @@ def process_message(
                              is_backfill=is_backfill)
     if msg_id is None:
         return []  # duplicate
+
+    # Stage 0: universal pre-filter. Cheap, deterministic, no LLM call.
+    # Driven entirely by profile.symbol_aliases / profile.other_instruments
+    # — no hardcoded language tokens. With empty profile config this is a
+    # no-op (safe default for first-run channels). Mirrors the same gate
+    # the wizard runs on history, so live and offline behave consistently.
+    _profile = _load_channel_profile_for_prefilter()
+    drop_sym, _sym_reason = prefilter.should_drop_by_symbol(text, _profile)
+    if drop_sym:
+        log_call(ai_log_path, {
+            "msg_id": msg_id, "stage": "prefilter",
+            "decision": "drop", "reason": "symbol-mismatch",
+        })
+        _cleanup_message_if_orphan(conn, msg_id)
+        return []
+    if prefilter.looks_like_ad(text):
+        log_call(ai_log_path, {
+            "msg_id": msg_id, "stage": "prefilter",
+            "decision": "drop", "reason": "ad-shape",
+        })
+        _cleanup_message_if_orphan(conn, msg_id)
+        return []
 
     if triage is not None:
         try:

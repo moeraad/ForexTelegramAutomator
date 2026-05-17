@@ -3,7 +3,7 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from typing import Literal, Union
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from src.config import SUPPORTED_SYMBOLS
 
 _FENCE_PATTERN = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
@@ -18,12 +18,22 @@ class OpenAction(BaseModel):
     tps: list[float] = Field(min_length=1)
     sl: float
     comment: str = ""
-    # When true, the EA places a real broker-side pending limit order
-    # (trade.BuyLimit / trade.SellLimit) instead of trying to fill at
-    # market. The action stays in `status='watching'` until either the
-    # limit fires (->executed with a position) or a CANCEL_PENDING
+    # When true, the EA places a real broker-side pending order
+    # (BuyLimit / SellLimit / BuyStop / SellStop per `pending_type`)
+    # instead of filling at market. The action stays in `status='watching'`
+    # until either the order fires (->executed) or a CANCEL_PENDING
     # rejects it. Default False preserves existing market+chase behavior.
     pending: bool = False
+    # Which kind of pending order to place when pending=True.
+    #   "limit": Buy/SellLimit — used for mean-reversion entries where the
+    #     channel wants to wait for price to come back to the level
+    #     (most common; default).
+    #   "stop":  Buy/SellStop — used for breakout entries where the channel
+    #     wants to enter only when price breaks through the level.
+    # Field is None when pending=False; coerced to "limit" by the
+    # post-validator when pending=True but pending_type wasn't supplied,
+    # so existing AI outputs that only emit `pending: true` keep working.
+    pending_type: Literal["limit", "stop"] | None = None
 
     @field_validator("symbol")
     @classmethod
@@ -31,6 +41,15 @@ class OpenAction(BaseModel):
         if v not in SUPPORTED_SYMBOLS:
             raise ValueError(f"unsupported symbol {v}")
         return v
+
+    @model_validator(mode="after")
+    def _default_pending_type(self):
+        if self.pending and self.pending_type is None:
+            # Re-assign through __dict__ so Pydantic's frozen guard doesn't fire
+            # (model is not frozen, but model_validator(mode="after") gets called
+            # before assignment validation if not careful).
+            object.__setattr__(self, "pending_type", "limit")
+        return self
 
 
 class ModifyAction(BaseModel):

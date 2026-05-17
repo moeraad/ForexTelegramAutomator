@@ -522,10 +522,9 @@ class _TuningTab(QWidget):
 
     def _wire_visibility(self) -> None:
         """Connect provider combos to visibility refresh."""
-        for key in ("ai_provider", "classifier_provider"):
-            w = self._widgets.get(key)
-            if isinstance(w, QComboBox):
-                w.currentTextChanged.connect(lambda _t: self._update_visibility())
+        w = self._widgets.get("ai_provider")
+        if isinstance(w, QComboBox):
+            w.currentTextChanged.connect(lambda _t: self._update_visibility())
 
     def _resolved_provider(self, key: str) -> str:
         w = self._widgets.get(key)
@@ -534,20 +533,16 @@ class _TuningTab(QWidget):
         return ""
 
     def _update_visibility(self) -> None:
-        """Show only the model fields relevant to the selected providers."""
+        """Show only the model fields relevant to the selected provider."""
         if not self._row_widgets:
             return
         main_provider = self._resolved_provider("ai_provider") or "anthropic"
-        classifier_override = self._resolved_provider("classifier_provider")
-        effective_classifier = classifier_override or main_provider
 
         rules = {
             "anthropic_model": main_provider == "anthropic",
             "openai_model": main_provider == "openai",
             "ai_triage_model": main_provider == "anthropic",
             "openai_triage_model": main_provider == "openai",
-            "classifier_anthropic_model": effective_classifier == "anthropic",
-            "classifier_openai_model": effective_classifier == "openai",
         }
         for key, visible in rules.items():
             row = self._row_widgets.get(key)
@@ -894,61 +889,6 @@ _TUNING_SECTIONS: list[tuple[str, list[_Field]]] = [
                    "signal_memory_enabled is off. 20 is the default."
                ),
                opts=(1, 200)),
-    ]),
-    ("CLASSIFIER (PROFILE WIZARD)", [
-        _Field("classifier_batch_size", "Batch size", "int",
-               tooltip=(
-                   "How many messages to send to the model in one classify "
-                   "call. Larger = fewer round-trips but more risk of the "
-                   "model losing focus across items. 10 is the safe default."
-               ),
-               opts=(1, 50)),
-        _Field("classifier_concurrency", "Concurrency", "choice",
-               tooltip=(
-                   "How many batches to fire in parallel. Each batch is a "
-                   "separate HTTP request; higher values complete the run "
-                   "faster but risk hitting provider rate limits. 4 is a "
-                   "safe default for Haiku free tier; raise to 8-10 for "
-                   "paid tiers or OpenAI."
-               ),
-               opts=(["1", "2", "4", "6", "8", "10"],)),
-        _Field("classifier_provider", "Provider", "choice",
-               tooltip=(
-                   "Which AI service runs the discovery classifier. Can "
-                   "differ from the interpreter — e.g. use cheap OpenAI "
-                   "nano for classification while the live interpreter "
-                   "stays on Anthropic Sonnet."
-               ),
-               opts=(["anthropic", "openai"],)),
-        _Field("classifier_anthropic_model", "Anthropic classifier model", "choice",
-               tooltip=(
-                   "Claude model used by the classifier when its provider "
-                   "resolves to anthropic. Default Haiku 4.5 — cheapest tier "
-                   "that still classifies 14 buckets reliably."
-               ),
-               opts=(["claude-haiku-4-5-20251001", "claude-sonnet-4-6"],),
-               editable=True),
-        _Field("classifier_openai_model", "OpenAI classifier model", "choice",
-               tooltip=(
-                   "OpenAI model used by the classifier when its provider "
-                   "resolves to openai. Default gpt-5-nano — cheapest tier."
-               ),
-               opts=(["gpt-5-nano", "gpt-5-mini", "gpt-5"],),
-               editable=True),
-        _Field("classifier_custom_prompt", "Custom rules", "text",
-               tooltip=(
-                   "Free-form guidance spliced into the classifier prompt. "
-                   "Use this to teach the model channel-specific vocabulary, "
-                   "exceptions, and edge cases — rules, examples, hints. "
-                   "Plain language is fine. Leave blank for the default "
-                   "generic classifier. Keep under ~2000 chars; longer "
-                   "blobs hurt accuracy.\n\n"
-                   "Example:\n"
-                   "  - Messages starting with '📅' are scheduled "
-                   "announcements -> IGNORE.\n"
-                   "  - The Arabic phrase 'احسب نفسك' is colloquial "
-                   "CLOSE_FULL."
-               )),
     ]),
 ]
 

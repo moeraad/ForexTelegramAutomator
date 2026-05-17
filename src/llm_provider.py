@@ -114,11 +114,12 @@ class AnthropicProvider:
         max_output_tokens: int,
         reasoning_level: str | None,
     ) -> LLMCallResult:
-        cached_block = {
-            "type": "text",
-            "text": cached_prefix,
-            "cache_control": {"type": "ephemeral"},
-        }
+        # NOTE: cached_prefix (recent_chat) used to carry cache_control here,
+        # but it changes on every new channel message — so it created a fresh
+        # cache entry per call and almost never read from one. The system
+        # prompt is the only truly stable block; cache it alone. Recent_chat
+        # rides in the volatile user turn.
+        cached_block = {"type": "text", "text": cached_prefix}
         volatile_block = {"type": "text", "text": volatile_suffix}
         system = [
             {

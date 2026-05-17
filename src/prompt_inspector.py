@@ -258,16 +258,13 @@ def _render_evaluator(db_path: Path, mode: Mode) -> RenderedPrompt:
 
 
 def _render_discovery(db_path: Path, mode: Mode) -> RenderedPrompt:
-    from src.ai_discovery import _TEMPLATE, _custom_rules_block
+    from src.ai_discovery import _TEMPLATE
     msg = _DEMO_MESSAGE
     if mode == "live":
         live_msg, _ = _latest_message_from_db(db_path)
         if live_msg:
             msg = live_msg
-    rendered = _TEMPLATE.substitute(
-        message=msg,
-        custom_rules_block=_custom_rules_block(),
-    )
+    rendered = _TEMPLATE.substitute(message=msg)
     expected = (
         'JSON: {"action_type":"<one of 14 buckets>", '
         '"phrase":"<verbatim trigger>", "reasoning":"<short>", '
@@ -278,20 +275,19 @@ def _render_discovery(db_path: Path, mode: Mode) -> RenderedPrompt:
         system_prompt="Reply with strict JSON only. No code fences.",
         user_content=rendered,
         expected_output=expected,
-        notes="Used by the profile generator wizard and the Triggers tab's "
-              "Bulk import. Independent of channels/<stack>.json — only uses "
-              "the classifier_custom_prompt DB setting for guidance.",
+        notes="Used by the profile generator wizard (after the triage gate) "
+              "and the Triggers tab's Bulk import. Independent of the "
+              "channel profile.",
     )
 
 
 def _render_discovery_batch(db_path: Path, mode: Mode) -> RenderedPrompt:
-    from src.ai_discovery import _BATCH_TEMPLATE, _custom_rules_block
+    from src.ai_discovery import _BATCH_TEMPLATE
     sample_msgs = [_DEMO_MESSAGE, "خرجنا 🤝🏻", "GOLD BUY @ 4790-4792 SL 4780 TP1 4800"]
     numbered = "\n\n".join(f"{i + 1}. {m}" for i, m in enumerate(sample_msgs))
     rendered = _BATCH_TEMPLATE.substitute(
         count=len(sample_msgs),
         messages=numbered,
-        custom_rules_block=_custom_rules_block(),
     )
     expected = (
         f"JSON array of exactly {len(sample_msgs)} objects with the same "
