@@ -37,6 +37,21 @@ input double MaxLotsPerSignal        = 100.0;
 // Default 2.0%: a $10,000 account risks at most $200 per trade. Two
 // consecutive losers cost ~4% of balance, recoverable in a single winner.
 input double MaxSlLossPercent        = 2.0;
+// Score-tied sizing — when ON, the EA reads `evaluation.sizing.multiplier`
+// from the action's payload (populated by the Python-side evaluator) and
+// scales the baseline lot size by that multiplier. A `skip=true` from the
+// evaluator (e.g. low conviction or hard veto) makes the EA post 'rejected'
+// instead of opening. Default OFF — calibration of the multiplier table
+// happens in Python; flip ON once the operator is satisfied with the
+// evaluator's probability output.
+input bool   EnableScoreTiedSizing   = false;
+// Maximum wall-time the EA waits for the evaluator to write its result
+// into the action's payload_json. The evaluator runs async (~3-10s);
+// 8000ms covers Sonnet+thinking + provider latency. If the result isn't
+// ready within this window, EA proceeds with baseline lots and logs a
+// warning — degraded behavior is still better than blocking the trade.
+input int    EvaluationWaitMs        = 8000;
+input int    EvaluationPollMs        = 500;
 input int    SlippagePoints          = 50;
 input string Symbol_Override         = "XAUUSD";
 // Magic number tags positions opened by this EA so reconciliation, plan
@@ -1165,6 +1180,117 @@ double LotsFromRisk(double slPrice, double entryPrice) {
    return result;
 }
 
+// ---- Score-tied sizing -----------------------------------------------
+//
+// The Python-side evaluator writes a `sizing` block into the action's
+// `payload_json["evaluation"]` after the async LLM synthesizer returns.
+// Shape:
+//     "sizing": {
+//        "multiplier": 1.4,
+//        "skip": false,
+//        "p_profit_used": 0.62,
+//        "horizon_minutes": 240,
+//        "reason": "p_profit=0.620 in band [0.60,0.65) -> 1.4x"
+//     }
+//
+// EA reads this and either skips the trade (skip=true) or multiplies
+// baseline lots by `multiplier`. Honors MaxLotsPerSignal as the hard
+// cap regardless of multiplier.
+
+struct EvalSizing {
+   bool   ready;        // false = evaluator hadn't written yet
+   bool   skip;
+   double multiplier;
+   double p_profit;
+   string reason;
+};
+
+void InitEvalSizing(EvalSizing &s) {
+   s.ready = false;
+   s.skip = false;
+   s.multiplier = 1.0;
+   s.p_profit = 0.0;
+   s.reason = "";
+}
+
+// Fetch sizing block from /actions/{id}; returns ready=false when the
+// evaluation key is missing. Tolerant of HTTP errors — callers fall
+// back to baseline lots on any failure path.
+EvalSizing FetchEvalSizing(long actionId) {
+   EvalSizing s; InitEvalSizing(s);
+   string url = ApiBaseUrl + "/actions/" + IntegerToString(actionId);
+   string body;
+   if(!HttpGet(url, body) || body == "") return s;
+   string payloadJson = JsonField(body, "payload");
+   if(payloadJson == "") return s;
+   string evalJson = JsonField(payloadJson, "evaluation");
+   if(evalJson == "") return s;
+   string sizingJson = JsonField(evalJson, "sizing");
+   if(sizingJson == "") return s;
+   s.ready = true;
+   string multStr = JsonField(sizingJson, "multiplier");
+   if(multStr != "" && multStr != "null") s.multiplier = StringToDouble(multStr);
+   string skipStr = JsonField(sizingJson, "skip");
+   s.skip = (skipStr == "true");
+   string ppStr = JsonField(sizingJson, "p_profit_used");
+   if(ppStr != "" && ppStr != "null") s.p_profit = StringToDouble(ppStr);
+   s.reason = JsonField(sizingJson, "reason");
+   return s;
+}
+
+// Poll the action endpoint up to EvaluationWaitMs total. Returns the
+// last attempt's EvalSizing — `ready=false` when nothing arrived in
+// time, which the caller treats as "use baseline".
+EvalSizing WaitForEvalSizing(long actionId) {
+   ulong start = GetTickCount();
+   ulong deadline = start + (ulong)EvaluationWaitMs;
+   EvalSizing s = FetchEvalSizing(actionId);
+   while(!s.ready && GetTickCount() < deadline) {
+      Sleep(EvaluationPollMs);
+      s = FetchEvalSizing(actionId);
+   }
+   ulong elapsed = GetTickCount() - start;
+   if(s.ready) {
+      Print("CT eval_sizing: action ", actionId,
+            " ready in ", elapsed, "ms — multiplier=", s.multiplier,
+            " skip=", (s.skip ? "true" : "false"),
+            " p_profit=", s.p_profit, " (", s.reason, ")");
+   } else {
+      Print("CT eval_sizing: action ", actionId,
+            " NOT READY after ", elapsed, "ms — using baseline lots");
+   }
+   return s;
+}
+
+// Apply the score-tied multiplier to baseline lots. Returns the
+// adjusted lot size, or 0.0 with `skipReason` set when the evaluator
+// flagged skip. The caller checks `skipReason != ""` to know whether
+// to PostResult 'rejected' instead of OrderSend.
+double ApplyEvalSizing(long actionId, double baselineLots, string &skipReason) {
+   skipReason = "";
+   if(!EnableScoreTiedSizing) return baselineLots;
+   EvalSizing s = WaitForEvalSizing(actionId);
+   if(!s.ready) return baselineLots;
+   if(s.skip) {
+      skipReason = "score_tied_skip:" + s.reason;
+      return 0.0;
+   }
+   double adjusted = baselineLots * s.multiplier;
+   if(adjusted > MaxLotsPerSignal) adjusted = MaxLotsPerSignal;
+   double minLot = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_MIN);
+   double lotStep = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_STEP);
+   if(lotStep <= 0) lotStep = 0.01;
+   if(minLot <= 0) minLot = lotStep;
+   adjusted = MathFloor(adjusted / lotStep) * lotStep;
+   if(adjusted < minLot) adjusted = minLot;
+   adjusted = NormalizeDouble(adjusted, 2);
+   Print("CT eval_sizing: action ", actionId,
+         " baseline=", baselineLots, " * multiplier=", s.multiplier,
+         " -> adjusted=", adjusted, " (cap=", MaxLotsPerSignal, ")");
+   return adjusted;
+}
+
+
 void DoOpen(long id, string payload) {
    string side = JsonField(payload, "side");
    double entryLow = StringToDouble(JsonField(payload, "entry_low"));
@@ -1207,6 +1333,13 @@ void DoOpen(long id, string payload) {
       double lotsP = LotsFromRisk(sl, entryLimit);
       if(lotsP <= 0.0) {
          PostResult(id, "rejected", 0, "sl_too_wide_for_max_risk_pct");
+         g_stats_rejected++;
+         return;
+      }
+      string sizingSkipP = "";
+      lotsP = ApplyEvalSizing(id, lotsP, sizingSkipP);
+      if(sizingSkipP != "") {
+         PostResult(id, "rejected", 0, sizingSkipP);
          g_stats_rejected++;
          return;
       }
@@ -1326,6 +1459,13 @@ void DoOpen(long id, string payload) {
       // Signal's SL is too wide for the configured per-trade risk cap
       // (MaxSlLossPercent). LotsFromRisk already logged the details.
       PostResult(id, "rejected", 0, "sl_too_wide_for_max_risk_pct");
+      g_stats_rejected++;
+      return;
+   }
+   string sizingSkipM = "";
+   lotsTotal = ApplyEvalSizing(id, lotsTotal, sizingSkipM);
+   if(sizingSkipM != "") {
+      PostResult(id, "rejected", 0, sizingSkipM);
       g_stats_rejected++;
       return;
    }
@@ -3060,6 +3200,13 @@ void DoOpenInstant(long id, string payload) {
    }
 
    double lots = LotsFromBalance();
+   string sizingSkipI = "";
+   lots = ApplyEvalSizing(id, lots, sizingSkipI);
+   if(sizingSkipI != "") {
+      PostResult(id, "rejected", 0, sizingSkipI);
+      g_stats_rejected++;
+      return;
+   }
    double price = SymbolInfoDouble(Symbol_Override, isBuy ? SYMBOL_ASK : SYMBOL_BID);
    if(price <= 0) { PostResult(id, "failed", 0, "no_price"); return; }
    double slDistance = EmergencySlDistance(lots, InstantRiskPercent);

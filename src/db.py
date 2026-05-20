@@ -35,6 +35,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_actions_add_cancel_pending(conn)
     _migrate_seed_settings_defaults(conn)
     _migrate_env_to_settings(conn)
+    _migrate_create_unmatched_messages(conn)
 
 
 def _migrate_actions_add_phase2_types(conn: sqlite3.Connection) -> None:
@@ -581,6 +582,40 @@ def _migrate_actions_add_cancel_pending(conn: sqlite3.Connection) -> None:
         )
     finally:
         conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _migrate_create_unmatched_messages(conn: sqlite3.Connection) -> None:
+    """Queue of live Telegram messages the trigger matcher missed.
+
+    Populated by the orchestrator on the Sonnet-fallback path when the AI
+    emits at least one deterministic-emittable action type — i.e. the
+    message *could* legitimately become a trigger, but no operator-curated
+    phrase caught it yet. The Triggers tab's "Unmatched" pane reads from
+    this table to offer one-click promotion into a real trigger entry.
+
+    `norm_text` is UNIQUE so re-quoted messages don't duplicate — a single
+    canonical row per distinct normalized payload. `suggested_action_type`
+    is Sonnet's best guess (the first emittable type in its emission list)
+    and pre-fills the action_type bucket when the operator promotes.
+
+    The table is queue-shaped: promotion and dismissal both DELETE the
+    row, so the table itself never grows beyond pending entries. The
+    insert path prunes oldest rows when count exceeds the cap.
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS unmatched_messages ("
+        "  id                    INTEGER PRIMARY KEY,"
+        "  text                  TEXT NOT NULL,"
+        "  norm_text             TEXT NOT NULL UNIQUE,"
+        "  suggested_action_type TEXT,"
+        "  source_msg_id         INTEGER,"
+        "  created_at            DATETIME DEFAULT CURRENT_TIMESTAMP"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_unmatched_created "
+        "ON unmatched_messages(created_at)"
+    )
 
 
 def get_setting(conn: sqlite3.Connection, key: str) -> str | None:

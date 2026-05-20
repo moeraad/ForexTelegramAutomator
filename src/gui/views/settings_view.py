@@ -873,6 +873,30 @@ _TUNING_SECTIONS: list[tuple[str, list[_Field]]] = [
                    "worked examples, and language. Must match a file in channels/."
                )),
     ]),
+    ("TRADING STYLE", [
+        _Field("trading_style", "Default style", "choice",
+               tooltip=(
+                   "Holding-period intent for this channel. Drives the AI "
+                   "evaluator's rubric weights, the probability horizons it "
+                   "scores (15m/1h/4h for scalp, up to 7d for position), and "
+                   "which data feeds need to be fresh. Scalp leans on session "
+                   "phase and level proximity; intraday balances trend and "
+                   "macro; swing leans on real yields, DXY trend, and COT; "
+                   "position is macro-thesis-dominant. Pick the style that "
+                   "matches this channel's typical hold."
+               ),
+               opts=(["scalp", "intraday", "swing", "position"],),
+               editable=False),
+        _Field("trading_style_ai_override", "Allow AI per-signal override", "bool",
+               tooltip=(
+                   "When ON, the AI interpreter may override the default style "
+                   "for a single signal if the message text declares one "
+                   "(\"اسكالب فقط\" → scalp, \"صفقة طويلة\" → swing). When OFF, "
+                   "every signal from this channel uses the default style "
+                   "regardless of what the message says. Recommended: ON — "
+                   "channels that mix styles signal it explicitly."
+               )),
+    ]),
     ("MISC", [
         _Field("default_auto_execute_delay_sec", "Auto-execute delay (sec)", "int",
                tooltip=(

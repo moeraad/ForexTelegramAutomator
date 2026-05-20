@@ -4,7 +4,7 @@ import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from src import prefilter, signal_memory, trigger_matcher
+from src import prefilter, signal_memory, trigger_matcher, unmatched_store
 from src.ai import AIClient
 from src.ai_logger import log_call
 from src.ai_triage import TriageClient
@@ -298,6 +298,23 @@ def process_message(
             signal_memory.summarize(result.response),
         )
 
+    # Reaching this branch means the trigger matcher returned no hits
+    # for this message. If Sonnet emitted a deterministic-emittable
+    # action type, the message is a trigger candidate — queue it for
+    # the operator to review in the Triggers tab. Backfill replays
+    # are excluded: they're historical and the operator already had a
+    # chance to curate triggers for those.
+    if not is_backfill:
+        try:
+            unmatched_store.record(
+                conn,
+                text=text,
+                source_msg_id=msg_id,
+                actions=list(result.response.actions),
+            )
+        except Exception as e:  # noqa: BLE001 — must not break live path
+            log.warning("unmatched_store.record raised for msg_id=%s: %s", msg_id, e)
+
     inserted = _persist_actions(
         conn, msg_id, list(result.response.actions), ai_log_path,
         auto_execute_delay_sec, is_backfill=is_backfill,
@@ -472,7 +489,7 @@ def _persist_actions(
             # input it needs, and OPEN_INSTANT carries that. Firing here
             # gives the dashboard a score within seconds of the naked
             # open, instead of waiting for ATTACH_SIGNAL.
-            _kick_evaluator_for_open(cur.lastrowid, _payload_for(action))
+            kick_evaluator_for_open(cur.lastrowid, _payload_for(action))
 
     if not inserted:
         # No action ended up referencing this message (pure context, all
@@ -497,7 +514,7 @@ def _persist_actions(
 # COPYTRADES_DISABLE_EVALUATOR env var (or the absence of a real
 # DB_PATH file) disables the kick.
 
-def _kick_evaluator_for_open(action_id: int, signal_dict: dict) -> None:
+def kick_evaluator_for_open(action_id: int, signal_dict: dict) -> None:
     """Spawn a daemon thread that runs evaluate_signal and writes the
     result back into actions.payload_json. Returns immediately. Failures
     in the worker are caught and logged; they never bubble up to the
@@ -528,6 +545,7 @@ def _evaluator_worker(action_id: int, signal_dict: dict, db_path: str) -> None:
     try:
         from src.ai_evaluator import evaluate_signal
         from src.db import connect
+        from src import db_settings
     except Exception:
         log.exception("evaluator worker: import failed; skipping action_id=%s", action_id)
         return
@@ -538,7 +556,23 @@ def _evaluator_worker(action_id: int, signal_dict: dict, db_path: str) -> None:
         if ai_client is None:
             log.warning("evaluator worker: no AI client available; skipping action_id=%s", action_id)
             return
-        evaluation = evaluate_signal(signal_dict, conn, ai_client)
+        # Version switch: 'v1' = legacy 15-axis LLM-as-judge,
+        # 'v2' = new layered (deterministic + LLM synthesizer). Default
+        # v2; flip back via settings during rollout if needed. The v2
+        # path tolerates a None ai_client and still publishes a
+        # deterministic verdict, but the worker only spawns when the
+        # client is available — so this branch always has one.
+        from pathlib import Path
+        evaluator_version = db_settings.get_str(
+            Path(db_path), "evaluator_version", "v2",
+        )
+        if evaluator_version == "v2":
+            from src.evaluator.evaluator import evaluate_signal_v2
+            evaluation = evaluate_signal_v2(
+                signal_dict, conn, ai_client, db_path=Path(db_path),
+            )
+        else:
+            evaluation = evaluate_signal(signal_dict, conn, ai_client)
         # Merge evaluation into the action's existing payload_json. Re-read
         # in case another writer touched it (rare but defensive).
         row = conn.execute(

@@ -549,23 +549,147 @@ async def macro_feed_loop(app: Application):
     """
     from src.macro import fetch_macro_snapshot
     from src.db import set_setting
+    from src import feature_store
     conn: sqlite3.Connection = app.bot_data["conn"]
     while True:
         try:
             snap = await fetch_macro_snapshot()
             if snap is not None:
+                # Legacy blob: kept for back-compat with the current
+                # ai_evaluator (which reads macro_snapshot wholesale).
                 set_setting(conn, "macro_snapshot", json.dumps(snap))
                 set_setting(conn, "macro_snapshot_at", snap["fetched_at"])
+                # Per-feature rows: the trading-style-aware evaluator
+                # reads these by name. Mirror only the keys that map
+                # 1:1 to trading_style.required_features so we don't
+                # litter the table with unused names. Both value and
+                # chg_pct are stored — the evaluator wants the % move
+                # for direction-vs-regime calls.
+                features: dict[str, dict] = {}
+                for name in (
+                    "dxy", "tnx", "vix", "silver", "copper", "usdjpy",
+                    "sp500_futures", "real_yield", "tnx2",
+                    "breakevens_5y5y",
+                ):
+                    if name in snap:
+                        features[name] = {
+                            "value": snap[name],
+                            "chg_pct": snap.get(f"{name}_chg_pct"),
+                        }
+                # Also expose a name the trading_style spec uses literally:
+                # required_features lists `real_yield_10y`. Keep both for
+                # back-compat during the rollout.
+                if "real_yield" in snap:
+                    features["real_yield_10y"] = features["real_yield"]
+                if features:
+                    feature_store.put_many(conn, features)
                 log.info(
-                    "macro_feed: dxy=%s vix=%s tnx=%s (%d/5 tickers)",
+                    "macro_feed: dxy=%s vix=%s tnx=%s real_yield=%s "
+                    "(%d/%d tickers, %d features)",
                     snap.get("dxy"), snap.get("vix"), snap.get("tnx"),
-                    sum(1 for k in ("dxy", "tnx", "vix", "jpy", "oil") if k in snap),
+                    snap.get("real_yield"),
+                    sum(1 for k in ("dxy", "tnx", "vix", "jpy", "oil",
+                                    "silver", "copper", "sp500_futures",
+                                    "real_yield", "tnx2", "breakevens_5y5y")
+                        if k in snap),
+                    11,
+                    len(features),
                 )
             else:
                 log.warning("macro_feed: no tickers fetched this cycle")
         except Exception as e:
             log.exception("macro_feed_loop error: %s", e)
         await asyncio.sleep(60.0)
+
+
+async def cot_feed_loop(app: Application):
+    """Pull CFTC Commitments of Traders for COMEX gold every 6 hours.
+
+    Why 6h cadence: COT is released once a week (Friday afternoon ET).
+    Polling weekly is fine in principle but the precise release time
+    drifts; 6h means we never miss the new report by more than 6h.
+    Off-cycle fetches are cheap (single JSON, ~50 rows) and produce no
+    feature change when the report hasn't moved — feature_store updates
+    the timestamp, which is fine.
+    """
+    from src import feature_store
+    from src.feeds.cot import fetch_cot
+    conn: sqlite3.Connection = app.bot_data["conn"]
+    while True:
+        try:
+            snap = await fetch_cot()
+            if snap is not None:
+                feature_store.put_many(conn, snap)
+                log.info(
+                    "cot_feed: net=%s percentile=%s report_date=%s",
+                    snap.get("cot_managed_money"),
+                    snap.get("cot_extremes_percentile"),
+                    snap.get("cot_report_date"),
+                )
+            else:
+                log.warning("cot_feed: no data this cycle")
+        except Exception as e:
+            log.exception("cot_feed_loop error: %s", e)
+        await asyncio.sleep(6 * 3600)
+
+
+async def etf_flows_feed_loop(app: Application):
+    """Pull GLD daily history and recompute signed-volume flow proxies
+    every hour.
+
+    Why 1h cadence: GLD's intraday volume only matters at the daily-close
+    granularity for the signed-flow proxy. Polling more often than that
+    is wasteful; less often risks missing the close-of-day update. 1h
+    is the conservative middle.
+    """
+    from src import feature_store
+    from src.feeds.etf_flows import fetch_etf_flows
+    conn: sqlite3.Connection = app.bot_data["conn"]
+    while True:
+        try:
+            snap = await fetch_etf_flows()
+            if snap is not None:
+                feature_store.put_many(conn, snap)
+                log.info(
+                    "etf_flows: latest=%s trend_30d=%s window_days=%s",
+                    snap.get("etf_flows_gld"),
+                    snap.get("etf_flows_30d_trend"),
+                    snap.get("etf_flows_window_days"),
+                )
+            else:
+                log.warning("etf_flows_feed: no data this cycle")
+        except Exception as e:
+            log.exception("etf_flows_feed_loop error: %s", e)
+        await asyncio.sleep(3600.0)
+
+
+async def news_scan_feed_loop(app: Application):
+    """Refresh GDELT geopolitical risk index every 15 minutes.
+
+    Why 15min cadence: GDELT's underlying dataset refreshes every 15
+    minutes, so polling faster is wasted work. 15 minutes is also the
+    smallest window where a sudden news burst is detectable but not
+    rate-thrashing the public endpoint.
+    """
+    from src import feature_store
+    from src.feeds.news_scan import fetch_geopolitical_index
+    conn: sqlite3.Connection = app.bot_data["conn"]
+    while True:
+        try:
+            snap = await fetch_geopolitical_index()
+            if snap is not None:
+                feature_store.put_many(conn, snap)
+                log.info(
+                    "news_scan: index=%s articles=%s avg_tone=%s",
+                    snap.get("geopolitical_index"),
+                    snap.get("geopolitical_article_count"),
+                    snap.get("geopolitical_avg_tone"),
+                )
+            else:
+                log.warning("news_scan_feed: no data this cycle")
+        except Exception as e:
+            log.exception("news_scan_feed_loop error: %s", e)
+        await asyncio.sleep(15 * 60)
 
 
 def _supervise(task: asyncio.Task, name: str) -> None:
@@ -704,6 +828,9 @@ async def post_init(app: Application):
     _supervise(asyncio.create_task(promotion_loop(app)), "promotion_loop")
     _supervise(asyncio.create_task(claim_sweeper_loop(app)), "claim_sweeper_loop")
     _supervise(asyncio.create_task(macro_feed_loop(app)), "macro_feed_loop")
+    _supervise(asyncio.create_task(cot_feed_loop(app)), "cot_feed_loop")
+    _supervise(asyncio.create_task(etf_flows_feed_loop(app)), "etf_flows_feed_loop")
+    _supervise(asyncio.create_task(news_scan_feed_loop(app)), "news_scan_feed_loop")
     _supervise(asyncio.create_task(telegram_heartbeat_loop(app)), "telegram_heartbeat_loop")
     _supervise(asyncio.create_task(cost_guard_loop(app)), "cost_guard_loop")
 

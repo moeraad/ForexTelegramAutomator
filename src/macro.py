@@ -48,12 +48,34 @@ log = logging.getLogger(__name__)
 # Ticker map. Key is the short label used in the snapshot dict; value is
 # the yfinance symbol. DX-Y.NYB is the canonical free-feed DXY ticker —
 # Yahoo also serves "^DXY" but it's intermittently unavailable.
+#
+# Expanded 2026-05-20 for the trading-style-aware evaluator: silver and
+# copper are inter-market confirmations for gold (G/S ratio extremes
+# mean-revert; G/C decoupling flags regime shifts); USDJPY is a regime
+# tag (yen flips correlation in risk-off); S&P futures are the risk-on/
+# risk-off pulse. JPY=X kept under the legacy `jpy` label even though
+# it's the same instrument — switching the label would break consumers
+# reading the macro_snapshot blob.
 _TICKERS: dict[str, str] = {
     "dxy": "DX-Y.NYB",
     "tnx": "^TNX",
     "vix": "^VIX",
     "jpy": "JPY=X",
     "oil": "CL=F",
+    "silver": "SI=F",       # gold/silver ratio + inter-metal confirmation
+    "copper": "HG=F",       # gold/copper monetary-vs-industrial split
+    "usdjpy": "JPY=X",      # alias for evaluator clarity; same underlying
+    "sp500_futures": "ES=F",  # risk-on/off pulse
+}
+
+
+# FRED series IDs for daily-frequency rates pulled via the public CSV
+# endpoint (no API key required). Mapped to the feature-store names the
+# trading_style spec lists.
+_FRED_SERIES: dict[str, str] = {
+    "real_yield": "DFII10",       # 10Y real yield (TIPS) — strongest gold driver
+    "tnx2": "DGS2",               # 2Y nominal — front-end policy expectations
+    "breakevens_5y5y": "T5YIFR",  # 5y5y forward inflation expectations
 }
 
 
@@ -166,10 +188,12 @@ async def fetch_macro_snapshot() -> dict | None:
         asyncio.to_thread(_fetch_one_sync, label, sym)
         for label, sym in _TICKERS.items()
     ]
-    # FRED real yield (DFII10) — fetched from a different source (public
-    # CSV endpoint) but same shape, so it joins the gather and slots into
-    # the same result-aggregation path.
-    tasks.append(asyncio.to_thread(_fetch_fred_csv_sync, "real_yield", "DFII10"))
+    # FRED series — fetched from a different source (public CSV endpoint)
+    # but same return shape, so they join the gather and slot into the
+    # same result-aggregation path. real_yield is the strongest macro
+    # driver; tnx2 + breakevens give the Fed-expectations picture.
+    for label, series_id in _FRED_SERIES.items():
+        tasks.append(asyncio.to_thread(_fetch_fred_csv_sync, label, series_id))
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     snap: dict[str, Any] = {}

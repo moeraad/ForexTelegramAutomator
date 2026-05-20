@@ -58,6 +58,32 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "cost_cap_multiplier": "1.2",
     "bot_telegram_ok_at": "",
     "listener_telegram_ok_at": "",
+    # Trading style: drives evaluator rubric weights, scored horizons,
+    # and which data feeds need to be fresh. The closed set lives in
+    # src.trading_style.TradingStyle; this string is the .value of the
+    # enum member. Default to intraday — covers most Telegram channels'
+    # typical hold window.
+    # Which evaluator implementation to call. "v1" = the legacy
+    # ai_evaluator (15-axis LLM-as-judge). "v2" = the new layered
+    # implementation (deterministic scorers + regime tag + LLM
+    # synthesizer for forward estimates). Default v2 — but flip back
+    # to v1 in production if v2 produces obviously bad scores during
+    # the rollout window.
+    "evaluator_version": "v2",
+    # Score-tied sizing — the evaluator writes a `sizing` block into
+    # every evaluation. The EA reads `sizing.multiplier` and scales
+    # lots accordingly when its `EnableScoreTiedSizing` input is on.
+    # `score_tied_skip_threshold` is the p_profit below which the
+    # evaluator marks `skip=true` (EA posts rejected without trading).
+    # 0.45 default: trades with sub-coin-flip conviction are skipped.
+    "score_tied_skip_threshold": "0.45",
+    "trading_style": "intraday",
+    # When "1", the AI interpreter may override the stack default for a
+    # single signal if the message text declares a different style
+    # (e.g. "اسكالب فقط" → scalp, "صفقة طويلة" → swing). When "0",
+    # every signal from this stack uses the stack default regardless of
+    # what the message says.
+    "trading_style_ai_override": "1",
 }
 
 

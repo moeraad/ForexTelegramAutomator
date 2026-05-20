@@ -228,6 +228,18 @@ class ProfileView(QWidget):
         self._triggers_tab = TriggersView(self._stack)
         self._tabs.addTab(self._triggers_tab, "Triggers")
 
+        from src.gui.views.unmatched_view import UnmatchedView
+        self._unmatched_tab = UnmatchedView(self._stack)
+        # Promotion writes through profile_io, so the Triggers tab must
+        # reload from disk to surface the new row. Without this, the
+        # operator promotes, switches tabs, and sees stale in-memory
+        # state — the on-disk profile is correct but TriggersView's
+        # `self._triggers` is not.
+        self._unmatched_tab.trigger_promoted.connect(
+            self._triggers_tab._load_from_disk
+        )
+        self._tabs.addTab(self._unmatched_tab, "Unmatched")
+
         self._playground = _PlaygroundTab(lambda: self._stack)
         self._tabs.addTab(self._playground, "Playground")
         layout.addWidget(self._tabs, 1)

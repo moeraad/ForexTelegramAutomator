@@ -5,6 +5,7 @@ entries, and writes back (which also re-renders the derived prompt fields).
 """
 from __future__ import annotations
 
+import copy
 from collections import defaultdict
 
 from PySide6.QtCore import Qt, QThread, Signal
@@ -245,6 +246,9 @@ class TriggersView(QWidget):
         self._move_btn = QPushButton("Move to…")
         self._move_btn.clicked.connect(self._on_move)
         right_toolbar.addWidget(self._move_btn)
+        self._copy_btn = QPushButton("Copy to…")
+        self._copy_btn.clicked.connect(self._on_copy)
+        right_toolbar.addWidget(self._copy_btn)
         right_layout.addLayout(right_toolbar)
 
         self._table = QTableWidget(0, 3)
@@ -784,6 +788,35 @@ class TriggersView(QWidget):
         self._mark_dirty()
         self._refresh_types_list(keep_current=True)
 
+    def _on_copy(self) -> None:
+        """Duplicate the selected triggers under a different action type.
+
+        Unlike Move (which mutates `action_type` in place), Copy appends
+        deep copies so the original trigger keeps firing for its current
+        type. Useful when the same channel phrase legitimately maps to
+        more than one action (e.g. a compound "close half + BE" message
+        whose sample should produce both CLOSE_PARTIAL and MOVE_SL_BE —
+        the trigger_matcher's longest-match conflict policy fires both
+        when their action_types differ; see src/trigger_matcher.py:297).
+        """
+        targets = self._selected_global_indices()
+        if not targets:
+            return
+        current = self._selected_type() or ""
+        choices = [at for at in ACTION_TYPES if at != current]
+        new_type, ok = QInputDialog.getItem(
+            self, "Copy triggers", "Copy to action type:",
+            choices, 0, False,
+        )
+        if not ok or not new_type:
+            return
+        for idx in targets:
+            clone = copy.deepcopy(self._triggers[idx])
+            clone["action_type"] = new_type
+            self._triggers.append(clone)
+        self._mark_dirty()
+        self._refresh_types_list(keep_current=True)
+
     def _on_bulk_import(self) -> None:
         dlg = _BulkImportDialog(self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -820,7 +853,14 @@ class TriggersView(QWidget):
 
 
 class _AddTriggerDialog(QDialog):
-    def __init__(self, default_action_type: str, parent: QWidget) -> None:
+    def __init__(
+        self,
+        default_action_type: str,
+        parent: QWidget,
+        *,
+        default_phrase: str = "",
+        default_sample: str = "",
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Add trigger")
         self.resize(520, 320)
@@ -861,6 +901,10 @@ class _AddTriggerDialog(QDialog):
         self._sample.setPlaceholderText("optional: full sample message")
         self._note = QLineEdit()
         self._note.setPlaceholderText("optional note")
+        if default_phrase:
+            self._phrase.setPlainText(default_phrase)
+        if default_sample:
+            self._sample.setPlainText(default_sample)
 
         form = QFormLayout()
         form.addRow("Action type", self._type)

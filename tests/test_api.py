@@ -1288,3 +1288,153 @@ def test_post_result_watching_then_executed_creates_position(tmp_path):
     assert pos["entry_price"] == 4666.0
     assert pos["sl"] == 4662.0
     assert pos["tp"] == 4690.0
+
+
+# ---- Post-execution evaluator kick -----------------------------------
+#
+# The orchestrator kicks the evaluator at insert time for OPEN /
+# OPEN_INSTANT — but REOPEN_LAST / REINFORCE have no signal payload at
+# insert (just `{within_hours}` / `{side}`), so the orchestrator path
+# can't run. api.py kicks again after a successful executed-result
+# POST, skipping when an evaluation already exists so OPEN paths don't
+# get double-scored.
+
+def _patch_evaluator_capture(monkeypatch):
+    """Replace kick_evaluator_for_open with a recorder; return the
+    recorder list."""
+    calls: list[tuple[int, dict]] = []
+
+    def _capture(action_id, signal_dict):
+        calls.append((action_id, signal_dict))
+
+    import src.orchestrator
+    monkeypatch.setattr(
+        src.orchestrator, "kick_evaluator_for_open", _capture
+    )
+    return calls
+
+
+def test_post_exec_evaluator_fires_for_reopen_last_without_prior_evaluation(
+    tmp_path, monkeypatch,
+):
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status, claimed_at) "
+        "VALUES('REOPEN_LAST', ?, 'claimed', ?)",
+        (json.dumps({"within_hours": 24}),
+         datetime.now(timezone.utc).isoformat()),
+    )
+    aid = cur.lastrowid
+    calls = _patch_evaluator_capture(monkeypatch)
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{aid}/result", json={
+        "status": "executed",
+        "mt5_ticket": 99201,
+        "snapshot": {
+            "symbol": "XAUUSD", "side": "BUY", "volume": 0.10,
+            "entry_price": 4700.0, "sl": 4690.0, "tp": 4720.0,
+        },
+    })
+    assert r.status_code == 200
+    assert len(calls) == 1
+    assert calls[0][0] == aid
+    assert calls[0][1]["side"] == "BUY"
+
+
+def test_post_exec_evaluator_skipped_when_evaluation_already_present(
+    tmp_path, monkeypatch,
+):
+    """OPEN actions get scored by the orchestrator at insert. The
+    api.py post-execution kick must NOT re-fire — that would overwrite
+    the signal-time score the dashboard already shows."""
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status, claimed_at) "
+        "VALUES('OPEN', ?, 'claimed', ?)",
+        (json.dumps({"side": "BUY", "evaluation": {"score": 71, "verdict": "ok"}}),
+         datetime.now(timezone.utc).isoformat()),
+    )
+    aid = cur.lastrowid
+    calls = _patch_evaluator_capture(monkeypatch)
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{aid}/result", json={
+        "status": "executed",
+        "mt5_ticket": 99202,
+        "snapshot": {
+            "symbol": "XAUUSD", "side": "BUY", "volume": 0.10,
+            "entry_price": 4700.0, "sl": 4690.0, "tp": 4720.0,
+        },
+    })
+    assert r.status_code == 200
+    assert calls == []
+
+
+def test_post_exec_evaluator_fires_for_open_when_orchestrator_skipped(
+    tmp_path, monkeypatch,
+):
+    """If the orchestrator path was disabled (e.g. test env), the
+    post-execution kick still scores the OPEN. The gate is "evaluation
+    key absent", not action_type."""
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status, claimed_at) "
+        "VALUES('OPEN', ?, 'claimed', ?)",
+        (json.dumps({"side": "BUY"}),
+         datetime.now(timezone.utc).isoformat()),
+    )
+    aid = cur.lastrowid
+    calls = _patch_evaluator_capture(monkeypatch)
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{aid}/result", json={
+        "status": "executed",
+        "mt5_ticket": 99203,
+        "snapshot": {
+            "symbol": "XAUUSD", "side": "BUY", "volume": 0.10,
+            "entry_price": 4700.0, "sl": 4690.0, "tp": 4720.0,
+        },
+    })
+    assert r.status_code == 200
+    assert len(calls) == 1
+
+
+def test_post_exec_evaluator_skipped_for_non_open_action_types(
+    tmp_path, monkeypatch,
+):
+    """CLOSE_PARTIAL / MOVE_SL_BE / etc. modify an existing position —
+    no new direction to evaluate."""
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status, claimed_at) "
+        "VALUES('CLOSE_PARTIAL', ?, 'claimed', ?)",
+        (json.dumps({"fraction": 0.5}),
+         datetime.now(timezone.utc).isoformat()),
+    )
+    aid = cur.lastrowid
+    calls = _patch_evaluator_capture(monkeypatch)
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{aid}/result", json={
+        "status": "executed",
+        "mt5_ticket": 99204,
+    })
+    assert r.status_code == 200
+    assert calls == []
+
+
+def test_post_exec_evaluator_skipped_for_failed_status(tmp_path, monkeypatch):
+    """Failure results don't open a position; nothing to evaluate."""
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status, claimed_at) "
+        "VALUES('REOPEN_LAST', ?, 'claimed', ?)",
+        (json.dumps({"within_hours": 24}),
+         datetime.now(timezone.utc).isoformat()),
+    )
+    aid = cur.lastrowid
+    calls = _patch_evaluator_capture(monkeypatch)
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{aid}/result", json={
+        "status": "failed",
+        "error": "last_closed_unparseable",
+    })
+    assert r.status_code == 200
+    assert calls == []

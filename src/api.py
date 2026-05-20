@@ -146,6 +146,60 @@ _payload_has_signal_fields = payload_has_signal_fields
 _resolve_signal_payload = resolve_signal_payload
 
 
+# Action types whose execution opens a new position and therefore makes
+# sense to score after the fact. Phase-2 management types (CLOSE_PARTIAL,
+# MOVE_SL_BE, etc.) modify the existing position — there's nothing new
+# to evaluate. ALERTs never reach the EA at all.
+_EVALUATABLE_OPEN_TYPES: frozenset[str] = frozenset({
+    "OPEN", "OPEN_INSTANT", "REOPEN_LAST", "REINFORCE",
+})
+
+
+def _maybe_kick_post_execution_evaluator(
+    action_row: sqlite3.Row,
+    body: "ResultBody",
+    legs: "list[LegResult]",
+) -> None:
+    """Fire the evaluator after a successful executed-result POST when
+    the originating action is an OPEN-shape type AND no prior evaluation
+    exists in the payload (the orchestrator-side kick already ran).
+
+    Reads side from the first leg's snapshot — the evaluator only needs
+    direction (see ai_evaluator.py module docstring), so a single leg is
+    enough even for compound multi-position fills. Any failure to parse
+    the payload or load the kick function is swallowed; this is purely
+    diagnostic and must never break a result POST.
+    """
+    if body.status != "executed" or not legs:
+        return
+    if action_row["action_type"] not in _EVALUATABLE_OPEN_TYPES:
+        return
+    payload = parse_payload(action_row["payload_json"]) or {}
+    if "evaluation" in payload:
+        # Orchestrator-side kick already scored this action. Keep its
+        # result; the chased-fill score would otherwise overwrite the
+        # signal-time score that the dashboard has been showing.
+        return
+    side = legs[0].snapshot.get("side")
+    if side not in ("BUY", "SELL"):
+        # Without a usable side the evaluator can't run; bail rather
+        # than feed it junk and burn an LLM call on a known-bad input.
+        return
+    signal_dict = {
+        "side": side,
+        "symbol": legs[0].snapshot.get("symbol"),
+        "entry_price": legs[0].snapshot.get("entry_price"),
+        "sl": legs[0].snapshot.get("sl"),
+        "tp": legs[0].snapshot.get("tp"),
+    }
+    try:
+        from src.orchestrator import kick_evaluator_for_open
+    except ImportError:
+        log.warning("post_exec evaluator: orchestrator import failed")
+        return
+    kick_evaluator_for_open(action_row["id"], signal_dict)
+
+
 def build_app(conn: sqlite3.Connection) -> FastAPI:
     app = FastAPI()
 
@@ -369,6 +423,22 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
                 leg.mt5_ticket, s.get("side"), s.get("volume"),
                 s.get("entry_price"), s.get("sl"), s.get("tp"),
             )
+
+        # Post-execution evaluator kick.
+        #
+        # The orchestrator-side kick fires at insert time for OPEN /
+        # OPEN_INSTANT, when the signal's side/sl/tps are already in the
+        # payload. REOPEN_LAST and REINFORCE have no such payload at
+        # insert (just `{within_hours}` / `{side}`) — the actual trade
+        # params only materialize here, after the EA reports a filled
+        # snapshot. Firing the same evaluator here closes that gap.
+        #
+        # Skip when payload already carries an `evaluation` key: the
+        # orchestrator-side path already scored this action. This keeps
+        # OPEN/OPEN_INSTANT behavior unchanged and only adds scoring to
+        # the previously-uncovered REOPEN_LAST/REINFORCE paths.
+        _maybe_kick_post_execution_evaluator(row, body, legs)
+
         return {"ok": True}
 
     @app.get("/positions")
