@@ -87,6 +87,15 @@ def _install_service(
     _nssm_set(name, "Start", "SERVICE_AUTO_START")
     _nssm_set(name, "AppExit", "Default", "Restart")
     _nssm_set(name, "AppRestartDelay", "5000")
+    # AppThrottle=0 disables NSSM's fast-crash throttling. With the default
+    # 1500ms throttle, a service that exits inside that window is parked in
+    # SERVICE_PAUSED until AppRestartDelay elapses, and any `nssm start`
+    # issued during the window returns "Unexpected status SERVICE_PAUSED in
+    # response to START control." Setting it to 0 means a crashed service
+    # goes to SERVICE_STOPPED instead, which the GUI start path handles
+    # cleanly. The underlying restart cadence is still controlled by
+    # AppRestartDelay.
+    _nssm_set(name, "AppThrottle", "0")
     info(f"installed service {name} → {runner.name} {' '.join(runner_args)}")
     return 0
 

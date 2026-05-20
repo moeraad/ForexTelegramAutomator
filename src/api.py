@@ -12,6 +12,12 @@ from pydantic import BaseModel
 
 from src import config
 from src.logging_setup import configure_logging, trades_log
+from src.position_signal import (
+    find_last_replayable_closed,
+    parse_payload,
+    payload_has_signal_fields,
+    resolve_signal_payload,
+)
 
 log = configure_logging("api")
 trades = trades_log()
@@ -131,90 +137,13 @@ class AlertBody(BaseModel):
     text: str
 
 
-def _parse_payload(raw: str | None) -> dict | None:
-    """Tolerant JSON decode for actions.payload_json columns."""
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except (TypeError, ValueError):
-        return None
-
-
-def _payload_has_signal_fields(payload: dict | None) -> bool:
-    """True when a payload carries the OPEN-signal fields the EA's
-    BuildOpenPayloadFromLastClosed parser expects (entry_low + entry_high
-    + sl + non-empty tps)."""
-    if not payload:
-        return False
-    return all(payload.get(k) is not None for k in ("entry_low", "entry_high", "sl")) \
-        and bool(payload.get("tps"))
-
-
-def _resolve_signal_payload(
-    conn: sqlite3.Connection,
-    *,
-    joined_payload: str | None,
-    symbol: str,
-    side: str,
-    opened_at: str,
-    until: str | None,
-) -> dict | None:
-    """Return the canonical signal dict for a position.
-
-    For positions opened via plain OPEN, the payload joined via
-    `positions.action_id` carries the full entry/SL/TPs and is returned
-    unchanged (current behavior).
-
-    For positions opened via OPEN_INSTANT (Phase 4), the joined payload
-    only has symbol/side/comment — the real signal arrived later as an
-    ATTACH_SIGNAL action. Walk forward in the `actions` table for an
-    ATTACH_SIGNAL row that:
-      - was executed within the position's lifetime (created_at between
-        opened_at and `until`, where until = closed_at for closed
-        positions or NULL for the live case)
-      - matches the position's symbol and side in its payload
-    and return that payload as the signal.
-
-    Returns None when nothing usable is found.
-    """
-    direct = _parse_payload(joined_payload)
-    if _payload_has_signal_fields(direct):
-        return direct
-
-    # Walk forward for the matching ATTACH_SIGNAL. JSON-field comparison
-    # uses json_extract; sqlite has had it since 3.38 (well within our
-    # support range).
-    if until is None:
-        rows = conn.execute(
-            "SELECT payload_json FROM actions "
-            "WHERE action_type='ATTACH_SIGNAL' "
-            "  AND status='executed' "
-            "  AND created_at >= ? "
-            "  AND json_extract(payload_json,'$.symbol')=? "
-            "  AND json_extract(payload_json,'$.side')=? "
-            "ORDER BY id DESC LIMIT 1",
-            (opened_at, symbol, side),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT payload_json FROM actions "
-            "WHERE action_type='ATTACH_SIGNAL' "
-            "  AND status='executed' "
-            "  AND created_at >= ? AND created_at <= ? "
-            "  AND json_extract(payload_json,'$.symbol')=? "
-            "  AND json_extract(payload_json,'$.side')=? "
-            "ORDER BY id DESC LIMIT 1",
-            (opened_at, until, symbol, side),
-        ).fetchall()
-    if rows:
-        attached = _parse_payload(rows[0]["payload_json"])
-        if _payload_has_signal_fields(attached):
-            return attached
-    # No ATTACH_SIGNAL found — fall back to whatever the join gave us
-    # (sparse OPEN_INSTANT payload, or None). Caller handles missing
-    # fields by emitting `last_closed_unparseable` / `reinforce_payload_unparseable`.
-    return direct
+# Signal-resolution helpers live in `src.position_signal` so both this
+# module and `src.state_summary` see the same view of which closed
+# positions are actually replayable. Aliases kept for any in-tree
+# callers that previously imported the private names.
+_parse_payload = parse_payload
+_payload_has_signal_fields = payload_has_signal_fields
+_resolve_signal_payload = resolve_signal_payload
 
 
 def build_app(conn: sqlite3.Connection) -> FastAPI:
@@ -662,47 +591,34 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
 
     @app.get("/positions/last_closed")
     def last_closed_position(symbol: str = "XAUUSD", within_hours: int = 24):
-        """Most recent closed position for `symbol` within the last
-        `within_hours` hours, joined with the originating signal payload
-        so the AI can reconstruct the full signal (entry zone, SL, TPs,
-        side) for REOPEN_LAST and REINFORCE.
+        """Most recent REPLAYABLE closed position for `symbol` within the
+        last `within_hours` hours, joined with the originating signal
+        payload so the EA can reconstruct entry zone / SL / TPs for
+        REOPEN_LAST and REINFORCE.
 
-        For positions opened via OPEN_INSTANT → ATTACH_SIGNAL (Phase 4),
-        the `position.action_id` points to the OPEN_INSTANT action whose
-        payload only has symbol/side/comment. The "real" signal lives in
-        the ATTACH_SIGNAL action that ran ~1-2 min after the open. We
-        walk forward to find that ATTACH_SIGNAL row by symbol+side+time
-        window so the returned `signal` always contains the full
-        entry_low/entry_high/sl/tps the EA needs.
+        "Replayable" means the signal payload (direct join, or walked
+        forward to ATTACH_SIGNAL for OPEN_INSTANT lineage) has
+        entry_low + entry_high + sl + non-empty tps. Closed positions
+        whose origin is an OPEN_INSTANT that never received an
+        ATTACH_SIGNAL are skipped: the EA's BuildOpenPayloadFromLastClosed
+        parser rejects them with `last_closed_unparseable`, so surfacing
+        them here only triggers downstream failures. Walking back to
+        the next candidate is the honest behavior — REOPEN_LAST is a
+        "replay the most recent SIGNAL," not "replay the most recent
+        execution."
 
-        404 when nothing in window — caller should treat that as
-        "no recent trade to reopen" and skip the action.
+        404 when nothing replayable in window — caller should treat that
+        as "no recent trade to reopen" and skip the action (the AI
+        prompt's rules say emit ALERT instead).
         """
         if within_hours < 1 or within_hours > 168:
             within_hours = 24
-        row = conn.execute(
-            "SELECT p.mt5_ticket, p.symbol, p.side, p.volume, p.original_volume, "
-            "       p.partial_close_count, p.entry_price, p.sl, p.tp, "
-            "       p.opened_at, p.closed_at, p.close_reason, p.action_id, "
-            "       a.payload_json AS signal_payload "
-            "FROM positions p "
-            "LEFT JOIN actions a ON a.id = p.action_id "
-            "WHERE p.symbol = ? AND p.status = 'closed' "
-            "  AND p.closed_at IS NOT NULL "
-            "  AND p.closed_at > datetime('now', ?) "
-            "ORDER BY p.closed_at DESC LIMIT 1",
-            (symbol, f"-{within_hours} hours"),
-        ).fetchone()
-        if row is None:
-            raise HTTPException(404, "no closed position in window")
-        signal = _resolve_signal_payload(
-            conn,
-            joined_payload=row["signal_payload"],
-            symbol=row["symbol"],
-            side=row["side"],
-            opened_at=row["opened_at"],
-            until=row["closed_at"],
+        found = find_last_replayable_closed(
+            conn, symbol=symbol, within_hours=within_hours,
         )
+        if found is None:
+            raise HTTPException(404, "no replayable closed position in window")
+        row, signal = found
         return {
             "ticket": row["mt5_ticket"],
             "symbol": row["symbol"],

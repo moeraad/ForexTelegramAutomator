@@ -28,14 +28,25 @@ def test_full_pipeline_open_to_executed(tmp_path):
                                    entry_low=4864, entry_high=4866,
                                    tps=[4880], sl=4855)])
 
-    # 1. Listener processes a Telegram message
+    # 1. Listener processes a Telegram message. Use a positive delay so
+    # the action lands in 'pending' (the orchestrator short-circuits
+    # delay<=0 actions straight to 'sent', bypassing the promoter — which
+    # would skip this stage of the test entirely).
     ids = process_message(conn, ai, tg_message_id=1, chat_id=42,
                           sender="Yusuf", text="BUY GOLD",
                           ai_log_path=tmp_path / "ai.jsonl",
-                          auto_execute_delay_sec=0)
+                          auto_execute_delay_sec=30)
     assert len(ids) == 1
     aid = ids[0]
-    # execute_after is now (delay=0), so promotion should run
+    # Force the promoter to flip pending → sent immediately (the
+    # production promoter waits for execute_after, but for the test
+    # we want to advance state in this thread).
+    from src.db import set_setting
+    from datetime import datetime, timezone
+    conn.execute(
+        "UPDATE actions SET execute_after=? WHERE id=?",
+        (datetime.now(timezone.utc).isoformat(), aid),
+    )
     n = promote_due_actions(conn)
     assert n == 1
 
@@ -47,7 +58,13 @@ def test_full_pipeline_open_to_executed(tmp_path):
     assert len(actions) == 1
     assert actions[0]["id"] == aid
 
-    # 3. EA reports executed
+    # 3. EA claims first (sent → claimed) — the API rejects result POSTs
+    # from non-owning states (`sent` doesn't own the action yet; only
+    # `claimed` or `watching` may close it). See api.py post_result.
+    r = client.post(f"/actions/{aid}/claim")
+    assert r.status_code == 200
+
+    # 4. EA reports executed
     r = client.post(f"/actions/{aid}/result", json={
         "status": "executed",
         "mt5_ticket": 12345,
@@ -78,8 +95,15 @@ def test_claim_then_bundled_legs_executes_action(tmp_path):
     ai = _ai_returning([OpenAction(symbol="XAUUSD", side="BUY",
                                    entry_low=4864, entry_high=4866,
                                    tps=[4880, 4890], sl=4855)])
-    ids = process_message(conn, ai, 1, 42, "Y", "BUY", tmp_path / "a.jsonl", 0)
+    # Positive delay → 'pending'; otherwise the orchestrator short-
+    # circuits to 'sent' and the promoter has nothing to flip.
+    ids = process_message(conn, ai, 1, 42, "Y", "BUY", tmp_path / "a.jsonl", 30)
     aid = ids[0]
+    from datetime import datetime, timezone
+    conn.execute(
+        "UPDATE actions SET execute_after=? WHERE id=?",
+        (datetime.now(timezone.utc).isoformat(), aid),
+    )
     assert promote_due_actions(conn) == 1
 
     app = build_app(conn)
@@ -122,7 +146,15 @@ def test_kill_switch_blocks_promotion(tmp_path):
     ai = _ai_returning([OpenAction(symbol="XAUUSD", side="BUY",
                                    entry_low=4864, entry_high=4866,
                                    tps=[4880], sl=4855)])
-    process_message(conn, ai, 1, 42, "Y", "BUY", tmp_path / "a.jsonl", 0)
+    # Positive delay → 'pending' (the path the promoter actually gates
+    # via kill_switch). delay=0 would short-circuit to 'sent', defeating
+    # the test's purpose.
+    ids = process_message(conn, ai, 1, 42, "Y", "BUY", tmp_path / "a.jsonl", 30)
+    from datetime import datetime, timezone
+    conn.execute(
+        "UPDATE actions SET execute_after=? WHERE id=?",
+        (datetime.now(timezone.utc).isoformat(), ids[0]),
+    )
     assert promote_due_actions(conn) == 0
     set_setting(conn, "kill_switch", "off")
     assert promote_due_actions(conn) == 1

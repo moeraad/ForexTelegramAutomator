@@ -224,13 +224,26 @@ async def main() -> None:
     # Session is persisted in the DB as the DPAPI-encrypted tg_session_blob
     # written by the setup wizard. Loading it as a StringSession lets the
     # listener restart without re-prompting for the Telegram login code.
+    #
+    # Wait-instead-of-crash: on a fresh stack install the operator launches
+    # the services BEFORE running the Telegram wizard. Raising here would
+    # exit the process inside NSSM's AppThrottle window, NSSM would mark the
+    # service SERVICE_PAUSED, and the next `nssm start` would surface
+    # "Unexpected status SERVICE_PAUSED in response to START control."
+    # Polling keeps the process alive and stable; it picks up the session
+    # the moment the wizard writes it.
     from src import db_settings
     session_blob = db_settings.get_str(Path(config.DB_PATH), "tg_session_blob", "")
     if not session_blob:
-        raise RuntimeError(
-            "tg_session_blob is empty — re-run the setup wizard to log in to "
-            "Telegram and persist the session before starting the listener."
+        log.warning(
+            "tg_session_blob is empty — waiting for the setup wizard to "
+            "persist a Telegram session (polling every 10s). Open the GUI "
+            "and run the Telegram wizard to proceed."
         )
+        while not session_blob:
+            await asyncio.sleep(10)
+            session_blob = db_settings.get_str(Path(config.DB_PATH), "tg_session_blob", "")
+        log.info("tg_session_blob detected — continuing listener startup")
 
     # connection_retries=-1 tells Telethon to retry forever instead of bailing
     # after the default 5 attempts (which surfaced as ConnectionError and crashed

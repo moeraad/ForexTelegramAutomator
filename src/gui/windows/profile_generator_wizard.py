@@ -99,9 +99,9 @@ class _IntroPage(QWizardPage):
         self._lookback.setSuffix(" days")
 
         cost = QLabel(
-            "<span style='color:#787b86;'>Triage runs cheap on every "
-            "unique message; classifier runs only on triage-keep survivors. "
-            "500 msgs ≈ $0.05 - $0.20 depending on provider.</span>"
+            "<span style='color:#787b86;'>Mid-tier classifier runs on every "
+            "prefilter survivor. 500 msgs ≈ $0.05 - $0.20 depending on "
+            "provider.</span>"
         )
         cost.setTextFormat(Qt.TextFormat.RichText)
         cost.setWordWrap(True)
@@ -127,16 +127,11 @@ class _IntroPage(QWizardPage):
         wiz: "ProfileGeneratorWizard" = self.wizard()  # type: ignore[assignment]
         prov = (db_settings.get_str(wiz.stack.db_path, "ai_provider", "anthropic")
                 or "anthropic").lower()
-        triage_model = (
-            db_settings.get_str(wiz.stack.db_path, "openai_triage_model", "")
-            or "gpt-5-nano"
-        ) if prov == "openai" else (
-            db_settings.get_str(wiz.stack.db_path, "ai_triage_model", "")
-            or "claude-haiku-4-5-20251001"
+        classifier_model = (
+            "gpt-5-mini" if prov == "openai" else "claude-haiku-4-5-20251001"
         )
-        classifier_model = "gpt-5-nano" if prov == "openai" else "claude-haiku-4-5-20251001"
         self._settings_note.setText(
-            f"<b>Pipeline:</b> triage ({prov} · {triage_model}) → "
+            f"<b>Pipeline:</b> fetch → dedup → prefilter → "
             f"classifier ({prov} · {classifier_model})"
         )
 
@@ -203,8 +198,7 @@ class _ProgressPage(QWizardPage):
             "fetch": "Fetching messages from Telegram…",
             "dedup": "Deduplicating…",
             "prefilter": "Pre-filtering (symbol / ad shape)…",
-            "triage": "Triaging messages (keep / ignore)…",
-            "classify": "Classifying triage-keeps via AI…",
+            "classify": "Classifying messages via AI…",
             "done": "Done.",
         }
         self._stage.setText(labels.get(stage, stage))
@@ -286,15 +280,13 @@ class _ReviewPage(QWizardPage):
         prefiltered = results.prefiltered_symbol + results.prefiltered_ad
         classified = sum(
             1 for c in results.classifications
-            if not c.reasoning.startswith(("prefilter:", "triage:"))
+            if not c.reasoning.startswith("prefilter:")
         )
         self._summary.setText(
             f"<b>Funnel:</b> fetched {results.raw_fetched} → "
             f"unique {results.unique_after_dedup} → "
             f"pre-filter dropped {prefiltered} "
             f"(symbol={results.prefiltered_symbol}, ad={results.prefiltered_ad}) → "
-            f"triage-ignored {results.triage_ignored}, "
-            f"triage-kept {results.triage_kept} → "
             f"classifier produced {classified} "
             f"(failed: {results.failed_count})"
         )
@@ -394,7 +386,7 @@ class _SavePage(QWizardPage):
         super().__init__()
         self.setTitle("Generated profile")
         self.setSubTitle(
-            "Fill in description + price_range_hint, then Finish to write "
+            "Fill in the description, then Finish to write "
             "channels/<stack>.json."
         )
 
@@ -403,11 +395,6 @@ class _SavePage(QWizardPage):
             "One-line description of the channel."
         )
         self._description.setMaximumHeight(60)
-        self._price_hint = QPlainTextEdit()
-        self._price_hint.setPlaceholderText(
-            "e.g. 'Gold trades roughly 4000-5500 USD/oz in 2026.'"
-        )
-        self._price_hint.setMaximumHeight(60)
         self._preview = QPlainTextEdit()
         self._preview.setReadOnly(True)
         f = QFont("Consolas")
@@ -417,7 +404,6 @@ class _SavePage(QWizardPage):
 
         form = QFormLayout()
         form.addRow("Description", self._description)
-        form.addRow("Price range hint", self._price_hint)
         self._refresh_btn = QPushButton("Refresh preview")
         self._refresh_btn.clicked.connect(self._refresh_preview)
 
@@ -434,7 +420,6 @@ class _SavePage(QWizardPage):
             try:
                 data = json.loads(existing_path.read_text(encoding="utf-8"))
                 self._description.setPlainText(data.get("description", ""))
-                self._price_hint.setPlainText(data.get("price_range_hint", ""))
             except (OSError, json.JSONDecodeError):
                 pass
         self._refresh_preview()
@@ -543,7 +528,6 @@ class _SavePage(QWizardPage):
             ("symbol_aliases", symbol_aliases_existing),
             ("other_instruments", other_instruments_existing),
             ("language", _detect_language(chosen)),
-            ("price_range_hint", self._price_hint.toPlainText().strip()),
             ("shorthand_decode_example", _BOILERPLATE_SHORTHAND),
             ("header", _BOILERPLATE_HEADER),
             ("vocabulary_table", "\n".join(vocab_lines)),

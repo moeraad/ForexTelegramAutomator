@@ -220,6 +220,79 @@ def test_last_closed_block_empty_when_none(tmp_path):
     assert "(none" in closed_section
 
 
+def test_last_closed_block_skips_unreplayable_open_instant_orphan(tmp_path):
+    """OPEN_INSTANT orphan (no ATTACH_SIGNAL) is not replayable, so the
+    LAST CLOSED block must show the "none" marker — otherwise the prompt
+    would emit REOPEN_LAST against a trade the EA can't replay,
+    producing `last_closed_unparseable`.
+    """
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN_INSTANT', ?, 'executed')",
+        (json.dumps({"symbol": "XAUUSD", "side": "BUY", "comment": "x"}),),
+    )
+    aid = cur.lastrowid
+    conn.execute(
+        "INSERT INTO positions(action_id, mt5_ticket, symbol, side, volume, "
+        "entry_price, status, opened_at, closed_at, close_reason) "
+        "VALUES(?, 207, 'XAUUSD', 'BUY', 1.0, 4700, 'closed', ?, ?, 'mt5_sl')",
+        (
+            aid,
+            datetime.now(timezone.utc).isoformat(),
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    out = render_open_positions(conn)
+    closed_section = out.split("LAST CLOSED POSITION")[1]
+    assert "(none" in closed_section
+
+
+def test_last_closed_block_walks_back_past_orphan(tmp_path):
+    """When the most recent close is an unreplayable OPEN_INSTANT
+    orphan, the LAST CLOSED block surfaces the earlier replayable close
+    so REOPEN_LAST has something to act on."""
+    conn = _setup(tmp_path)
+    # Earlier: replayable OPEN.
+    earlier = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    payload = json.dumps({
+        "type": "OPEN", "symbol": "XAUUSD", "side": "BUY",
+        "entry_low": 4699, "entry_high": 4701,
+        "sl": 4690, "tps": [4710, 4720, 4735],
+    })
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json) VALUES('OPEN', ?)",
+        (payload,),
+    )
+    aid = cur.lastrowid
+    conn.execute(
+        "INSERT INTO positions(action_id, mt5_ticket, symbol, side, volume, "
+        "original_volume, partial_close_count, entry_price, sl, tp, "
+        "status, opened_at, closed_at, close_reason) "
+        "VALUES(?, 208, 'XAUUSD', 'BUY', 0.04, 0.08, 1, 4700.0, 4700.0, 4720.0, "
+        "'closed', ?, ?, 'tp1_hit')",
+        (aid, earlier, earlier),
+    )
+    # Later: orphan OPEN_INSTANT.
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cur2 = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN_INSTANT', ?, 'executed')",
+        (json.dumps({"symbol": "XAUUSD", "side": "BUY", "comment": "x"}),),
+    )
+    aid2 = cur2.lastrowid
+    conn.execute(
+        "INSERT INTO positions(action_id, mt5_ticket, symbol, side, volume, "
+        "entry_price, status, opened_at, closed_at, close_reason) "
+        "VALUES(?, 209, 'XAUUSD', 'BUY', 1.0, 4700, 'closed', ?, ?, 'mt5_sl')",
+        (aid2, now_iso, now_iso),
+    )
+    out = render_open_positions(conn)
+    closed_section = out.split("LAST CLOSED POSITION")[1]
+    assert "ticket=208" in closed_section
+    assert "tps=[4710,4720,4735]" in closed_section
+
+
 def test_last_closed_block_skips_too_old(tmp_path):
     conn = _setup(tmp_path)
     cur = conn.execute(

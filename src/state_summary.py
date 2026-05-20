@@ -20,6 +20,8 @@ import sqlite3
 from collections import defaultdict
 from datetime import datetime, timezone
 
+from src.position_signal import find_last_replayable_closed
+
 
 # Match SL to entry within ~5 cents; XAUUSD tick is 0.01.
 _BE_TOLERANCE = 0.05
@@ -193,24 +195,28 @@ def _render_pending_open_signals(conn: sqlite3.Connection) -> list[str]:
 def _render_last_closed_position(
     conn: sqlite3.Connection, *, symbol: str = "XAUUSD", within_hours: int = 24
 ) -> list[str]:
-    """Most recent closed position + originating signal — drives REOPEN_LAST."""
-    row = conn.execute(
-        "SELECT p.mt5_ticket, p.symbol, p.side, p.original_volume, p.volume, "
-        "       p.partial_close_count, p.entry_price, p.sl, p.tp, "
-        "       p.opened_at, p.closed_at, p.close_reason, "
-        "       a.payload_json AS signal_payload "
-        "FROM positions p "
-        "LEFT JOIN actions a ON a.id = p.action_id "
-        "WHERE p.symbol=? AND p.status='closed' "
-        "  AND p.closed_at IS NOT NULL "
-        "  AND p.closed_at > datetime('now', ?) "
-        "ORDER BY p.closed_at DESC LIMIT 1",
-        (symbol, f"-{within_hours} hours"),
-    ).fetchone()
+    """Most recent REPLAYABLE closed position + originating signal —
+    drives REOPEN_LAST / REINFORCE in the prompt.
+
+    Uses `find_last_replayable_closed` (the same helper backing
+    `/positions/last_closed`) so the prompt and the EA agree on what
+    counts as "the last closed trade." OPEN_INSTANT-origin positions
+    with no ATTACH_SIGNAL are skipped — surfacing them as the
+    last-closed would trick the AI into emitting REOPEN_LAST against an
+    unreplayable trade, which the EA then fails with
+    `last_closed_unparseable`.
+    """
     lines = [f"LAST CLOSED POSITION ({symbol}, within {within_hours}h):"]
-    if row is None:
-        lines.append(f"  (none — no {symbol} position closed in the last {within_hours}h)")
+    found = find_last_replayable_closed(
+        conn, symbol=symbol, within_hours=within_hours,
+    )
+    if found is None:
+        lines.append(
+            f"  (none — no replayable {symbol} position closed in the last "
+            f"{within_hours}h)"
+        )
         return lines
+    row, sig = found
     age = _age_seconds(row["closed_at"])
     age_str = f" ({age // 60} min ago)" if age is not None else ""
     lines.append(
@@ -227,18 +233,13 @@ def _render_last_closed_position(
         f"partial_close_count={row['partial_close_count'] or 0}"
     )
     lines.append(f"    close_reason={row['close_reason'] or '-'}")
-    if row["signal_payload"]:
-        try:
-            sig = json.loads(row["signal_payload"])
-            tps = sig.get("tps") or []
-            tps_str = ",".join(f"{t:g}" for t in tps) if tps else "-"
-            lines.append(
-                f"    signal: {sig.get('side','?')} {sig.get('symbol','?')} "
-                f"entry={_fmt(sig.get('entry_low'))}-{_fmt(sig.get('entry_high'))} "
-                f"sl={_fmt(sig.get('sl'))} tps=[{tps_str}]"
-            )
-        except (ValueError, TypeError):
-            pass
+    tps = sig.get("tps") or []
+    tps_str = ",".join(f"{t:g}" for t in tps) if tps else "-"
+    lines.append(
+        f"    signal: {sig.get('side','?')} {sig.get('symbol','?')} "
+        f"entry={_fmt(sig.get('entry_low'))}-{_fmt(sig.get('entry_high'))} "
+        f"sl={_fmt(sig.get('sl'))} tps=[{tps_str}]"
+    )
     return lines
 
 

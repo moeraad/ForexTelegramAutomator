@@ -17,12 +17,25 @@ _TRIGGERS_SKIP = ("IGNORE", "UNKNOWN")
 def render_prompt_fields(triggers: list[dict]) -> dict[str, str]:
     """Build the four derived prompt fields from a triggers list.
 
-    Each trigger is ``{action_type, phrase, samples: [str], note}``.
+    Each trigger may carry either the legacy ``action_type: "..."`` or
+    the newer compound ``action_types: [...]`` (Profile Generator
+    wizard output). Compound entries are grouped into EVERY bucket
+    they participate in so a single message hitting `[OPEN, MOVE_SL_BE]`
+    contributes a vocabulary example to both buckets.
     """
     grouped: dict[str, list[dict]] = defaultdict(list)
     for t in triggers:
-        at = (t.get("action_type") or "UNKNOWN").upper()
-        grouped[at].append(t)
+        # Compound shape wins; fall back to legacy singular. Without
+        # this both `vocabulary_table` and `worked_examples` would
+        # silently render empty for any wizard-saved profile because
+        # every trigger would group under "UNKNOWN" (filtered out).
+        ats_raw = t.get("action_types")
+        if isinstance(ats_raw, list) and ats_raw:
+            buckets = [str(a).upper() for a in ats_raw if a]
+        else:
+            buckets = [str(t.get("action_type") or "UNKNOWN").upper()]
+        for at in buckets:
+            grouped[at].append(t)
 
     vocab_lines = ["VOCABULARY -> ACTION MAP:"]
     for at in sorted(grouped.keys()):

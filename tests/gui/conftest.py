@@ -64,7 +64,6 @@ def tmp_stack(tmp_path: Path, monkeypatch) -> _TmpStack:
         "description": "smoke test stack",
         "symbol": "XAUUSD",
         "language": "en",
-        "price_range_hint": "",
         "shorthand_decode_example": "",
         "header": "Test header.",
         "vocabulary_table": "VOCABULARY -> ACTION MAP:\n  [MOVE_SL_BE]\n    - secure entry",

@@ -31,7 +31,6 @@ _FIELD_ORDER = (
     "description",
     "symbol",
     "language",
-    "price_range_hint",
     "shorthand_decode_example",
     "header",
     "vocabulary_table",
@@ -104,15 +103,32 @@ def save_profile(stack_name: str, data: dict) -> Path:
 
 
 def normalize_triggers(raw) -> list[dict]:
-    """Coerce loaded JSON 'triggers' into a clean list of dicts."""
+    """Coerce loaded JSON 'triggers' into a clean list of dicts.
+
+    Accepts both the legacy `action_type: "..."` shape AND the newer
+    compound `action_types: [...]` shape the Profile Generator wizard
+    writes. Compound entries are fanned out into one normalised dict
+    per bucket so the Triggers editor (which groups by a single
+    `action_type`) can render them correctly. `context_tokens` and
+    `pending` are preserved when present — both feed the trigger
+    matcher's Layer-1 logic.
+    """
     if not isinstance(raw, list):
         return []
     out: list[dict] = []
     for entry in raw:
         if not isinstance(entry, dict):
             continue
-        at = str(entry.get("action_type") or "").strip().upper()
-        if not at:
+        # Compound shape (`action_types: [...]`) takes precedence; fall
+        # back to legacy singular `action_type`. This is the schema
+        # mismatch that caused wizard-saved triggers to load as empty.
+        ats_raw = entry.get("action_types")
+        if isinstance(ats_raw, list) and ats_raw:
+            action_types = [str(a).strip().upper() for a in ats_raw if str(a).strip()]
+        else:
+            single = str(entry.get("action_type") or "").strip().upper()
+            action_types = [single] if single else []
+        if not action_types:
             continue
         phrase = str(entry.get("phrase") or "").strip()
         samples_raw = entry.get("samples") or []
@@ -123,12 +139,28 @@ def normalize_triggers(raw) -> list[dict]:
         else:
             samples = []
         note = str(entry.get("note") or "").strip()
-        out.append({
-            "action_type": at,
-            "phrase": phrase,
-            "samples": samples,
-            "note": note,
-        })
+        # context_tokens feeds the trigger matcher's Layer-1 AND-gate
+        # — preserve as a list of strings. Drop non-list / non-string
+        # values silently rather than failing the whole load.
+        ctx_raw = entry.get("context_tokens") or []
+        if isinstance(ctx_raw, list):
+            context_tokens = [str(c).strip() for c in ctx_raw if str(c).strip()]
+        else:
+            context_tokens = []
+        # pending is meaningful only for OPEN triggers; carry through
+        # unchanged so the editor and matcher see the same value.
+        pending = entry.get("pending")
+        if pending is not None and not isinstance(pending, bool):
+            pending = None
+        for at in action_types:
+            out.append({
+                "action_type": at,
+                "phrase": phrase,
+                "samples": samples,
+                "note": note,
+                "context_tokens": context_tokens,
+                "pending": pending,
+            })
     return out
 
 

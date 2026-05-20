@@ -4,7 +4,7 @@ from __future__ import annotations
 import sqlite3
 
 from PySide6.QtCore import QSortFilterProxyModel, Qt, Signal
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QColor, QKeyEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -167,7 +167,58 @@ class ActionsTable(QWidget):
         self._table.setAlternatingRowColors(True)
         self._table.setShowGrid(False)
         self._table.selectionModel().currentRowChanged.connect(self._on_selection)
+        self._table.selectionModel().selectionChanged.connect(
+            self._on_selection_changed_for_repaint
+        )
+        # Soft, palette-driven selection band so the highlighted row
+        # reads as "elevated" instead of a hard blue strip fighting the
+        # green / red status text. _apply_selection_style is invoked on
+        # construction and on every theme swap so light and dark both
+        # look intentional.
+        self._apply_selection_style()
+        try:
+            from src.gui.theme import bus as _theme_bus
+            _theme_bus.theme_changed.connect(
+                lambda _pal: self._apply_selection_style()
+            )
+        except Exception:
+            pass
         layout.addWidget(self._table, 1)
+
+    def _apply_selection_style(self) -> None:
+        """Replace Qt's default opaque accent highlight with a translucent
+        accent overlay + matching foreground. The overlay sits gently
+        above the status colours instead of competing with them, and
+        switches surface tone between light / dark mode automatically.
+        """
+        from src.gui.theme import current_palette
+        pal = current_palette()
+        # Build a ~22% accent tint via RGBA so it overlays rather than
+        # replaces the underlying alt-row colour. Qt's QSS accepts
+        # rgba(). The foreground on the selected row uses pal.text so
+        # plain cells stay readable; the model suppresses its custom
+        # status colours on selected rows (see _selected_rows in
+        # actions_model.data) so the green / red text doesn't collide
+        # with the highlight.
+        accent = QColor(pal.accent)
+        bg_rgba = f"rgba({accent.red()}, {accent.green()}, {accent.blue()}, 56)"
+        self._table.setStyleSheet(
+            "QTableView { selection-color: " + pal.text + "; "
+            "selection-background-color: " + bg_rgba + "; }"
+            "QTableView::item:selected { color: " + pal.text + "; "
+            "background-color: " + bg_rgba + "; }"
+        )
+
+    def _on_selection_changed_for_repaint(self, *_args) -> None:
+        sel = self._table.selectionModel().selectedRows()
+        # Translate proxy rows to source rows so the model's lookup is
+        # consistent even if a filter is active.
+        source_rows: set[int] = set()
+        for proxy_idx in sel:
+            src_idx = self._proxy.mapToSource(proxy_idx)
+            if src_idx.isValid():
+                source_rows.add(src_idx.row())
+        self._model.set_selected_rows(source_rows)
 
     def _on_query_changed(self, key: str, rows: list[sqlite3.Row]) -> None:
         if key != self.SUBSCRIPTION_KEY:

@@ -31,7 +31,6 @@ _PROMPT_LABELS = {
     "triage": "Triage",
     "evaluator": "Evaluator",
     "discovery": "Discovery",
-    "discovery_batch": "Discovery (batch)",
 }
 
 

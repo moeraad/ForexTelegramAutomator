@@ -10,7 +10,6 @@ from PySide6.QtCore import Qt, QObject, QSize, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
-    QMenu,
     QPushButton,
     QWidget,
 )
@@ -191,6 +190,13 @@ class ServicesBar(QWidget):
         super().__init__()
         self._stack = stack
         self.setFixedHeight(36)
+        # Distinct objectName + palette-driven band styling so this row
+        # reads as its own stripe rather than blending into the header
+        # immediately above it.
+        self.setObjectName("ServicesBar")
+        self._apply_band_style()
+        from src.gui.theme import bus as _theme_bus_band
+        _theme_bus_band.theme_changed.connect(lambda _pal: self._apply_band_style())
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 4, 12, 4)
@@ -206,18 +212,18 @@ class ServicesBar(QWidget):
             layout.addWidget(w)
         layout.addStretch()
 
-        # Replace the single "Restart ▾" combo with three icon buttons
-        # (Start / Stop / Restart). Each opens the same per-service +
-        # "all" submenu. Colors track the active palette via the
+        # Three icon buttons (Start / Stop / Restart). Each one applies
+        # the action to every service in the active stack on click — no
+        # per-service menu. Colors track the active palette via the
         # `role` property + QSS so light/dark both look right.
         self._start_btn = self._make_action_button(
-            "start", "Start service…", self._build_start_menu,
+            "start", "Start all services", lambda: self._do_start(list(self._stack.service_names)),
         )
         self._stop_btn = self._make_action_button(
-            "stop", "Stop service…", self._build_stop_menu,
+            "stop", "Stop all services", lambda: self._do_stop(list(self._stack.service_names)),
         )
         self._restart_btn = self._make_action_button(
-            "restart", "Restart service…", self._build_restart_menu,
+            "restart", "Restart all services", lambda: self._do_restart(list(self._stack.service_names)),
         )
         layout.addWidget(self._start_btn)
         layout.addWidget(self._stop_btn)
@@ -244,6 +250,19 @@ class ServicesBar(QWidget):
             _theme_bus.theme_changed.connect(lambda _pal: self._apply_action_styles())
         except Exception:
             pass
+
+    def _apply_band_style(self) -> None:
+        """Paint the services bar on the muted `surface_alt` token so it
+        sits as a visually distinct stripe beneath the header band. A
+        1px top border using the strong border token reinforces the
+        seam against the header above."""
+        from src.gui.theme import current_palette
+        pal = current_palette()
+        self.setStyleSheet(
+            f"#ServicesBar {{ background: {pal.surface_alt}; "
+            f"border-top: 1px solid {pal.border}; "
+            f"border-bottom: 1px solid {pal.border_strong}; }}"
+        )
 
     def _apply_action_styles(self) -> None:
         """Tint each button's icon with its semantic colour. Pure-icon
@@ -273,17 +292,17 @@ class ServicesBar(QWidget):
                 btn.setIcon(glyph.icon())
 
     def rebind(self, stack: Stack) -> None:
+        # The action button slots capture `self._stack` via the
+        # `self._do_*` indirection, so simply swapping the field is
+        # enough — no need to rewire the click handlers.
         self._stack = stack
-        self._start_btn.setMenu(self._build_start_menu())
-        self._stop_btn.setMenu(self._build_stop_menu())
-        self._restart_btn.setMenu(self._build_restart_menu())
         self._poller.set_stack(stack)
 
-    def _make_action_button(self, kind: str, tooltip: str, menu_builder):
+    def _make_action_button(self, kind: str, tooltip: str, on_click):
         """Build one of the three service-action buttons as a pure
-        coloured icon (no border, no background, no chevron). Click
-        pops the per-service menu. Falls back to a labelled QPushButton
-        on stripped installs.
+        coloured icon (no border, no background). Click fires
+        `on_click` immediately — there is no dropdown menu. Falls back
+        to a labelled QPushButton on stripped installs.
         """
         try:
             from qfluentwidgets import TransparentToolButton
@@ -291,19 +310,15 @@ class ServicesBar(QWidget):
             btn.setFixedSize(28, 28)
             btn.setIconSize(QSize(18, 18))
             btn.setProperty("svcAction", kind)
-            # Hide the menu chevron drawn by Qt when setMenu() is used.
-            # `::menu-indicator { image: none; width: 0; }` strips the
-            # arrow, and the transparent base means no border to clip.
             btn.setStyleSheet(
                 "QToolButton { background: transparent; border: none; padding: 0; }"
-                "QToolButton::menu-indicator { image: none; width: 0; }"
                 "QToolButton:hover { background: rgba(127, 127, 127, 0.12); border-radius: 4px; }"
             )
         except Exception:
             text_map = {"start": "Start", "stop": "Stop", "restart": "Restart"}
             btn = QPushButton(text_map[kind])
         btn.setToolTip(tooltip)
-        btn.setMenu(menu_builder())
+        btn.clicked.connect(lambda _checked=False: on_click())
         return btn
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
@@ -321,46 +336,103 @@ class ServicesBar(QWidget):
         self._ea.set_state(h.ea_state, h.ea_caption)
         self._snapshot.set_state(h.snapshot_state, h.snapshot_caption)
 
-    def _build_service_menu(self, verb: str, handler) -> QMenu:
-        """Shared per-service + all-services submenu. `verb` is the
-        leading word ("Start"/"Stop"/"Restart"); `handler` is the
-        callable that receives the list of service names to act on."""
-        menu = QMenu(self)
-        api_svc, bot_svc, listener_svc = self._stack.service_names
-        for label, name in (
-            (f"{verb} API ({api_svc})", api_svc),
-            (f"{verb} Bot ({bot_svc})", bot_svc),
-            (f"{verb} Listener ({listener_svc})", listener_svc),
-        ):
-            act = menu.addAction(label)
-            act.triggered.connect(lambda _checked=False, n=name: handler([n]))
-        menu.addSeparator()
-        all_names = list(self._stack.service_names)
-        act_all = menu.addAction(f"{verb} all")
-        act_all.triggered.connect(lambda _checked=False: handler(all_names))
-        return menu
-
-    def _build_start_menu(self) -> QMenu:
-        return self._build_service_menu("Start", self._do_start)
-
-    def _build_stop_menu(self) -> QMenu:
-        return self._build_service_menu("Stop", self._do_stop)
-
-    def _build_restart_menu(self) -> QMenu:
-        return self._build_service_menu("Restart", self._do_restart)
-
     def _do_start(self, names: list[str]) -> None:
-        for n in names:
-            nssm_client.nssm_start(n)
-        self._kick_poll()
+        """Ensure registered, then start. Auto-installs missing services
+        via the elevated bootstrap helper before attempting to start.
+        Notify on failures only — silent on success."""
+        self._run_service_action("start", names)
 
     def _do_stop(self, names: list[str]) -> None:
-        for n in names:
-            nssm_client.nssm_stop(n)
-        self._kick_poll()
+        self._run_service_action("stop", names)
 
     def _do_restart(self, names: list[str]) -> None:
-        for n in names:
-            nssm_client.nssm_restart(n)
+        self._run_service_action("restart", names)
+
+    def _run_service_action(self, verb: str, names: list[str]) -> None:
+        """Off-thread runner for start/stop/restart so the GUI never
+        freezes during the up-to-30s NSSM SERVICE_PAUSED retry window.
+        For `start`, missing services are auto-installed via the
+        elevated bootstrap helper before being started. The user sees a
+        popup only when something fails — success is silent.
+        """
+        # Snapshot inputs so the worker doesn't touch self.* fields.
+        stack = self._stack
+        from src.gui.services.bootstrap import _read_service_crashlog_tail
+
+        def work() -> list[str]:
+            errors: list[str] = []
+            if verb == "start":
+                missing = [n for n in names if not nssm_client.service_exists(n)]
+                if missing:
+                    from src.gui.services.elevation import run_elevated_python
+                    ok = run_elevated_python(
+                        "src.gui.helpers.bootstrap_services_install",
+                        [
+                            stack.name,
+                            str(stack.project_path),
+                            *stack.service_names,
+                            str(stack.db_path),
+                        ],
+                    )
+                    if not ok:
+                        return [
+                            "Service install was cancelled or elevation failed. "
+                            "Click Start again after approving the UAC prompt."
+                        ]
+                    # Give the elevated helper a moment to register the
+                    # services before we try to start them.
+                    import time as _t
+                    for _ in range(20):
+                        if all(nssm_client.service_exists(n) for n in names):
+                            break
+                        _t.sleep(0.5)
+            for n in names:
+                if verb == "start":
+                    ok, msg = nssm_client.nssm_start(n)
+                elif verb == "stop":
+                    ok, msg = nssm_client.nssm_stop(n)
+                else:
+                    ok, msg = nssm_client.nssm_restart(n)
+                if not ok:
+                    crash = _read_service_crashlog_tail(n) if verb in ("start", "restart") else ""
+                    detail = f"{msg}\n\n{crash}" if crash else (msg or "nssm command failed")
+                    errors.append(f"{n}: {detail}")
+            return errors
+
+        # Run `work` on a QThread so the GUI stays responsive. Use a
+        # one-shot QObject-less thread; collect the result in a closure.
+        from PySide6.QtCore import QThread
+
+        class _ActionThread(QThread):
+            def __init__(self, parent):
+                super().__init__(parent)
+                self.errors: list[str] = []
+
+            def run(self):
+                try:
+                    self.errors = work()
+                except Exception as e:  # noqa: BLE001 - surface to user
+                    self.errors = [f"unexpected error: {type(e).__name__}: {e}"]
+
+        thread = _ActionThread(self)
+        # Hold a reference until done so Python doesn't gc the QThread
+        # mid-run; deleteLater on finish keeps cleanup tidy.
+        self._active_action_thread = thread
+        thread.finished.connect(lambda: self._on_action_done(verb, thread))
+        thread.start()
+
+    def _on_action_done(self, verb: str, thread) -> None:
+        errors: list[str] = list(thread.errors)
+        thread.deleteLater()
+        self._active_action_thread = None
+        # Two kicks: one immediately, one ~2s later so the pill widgets
+        # have time to reflect post-action state (NSSM start/restart
+        # transition can take a couple of poll cycles to settle).
         self._kick_poll()
-        self._kick_poll()
+        QTimer.singleShot(2000, self._kick_poll)
+        if not errors:
+            return
+        from PySide6.QtWidgets import QMessageBox
+        title = {"start": "Start services", "stop": "Stop services",
+                 "restart": "Restart services"}.get(verb, "Services")
+        QMessageBox.warning(self, title, "\n\n".join(errors))

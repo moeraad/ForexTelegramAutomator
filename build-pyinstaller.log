@@ -1,0 +1,184 @@
+158 INFO: PyInstaller: 6.20.0, contrib hooks: 2026.5
+158 INFO: Python: 3.13.9
+192 INFO: Platform: Windows-11-10.0.26200-SP0
+193 INFO: Python environment: C:\Users\Administrator\Documents\projects\copytrades\.venv
+197 INFO: Removing temporary files and cleaning cache in C:\Users\Administrator\AppData\Local\pyinstaller
+278 INFO: Failed to load SSL library: <class 'OSError'> (no library called "ssl" found)
+278 INFO: cryptg module not installed and libssl not found, falling back to (slower) Python encryption
+5418 INFO: Module search paths (PYTHONPATH):
+['C:\\Users\\Administrator\\Documents\\projects\\copytrades',
+ 'C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python313\\python313.zip',
+ 'C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python313\\DLLs',
+ 'C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python313\\Lib',
+ 'C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python313',
+ 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv',
+ 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages',
+ 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\src',
+ 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\win32',
+ 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\win32\\lib',
+ 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\Pythonwin',
+ 'C:\\Users\\Administrator\\Documents\\projects\\copytrades']
+5858 INFO: Appending 'binaries' from .spec
+5859 INFO: Appending 'datas' from .spec
+5859 INFO: checking Analysis
+5859 INFO: Building Analysis because Analysis-00.toc is non existent
+5859 INFO: Looking for Python shared library...
+5859 INFO: Using Python shared library: C:\Users\Administrator\AppData\Local\Programs\Python\Python313\python313.dll
+5859 INFO: Running Analysis Analysis-00.toc
+5859 INFO: Target bytecode optimization level: 0
+5859 INFO: Initializing module dependency graph...
+5860 INFO: Initializing module graph hook caches...
+5874 INFO: Analyzing modules for base_library.zip ...
+7335 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+9061 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+10176 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+10590 INFO: Caching module dependency graph...
+10627 INFO: Analyzing C:\Users\Administrator\Documents\projects\copytrades\gui_launcher.py
+10662 INFO: Processing standard module hook 'hook-sqlite3.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+11103 INFO: Processing standard module hook 'hook-anyio.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+11636 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+11638 INFO: SetuptoolsInfo: initializing cached setuptools info...
+12496 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+12680 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+12964 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+13943 INFO: Processing standard module hook 'hook-pydantic.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+14560 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+14834 INFO: Processing standard module hook 'hook-rich.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+15730 INFO: Processing standard module hook 'hook-pygments.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+18492 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+19031 INFO: Processing standard module hook 'hook-zoneinfo.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+21205 INFO: Processing standard module hook 'hook-uvicorn.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+22156 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+22778 INFO: Processing standard module hook 'hook-websockets.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+23899 INFO: Processing standard module hook 'hook-certifi.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+24036 INFO: Processing standard module hook 'hook-pytz.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+27435 INFO: Processing standard module hook 'hook-numpy.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+29817 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+30304 INFO: Processing standard module hook 'hook-pandas.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+34289 INFO: Processing standard module hook 'hook-pandas.io.formats.style.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+37902 INFO: Processing standard module hook 'hook-pandas.plotting.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+38578 INFO: Processing standard module hook 'hook-dateutil.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+38828 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+40584 INFO: Processing standard module hook 'hook-pandas.io.clipboard.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+40799 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+40808 INFO: Processing standard module hook 'hook-xml.dom.domreg.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+41320 INFO: Processing standard module hook 'hook-pytest.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+41637 INFO: Processing standard module hook 'hook-py.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+41911 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+42127 INFO: Processing pre-safe-import-module hook 'hook-tomli.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+42128 INFO: Setuptools: 'tomli' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.tomli'!
+42134 INFO: Processing standard module hook 'hook-setuptools.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+42156 INFO: Processing pre-safe-import-module hook 'hook-distutils.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+42196 INFO: Processing pre-safe-import-module hook 'hook-jaraco.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+42197 INFO: Setuptools: 'jaraco' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.jaraco'!
+42209 INFO: Processing pre-safe-import-module hook 'hook-more_itertools.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+42210 INFO: Setuptools: 'more_itertools' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.more_itertools'!
+42708 INFO: Processing standard module hook 'hook-setuptools._vendor.jaraco.text.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+42710 INFO: Processing pre-safe-import-module hook 'hook-importlib_resources.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+42724 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+42725 INFO: Setuptools: 'backports' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.backports'!
+42978 INFO: Processing pre-safe-import-module hook 'hook-importlib_metadata.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+42978 INFO: Setuptools: 'importlib_metadata' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.importlib_metadata'!
+43007 INFO: Processing standard module hook 'hook-setuptools._vendor.importlib_metadata.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+43032 INFO: Processing pre-safe-import-module hook 'hook-zipp.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+43032 INFO: Setuptools: 'zipp' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.zipp'!
+43884 INFO: Processing pre-safe-import-module hook 'hook-wheel.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+43885 INFO: Setuptools: 'wheel' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.wheel'!
+46376 INFO: Processing pre-safe-import-module hook 'hook-platformdirs.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+46390 INFO: Processing standard module hook 'hook-platformdirs.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+47722 INFO: Processing standard module hook 'hook-urllib3.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+59220 INFO: Processing standard module hook 'hook-PySide6.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+59439 INFO: Processing standard module hook 'hook-shiboken6.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+59627 INFO: Processing standard module hook 'hook-PySide6.QtNetwork.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+66419 INFO: Processing standard module hook 'hook-PySide6.QtCore.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+73000 INFO: Processing standard module hook 'hook-PySide6.QtGui.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+106574 INFO: Processing standard module hook 'hook-PySide6.QtWidgets.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+113016 INFO: Processing standard module hook 'hook-PySide6.QtSvg.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+114821 INFO: Processing standard module hook 'hook-PySide6.QtXml.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+117103 INFO: Processing standard module hook 'hook-PySide6.QtSvgWidgets.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+119833 INFO: Processing standard module hook 'hook-PySide6.QtCharts.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+122937 INFO: Analyzing hidden import 'src.gui.windows.splash_window'
+122944 INFO: Analyzing hidden import 'src.gui.views._profile_readonly_widgets'
+122963 INFO: Analyzing hidden import 'src.gui.helpers._helper_log'
+122967 INFO: Analyzing hidden import 'src.gui.helpers.bootstrap_nssm_install'
+122969 INFO: Analyzing hidden import 'src.gui.helpers.bootstrap_services_install'
+122975 INFO: Analyzing hidden import 'src.gui.helpers.bootstrap_services_uninstall'
+122979 INFO: Analyzing hidden import 'anthropic.lib.bedrock._stream'
+122981 INFO: Analyzing hidden import 'anthropic.lib.tools.mcp'
+122993 INFO: Analyzing hidden import 'anthropic.tools'
+122996 INFO: Analyzing hidden import 'openai.__main__'
+123247 INFO: Analyzing hidden import 'openai.helpers'
+123289 INFO: Analyzing hidden import 'openai.types.beta.chat'
+123291 INFO: Analyzing hidden import 'openai.types.containers.files'
+123293 INFO: Analyzing hidden import 'openai.types.skills.versions'
+123294 INFO: Analyzing hidden import 'telegram.__main__'
+123298 INFO: Analyzing hidden import 'telegram._utils.warnings_transition'
+123303 INFO: Analyzing hidden import 'fastapi.__main__'
+123305 INFO: Analyzing hidden import 'fastapi.middleware.cors'
+123317 INFO: Analyzing hidden import 'fastapi.middleware.gzip'
+123328 INFO: Analyzing hidden import 'fastapi.middleware.httpsredirect'
+123333 INFO: Analyzing hidden import 'fastapi.middleware.trustedhost'
+123338 INFO: Analyzing hidden import 'fastapi.middleware.wsgi'
+123347 INFO: Analyzing hidden import 'fastapi.staticfiles'
+123358 INFO: Analyzing hidden import 'fastapi.templating'
+123365 INFO: Analyzing hidden import 'fastapi.testclient'
+123397 INFO: Analyzing hidden import 'uvicorn.__main__'
+123398 INFO: Analyzing hidden import 'uvicorn.lifespan'
+123399 INFO: Analyzing hidden import 'uvicorn.lifespan.off'
+123401 INFO: Analyzing hidden import 'uvicorn.lifespan.on'
+123408 INFO: Analyzing hidden import 'uvicorn.loops'
+123409 INFO: Analyzing hidden import 'uvicorn.loops.asyncio'
+123411 INFO: Analyzing hidden import 'uvicorn.loops.auto'
+123413 INFO: Analyzing hidden import 'uvicorn.protocols.http.auto'
+123415 INFO: Analyzing hidden import 'uvicorn.protocols.websockets.auto'
+123416 INFO: Analyzing hidden import 'uvicorn.workers'
+123421 INFO: Analyzing hidden import 'telethon.sync'
+123425 INFO: Processing module hooks (post-graph stage)...
+128511 INFO: Processing standard module hook 'hook-PySide6.QtOpenGL.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+134588 INFO: Processing standard module hook 'hook-PySide6.QtOpenGLWidgets.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+136884 INFO: Processing standard module hook 'hook-tzdata.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+137494 INFO: Performing binary vs. data reclassification (1357 entries)
+137737 INFO: Looking for ctypes DLLs
+137806 WARNING: Ignoring AppKit.framework/AppKit imported from C:\Users\Administrator\Documents\projects\copytrades\.venv\Lib\site-packages\darkdetect\_mac_detect.py - only basenames are supported with ctypes imports!
+137870 INFO: Analyzing run-time hooks ...
+137895 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+137899 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+137902 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+137906 INFO: Including run-time hook 'pyi_rth_setuptools.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+137909 INFO: Including run-time hook 'pyi_rth_pyside6.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+137912 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+137915 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+138016 INFO: Creating base_library.zip...
+138047 INFO: Looking for dynamic libraries
+
+[1;33m📢 Tips:[0m QFluentWidgets Pro is now released. Click [1;96mhttps://qfluentwidgets.com/pages/pro[0m to learn more about it.
+
+144245 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\shiboken6', 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\numpy.libs', 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\pandas.libs']
+144245 INFO: Extra DLL search directories (PATH): ['C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PySide6']
+146861 INFO: Warnings written to C:\Users\Administrator\Documents\projects\copytrades\build\CopyTrades\warn-CopyTrades.txt
+147244 INFO: Graph cross-reference written to C:\Users\Administrator\Documents\projects\copytrades\build\CopyTrades\xref-CopyTrades.html
+147752 INFO: checking PYZ
+147752 INFO: Building PYZ because PYZ-00.toc is non existent
+147752 INFO: Building PYZ (ZlibArchive) C:\Users\Administrator\Documents\projects\copytrades\build\CopyTrades\PYZ-00.pyz
+150496 INFO: Building PYZ (ZlibArchive) C:\Users\Administrator\Documents\projects\copytrades\build\CopyTrades\PYZ-00.pyz completed successfully.
+150822 INFO: checking PKG
+150823 INFO: Building PKG because PKG-00.toc is non existent
+150823 INFO: Building PKG (CArchive) CopyTrades.pkg
+150927 INFO: Building PKG (CArchive) CopyTrades.pkg completed successfully.
+150934 INFO: Bootloader C:\Users\Administrator\Documents\projects\copytrades\.venv\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+150934 INFO: checking EXE
+150934 INFO: Building EXE because EXE-00.toc is non existent
+150934 INFO: Building EXE from EXE-00.toc
+150934 INFO: Copying bootloader EXE to C:\Users\Administrator\Documents\projects\copytrades\build\CopyTrades\CopyTrades.exe
+150974 INFO: Copying icon to EXE
+150994 INFO: Copying 0 resources to EXE
+150994 INFO: Embedding manifest in EXE
+151010 INFO: Appending PKG archive to EXE
+151168 INFO: Fixing EXE headers
+151564 INFO: Building EXE from EXE-00.toc completed successfully.
+151581 INFO: checking COLLECT
+151581 INFO: Building COLLECT because COLLECT-00.toc is non existent
+151582 INFO: Removing dir C:\Users\Administrator\Documents\projects\copytrades\dist\CopyTrades
+152129 INFO: Building COLLECT COLLECT-00.toc
+154439 INFO: Building COLLECT COLLECT-00.toc completed successfully.
+154475 INFO: Build complete! The results are available in: C:\Users\Administrator\Documents\projects\copytrades\dist

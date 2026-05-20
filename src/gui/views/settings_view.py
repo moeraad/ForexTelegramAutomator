@@ -33,7 +33,6 @@ from PySide6.QtWidgets import (
 
 from src import db_settings
 from src.gui.services import nssm_client
-from src.gui.services.bootstrap import BootstrapManager
 from src.gui.services.env_io import EnvLine, is_secret, parse_env, write_env
 from src.gui.services.stack_registry import Stack
 from src.gui.services.stacks_config_io import StackEntry, load_entries, save_entries, stacks_config_path
@@ -47,7 +46,6 @@ class SettingsView(QWidget):
     def __init__(self, stack: Stack) -> None:
         super().__init__()
         self._stack = stack
-        self._bootstrap: BootstrapManager | None = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
@@ -73,12 +71,9 @@ class SettingsView(QWidget):
         self._new_stack_btn.setToolTip("Create a new stack from scratch (full setup wizard).")
         self._new_stack_btn.clicked.connect(self._open_new_stack_wizard)
         title_row.addWidget(self._new_stack_btn)
-        self._start_btn = QPushButton("Start services")
-        self._start_btn.clicked.connect(self._on_start_services)
-        title_row.addWidget(self._start_btn)
-        self._stop_btn = QPushButton("Stop services")
-        self._stop_btn.clicked.connect(self._on_stop_services)
-        title_row.addWidget(self._stop_btn)
+        # Service start/stop/restart lives in the top-right services bar
+        # (one canonical surface). The Services tab below still owns
+        # lifecycle (Install / Uninstall) and a read-only state view.
         layout.addLayout(title_row)
 
         self._tabs = QTabWidget()
@@ -146,11 +141,6 @@ class SettingsView(QWidget):
                 f"<span style='color:#ef5350;'>setup incomplete · "
                 f"{len(missing)} critical key(s) missing</span>"
             )
-            self._status_label.setTextFormat(Qt.TextFormat.RichText)
-            self._start_btn.setEnabled(False)
-            self._start_btn.setToolTip(
-                "Setup wizard must complete first: missing " + ", ".join(missing)
-            )
         else:
             running = sum(
                 1 for svc in self._stack.service_names if nssm_client.service_running(svc)
@@ -159,41 +149,7 @@ class SettingsView(QWidget):
             self._status_label.setText(
                 f"<span style='color:#787b86;'>services: {running}/{total} running</span>"
             )
-            self._status_label.setTextFormat(Qt.TextFormat.RichText)
-            self._start_btn.setEnabled(running < total)
-            self._start_btn.setToolTip("")
-        any_running = any(
-            nssm_client.service_running(svc) for svc in self._stack.service_names
-        )
-        self._stop_btn.setEnabled(any_running)
-
-    def _on_start_services(self) -> None:
-        if self._bootstrap is not None:
-            return
-        self._start_btn.setEnabled(False)
-        self._bootstrap = BootstrapManager([self._stack], parent=self)
-        self._bootstrap.all_completed.connect(self._on_bootstrap_done)
-        self._bootstrap.step_failed.connect(self._on_bootstrap_failed)
-        self._bootstrap.start()
-
-    def _on_bootstrap_done(self) -> None:
-        self._bootstrap = None
-        QMessageBox.information(self, "Services", "Services started.")
-        self._services_tab.rebind(self._stack)
-        self._refresh_status()
-
-    def _on_bootstrap_failed(self, stack: str, step: str, err: str) -> None:
-        QMessageBox.warning(
-            self, "Service step failed",
-            f"{stack} · {step} · {err}",
-        )
-
-    def _on_stop_services(self) -> None:
-        for svc in self._stack.service_names:
-            if nssm_client.service_running(svc):
-                nssm_client.nssm_stop(svc)
-        self._services_tab.rebind(self._stack)
-        self._refresh_status()
+        self._status_label.setTextFormat(Qt.TextFormat.RichText)
 
 
 class _ChannelsTab(QWidget):
@@ -689,7 +645,20 @@ class _TuningTab(QWidget):
                 elif f.kind == "secret":
                     edit = w.findChild(QLineEdit, "secret_input")
                     if edit is not None:
-                        edit.setText(db_settings.get_str(db_path, f.key, ""))
+                        # Defensive decrypt: DPAPI rejects ciphertext that
+                        # was saved under a different security context
+                        # (password reset, machine restore, etc.) — we
+                        # must not crash the whole Tuning tab when that
+                        # happens. Show the field blank instead; the
+                        # placeholder hints at the recovery action.
+                        try:
+                            edit.setText(db_settings.get_str(db_path, f.key, ""))
+                        except OSError:
+                            edit.setText("")
+                            edit.setPlaceholderText(
+                                "(saved value unreadable in this session — "
+                                "paste key to re-encrypt)"
+                            )
                 elif f.kind == "text":
                     assert isinstance(w, QPlainTextEdit)
                     w.setPlainText(db_settings.get_str(db_path, f.key, ""))
@@ -720,7 +689,14 @@ class _TuningTab(QWidget):
                     elif f.kind == "secret":
                         edit = w.findChild(QLineEdit, "secret_input")
                         if edit is not None:
-                            db_settings.set_str(db_path, f.key, edit.text())
+                            new_val = edit.text()
+                            # Empty field = "keep the existing saved value".
+                            # An operator scanning the Tuning tab without
+                            # typing must not silently wipe their API key.
+                            # To explicitly clear a secret, they need to
+                            # remove the row via SQL or delete the stack.
+                            if new_val:
+                                db_settings.set_str(db_path, f.key, new_val)
                     elif f.kind == "text":
                         db_settings.set_str(db_path, f.key, w.toPlainText())
                     else:
@@ -764,25 +740,44 @@ _TUNING_SECTIONS: list[tuple[str, list[_Field]]] = [
                    "for simple channels)."
                ),
                opts=(["anthropic", "openai"],)),
+        _Field("anthropic_api_key", "Anthropic API key", "secret",
+               tooltip=(
+                   "Claude API key (sk-ant-…). Stored DPAPI-encrypted in the "
+                   "stack's settings table. Leave blank to keep the existing "
+                   "saved key — typing a new value replaces it. If decryption "
+                   "fails (e.g. after a Windows password reset), the field "
+                   "shows blank; paste the key again to re-encrypt under the "
+                   "current session."
+               )),
+        _Field("openai_api_key", "OpenAI API key", "secret",
+               tooltip=(
+                   "OpenAI API key (sk-…). Same storage + recovery semantics "
+                   "as the Anthropic key above. Required for the embedding "
+                   "matcher's Layer 2 even when AI_PROVIDER is set to "
+                   "anthropic — the matcher uses OpenAI text-embedding-3-small "
+                   "regardless of which interpreter you've chosen."
+               )),
         _Field("anthropic_model", "Anthropic interpreter", "choice",
                tooltip=(
                    "Claude model used as the main interpreter — the step that "
                    "parses each kept message into action JSON. Sonnet 4.6 is "
                    "the default; Opus 4.7 is more accurate but ~5x pricier; "
-                   "Haiku is too small for ambiguous interpretation. The field "
-                   "is editable for new models Anthropic releases later."
+                   "Haiku is too small for ambiguous interpretation."
                ),
-               opts=(["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001"],),
-               editable=True),
+               opts=([
+                   "claude-opus-4-7",
+                   "claude-sonnet-4-6",
+                   "claude-haiku-4-5-20251001",
+               ],),
+               editable=False),
         _Field("openai_model", "OpenAI interpreter", "choice",
                tooltip=(
                    "OpenAI model used as the main interpreter. gpt-5 is the "
                    "default; gpt-5-mini cuts cost ~6x at a small accuracy hit; "
-                   "gpt-5-nano is too small for compound message interpretation. "
-                   "Editable for newer models."
+                   "gpt-5-nano is too small for compound message interpretation."
                ),
                opts=(["gpt-5", "gpt-5-mini", "gpt-5-nano"],),
-               editable=True),
+               editable=False),
     ]),
     ("AI TRIAGE", [
         _Field("ai_triage_enabled", "Triage enabled", "bool",
@@ -797,15 +792,19 @@ _TUNING_SECTIONS: list[tuple[str, list[_Field]]] = [
                    "Anthropic. Haiku 4.5 is ~30x cheaper than Sonnet and still "
                    "accurate enough for the binary ignore/keep decision."
                ),
-               opts=(["claude-haiku-4-5-20251001", "claude-sonnet-4-6"],),
-               editable=True),
+               opts=([
+                   "claude-haiku-4-5-20251001",
+                   "claude-sonnet-4-6",
+                   "claude-opus-4-7",
+               ],),
+               editable=False),
         _Field("openai_triage_model", "OpenAI triage model", "choice",
                tooltip=(
                    "OpenAI model used for triage when provider = OpenAI. "
                    "gpt-5-nano is the cheapest tier."
                ),
                opts=(["gpt-5-nano", "gpt-5-mini", "gpt-5"],),
-               editable=True),
+               editable=False),
     ]),
     ("AI THINKING", [
         _Field("ai_thinking_enabled", "Extended thinking", "bool",
@@ -894,7 +893,10 @@ _TUNING_SECTIONS: list[tuple[str, list[_Field]]] = [
 
 
 class _ServicesTab(QWidget):
-    HEADERS = ("Service", "State", "Controls")
+    # Per-service start/stop/restart lives in the top-right services bar
+    # (the canonical "one place" for that). This tab keeps the read-only
+    # state view + Install/Uninstall lifecycle buttons.
+    HEADERS = ("Service", "State")
 
     def __init__(self, stack: Stack) -> None:
         super().__init__()
@@ -920,6 +922,39 @@ class _ServicesTab(QWidget):
         info.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(info)
 
+        # Install/Uninstall actions affect every service in this stack at
+        # once. Both require admin (SCM modifications), so they shell out
+        # via run_elevated_python and the user gets one UAC prompt per
+        # click. Kept in the Services tab so all lifecycle controls live
+        # next to the per-service table they affect.
+        actions_row = QHBoxLayout()
+        actions_row.setContentsMargins(0, 4, 0, 4)
+        self._install_btn = QPushButton("Install services")
+        self._install_btn.setToolTip(
+            "Register the three NSSM services for this stack (api, bot, "
+            "listener). Triggers a UAC prompt."
+        )
+        self._install_btn.clicked.connect(self._on_install_services)
+        self._uninstall_btn = QPushButton("Uninstall services")
+        self._uninstall_btn.setToolTip(
+            "Stop and unregister all three NSSM services for this stack. "
+            "Triggers a UAC prompt. Logs and the database are not touched."
+        )
+        self._uninstall_btn.clicked.connect(self._on_uninstall_services)
+        self._export_diag_btn = QPushButton("Export diagnostics…")
+        self._export_diag_btn.setToolTip(
+            "Bundle logs, sanitized DB, service crash logs, and optionally "
+            "MT5 terminal/experts logs into a ZIP for incident triage. "
+            "Filter by time window so the bundle stays small. Secrets are "
+            "blanked before zipping."
+        )
+        self._export_diag_btn.clicked.connect(self._on_export_diagnostics)
+        actions_row.addWidget(self._install_btn)
+        actions_row.addWidget(self._uninstall_btn)
+        actions_row.addWidget(self._export_diag_btn)
+        actions_row.addStretch()
+        layout.addLayout(actions_row)
+
         self._table = QTableWidget(0, len(self.HEADERS))
         self._table.setHorizontalHeaderLabels(list(self.HEADERS))
         self._table.verticalHeader().setVisible(False)
@@ -943,74 +978,83 @@ class _ServicesTab(QWidget):
             exists = nssm_client.service_exists(svc)
             state = "RUNNING" if running else ("STOPPED" if exists else "NOT INSTALLED")
             self._table.setItem(i, 1, QTableWidgetItem(state))
-            self._table.setCellWidget(i, 2, self._make_controls(svc, running, exists))
 
-    def _make_controls(self, name: str, running: bool, exists: bool) -> QWidget:
-        """Per-service action triplet rendered as pure coloured icons —
-        no border or background, just a glyph (green PLAY / red CLOSE /
-        orange UPDATE). Mirrors the top-level services bar so the
-        operator gets one consistent affordance everywhere."""
-        wrap = QWidget()
-        layout = QHBoxLayout(wrap)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-        start_btn = self._make_action_icon("start", "Start service")
-        start_btn.setEnabled(exists and not running)
-        start_btn.clicked.connect(lambda _checked=False, n=name: self._do_start(n))
-        stop_btn = self._make_action_icon("stop", "Stop service")
-        stop_btn.setEnabled(running)
-        stop_btn.clicked.connect(lambda _checked=False, n=name: self._do_stop(n))
-        restart_btn = self._make_action_icon("restart", "Restart service")
-        restart_btn.setEnabled(exists)
-        restart_btn.clicked.connect(lambda _checked=False, n=name: self._do_restart(n))
-        for b in (start_btn, stop_btn, restart_btn):
-            layout.addWidget(b)
-        layout.addStretch()
-        return wrap
+    def _on_export_diagnostics(self) -> None:
+        """Open the diagnostics-bundle dialog scoped to the active stack."""
+        from src.gui.windows.diagnostics_export_dialog import DiagnosticsExportDialog
+        dlg = DiagnosticsExportDialog(self._stack, self)
+        dlg.exec()
 
-    def _make_action_icon(self, kind: str, tooltip: str):
-        """Build one of the three coloured-icon action buttons."""
-        from PySide6.QtCore import QSize
-        from PySide6.QtGui import QColor
-        try:
-            from qfluentwidgets import FluentIcon, TransparentToolButton
-            from src.gui.theme import current_palette
-            p = current_palette()
-            color_map = {
-                "start":   (FluentIcon.PLAY,   QColor(p.success)),
-                "stop":    (FluentIcon.CLOSE,  QColor(p.danger)),
-                "restart": (FluentIcon.UPDATE, QColor(p.warning)),
-            }
-            glyph, color = color_map[kind]
-            btn = TransparentToolButton()
-            btn.setIcon(glyph.icon(color=color))
-            btn.setIconSize(QSize(16, 16))
-            btn.setFixedSize(26, 26)
-            btn.setStyleSheet(
-                "QToolButton { background: transparent; border: none; padding: 0; }"
-                "QToolButton:hover { background: rgba(127,127,127,0.12); border-radius: 4px; }"
-                "QToolButton:disabled { opacity: 0.4; }"
+    def _on_install_services(self) -> None:
+        """(Re-)register the three NSSM services for the active stack.
+
+        Mirrors the bootstrap path used at GUI startup but is triggered
+        on demand from Settings so the operator can fix a partial
+        install (or re-register after editing the db path) without
+        relaunching the GUI.
+        """
+        from src.gui.services.elevation import run_elevated_python
+        stack = self._stack
+        ok = run_elevated_python(
+            "src.gui.helpers.bootstrap_services_install",
+            [
+                stack.name,
+                str(stack.project_path),
+                *stack.service_names,
+                str(stack.db_path),
+            ],
+        )
+        if not ok:
+            QMessageBox.warning(
+                self,
+                "Install services",
+                "Elevation was cancelled or the helper failed to launch. "
+                "No changes were made.",
             )
-        except Exception:
-            text_map = {"start": "Start", "stop": "Stop", "restart": "Restart"}
-            btn = QPushButton(text_map[kind])
-        btn.setToolTip(tooltip)
-        return btn
+            return
+        # The helper runs out-of-process; nudge the table a couple of
+        # times so the operator sees the new state without waiting for
+        # the 5s timer.
+        QTimer.singleShot(1500, self._refresh)
+        QTimer.singleShot(4000, self._refresh)
+        QMessageBox.information(
+            self,
+            "Install services",
+            "Service registration requested. The table will refresh shortly.",
+        )
 
-    def _do_start(self, name: str) -> None:
-        ok, msg = nssm_client.nssm_start(name)
+    def _on_uninstall_services(self) -> None:
+        """Stop + unregister the three NSSM services for the active stack."""
+        stack = self._stack
+        confirm = QMessageBox.question(
+            self,
+            "Uninstall services",
+            "This will stop and unregister the following Windows services "
+            f"for stack '{stack.name}':\n\n  • "
+            + "\n  • ".join(stack.service_names)
+            + "\n\nLogs and the database are not touched. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        from src.gui.services.elevation import run_elevated_python
+        ok = run_elevated_python(
+            "src.gui.helpers.bootstrap_services_uninstall",
+            list(stack.service_names),
+        )
         if not ok:
-            QMessageBox.warning(self, "Start failed", f"{name}\n\n{msg or 'nssm command failed'}")
-        self._refresh()
-
-    def _do_stop(self, name: str) -> None:
-        ok, msg = nssm_client.nssm_stop(name)
-        if not ok:
-            QMessageBox.warning(self, "Stop failed", f"{name}\n\n{msg or 'nssm command failed'}")
-        self._refresh()
-
-    def _do_restart(self, name: str) -> None:
-        ok, msg = nssm_client.nssm_restart(name)
-        if not ok:
-            QMessageBox.warning(self, "Restart failed", f"{name}\n\n{msg or 'nssm command failed'}")
-        self._refresh()
+            QMessageBox.warning(
+                self,
+                "Uninstall services",
+                "Elevation was cancelled or the helper failed to launch. "
+                "No changes were made.",
+            )
+            return
+        QTimer.singleShot(1500, self._refresh)
+        QTimer.singleShot(4000, self._refresh)
+        QMessageBox.information(
+            self,
+            "Uninstall services",
+            "Service removal requested. The table will refresh shortly.",
+        )

@@ -11,6 +11,7 @@ from src.logging_setup import configure_logging
 _HELPERS = {
     "bootstrap_nssm_install": "src.gui.helpers.bootstrap_nssm_install",
     "bootstrap_services_install": "src.gui.helpers.bootstrap_services_install",
+    "bootstrap_services_uninstall": "src.gui.helpers.bootstrap_services_uninstall",
 }
 
 
@@ -21,7 +22,7 @@ def _run_helper(name: str, rest: list[str]) -> int:
     import importlib
     mod = importlib.import_module(_HELPERS[name])
     if hasattr(mod, "main"):
-        if name == "bootstrap_services_install":
+        if name in ("bootstrap_services_install", "bootstrap_services_uninstall"):
             return int(mod.main(rest))
         return int(mod.main())
     sys.stderr.write(f"helper {name} has no main()\n")

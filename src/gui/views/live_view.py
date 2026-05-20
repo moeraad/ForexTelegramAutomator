@@ -65,21 +65,9 @@ class LiveView(QWidget):
         # so the operator's eye finds them in a fixed location even when
         # the value is "—". Previously rendered as flat inline text which
         # is easy to miss when not scanning (REVIEW.md §4.1).
-        indicators = QWidget()
-        indicators.setFixedHeight(28)
-        from src.gui.theme import current_palette
-        pal = current_palette()
-        indicators.setStyleSheet(
-            "QLabel[role='indicator-tile'] {"
-            f"  background: {pal.surface};"
-            f"  border: 1px solid {pal.border};"
-            "  border-radius: 12px;"
-            "  padding: 2px 12px;"
-            "  font-size: 11px;"
-            "  margin: 2px 4px;"
-            "}"
-        )
-        ind_layout = QHBoxLayout(indicators)
+        self._indicators = QWidget()
+        self._indicators.setFixedHeight(28)
+        ind_layout = QHBoxLayout(self._indicators)
         ind_layout.setContentsMargins(8, 0, 8, 0)
         ind_layout.setSpacing(6)
         self._ea_lbl = QLabel("EA: —")
@@ -95,12 +83,47 @@ class LiveView(QWidget):
         ind_layout.addStretch()
 
         layout.addWidget(outer, 1)
-        layout.addWidget(indicators)
+        layout.addWidget(self._indicators)
+
+        # Theme-aware styling: paint once now, then re-apply whenever
+        # the user toggles light/dark. Without the bus subscription the
+        # pill surface/border/text colours were baked in at construction
+        # and stayed frozen on theme swap, looking wrong in the other
+        # mode.
+        self._apply_indicator_theme()
+        try:
+            from src.gui.theme import bus as _theme_bus
+            _theme_bus.theme_changed.connect(
+                lambda _pal: (self._apply_indicator_theme(), self._refresh_indicators())
+            )
+        except Exception:
+            pass
 
     def _tick_ages(self) -> None:
         self._actions_table.refresh_ages()
         self._positions_table.refresh_ages()
         self._refresh_indicators()
+
+    def _apply_indicator_theme(self) -> None:
+        """Re-skin the indicator pills against the active palette.
+
+        Re-invoked on every `theme_changed` so toggling light/dark mode
+        immediately repaints the EA / Oldest claim chips instead of
+        leaving them stuck in the colours captured at construction.
+        """
+        from src.gui.theme import current_palette
+        pal = current_palette()
+        self._indicators.setStyleSheet(
+            "QLabel[role='indicator-tile'] {"
+            f"  background: {pal.surface};"
+            f"  border: 1px solid {pal.border};"
+            f"  color: {pal.text_muted};"
+            "  border-radius: 12px;"
+            "  padding: 2px 12px;"
+            "  font-size: 11px;"
+            "  margin: 2px 4px;"
+            "}"
+        )
 
     def _refresh_indicators(self) -> None:
         try:
@@ -117,12 +140,23 @@ class LiveView(QWidget):
                 conn.close()
         except sqlite3.Error:
             return
+        from src.gui.theme import current_palette
+        pal = current_palette()
         now = datetime.now(timezone.utc)
-        self._ea_lbl.setText(self._format_age("EA", ea_iso, now, warn=30, bad=60))
-        self._claim_lbl.setText(self._format_age("Oldest claim", claim, now, warn=15, bad=45))
+        self._ea_lbl.setText(self._format_age("EA", ea_iso, now, warn=30, bad=60, pal=pal))
+        self._claim_lbl.setText(
+            self._format_age("Oldest claim", claim, now, warn=15, bad=45, pal=pal)
+        )
 
     @staticmethod
-    def _format_age(label: str, iso: str | None, now: datetime, warn: int, bad: int) -> str:
+    def _format_age(
+        label: str,
+        iso: str | None,
+        now: datetime,
+        warn: int,
+        bad: int,
+        pal,
+    ) -> str:
         if not iso:
             return f"{label}: —"
         try:
@@ -140,11 +174,14 @@ class LiveView(QWidget):
             text = f"{age // 60}m ago"
         else:
             text = f"{age // 3600}h ago"
-        color = "#787b86"
+        # Pull state colours from the active palette so the warning /
+        # danger hues read correctly in both light and dark themes
+        # instead of being baked to a single hex value.
+        color = pal.text_muted
         if age >= bad:
-            color = "#ef5350"
+            color = pal.danger
         elif age >= warn:
-            color = "#ff9800"
+            color = pal.warning
         return f"<span style='color:{color};'>{label}: {text}</span>"
 
     def rebind(self, stack: Stack) -> None:

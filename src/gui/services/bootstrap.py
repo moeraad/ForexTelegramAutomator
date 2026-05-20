@@ -4,6 +4,7 @@ Emits Qt signals so the splash window can render per-stack progress.
 """
 from __future__ import annotations
 
+import os
 import sys
 from enum import Enum
 from pathlib import Path
@@ -14,6 +15,38 @@ from src.gui.services import nssm_client
 from src.gui.services.elevation import run_elevated_python
 from src.gui.services.health_pinger import ping_with_retry
 from src.gui.services.stack_registry import Stack
+
+
+def _read_service_crashlog_tail(service_name: str, max_chars: int = 1200) -> str:
+    """Return the tail of the matching gui_launcher crashlog, if any.
+
+    Service names follow CT-<STACK>-(Api|Bot|Listener); the per-target
+    crashlog lives at %APPDATA%\\CopyTrades\\service-<target>-crash.log
+    (LocalSystem's %APPDATA% when NSSM runs as LocalSystem). Surfacing
+    the tail in the failure message turns opaque NSSM throttle errors
+    into actionable tracebacks.
+    """
+    suffix = service_name.rsplit("-", 1)[-1].lower()
+    if suffix not in {"api", "bot", "listener"}:
+        return ""
+    candidates: list[Path] = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        candidates.append(Path(appdata) / "CopyTrades" / f"service-{suffix}-crash.log")
+    candidates.append(
+        Path(r"C:\Windows\System32\config\systemprofile\AppData\Roaming\CopyTrades")
+        / f"service-{suffix}-crash.log"
+    )
+    for path in candidates:
+        try:
+            if not path.exists():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            tail = text[-max_chars:]
+            return f"crashlog ({path}):\n{tail}"
+        except OSError:
+            continue
+    return ""
 
 
 class Step(str, Enum):
@@ -105,7 +138,9 @@ class _StackWorker(QThread):
                 continue
             ok, msg = nssm_client.nssm_start(name)
             if not ok:
-                errors.append(f"{name}: {msg}")
+                crash_tail = _read_service_crashlog_tail(name)
+                detail = f"{msg}\n\n{crash_tail}" if crash_tail else msg
+                errors.append(f"{name}: {detail}")
         if errors:
             return False, " | ".join(errors)
         # Confirm running state.

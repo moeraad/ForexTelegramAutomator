@@ -4,7 +4,7 @@ import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from src import prefilter, signal_memory
+from src import prefilter, signal_memory, trigger_matcher
 from src.ai import AIClient
 from src.ai_logger import log_call
 from src.ai_triage import TriageClient
@@ -183,6 +183,56 @@ def process_message(
         _cleanup_message_if_orphan(conn, msg_id)
         return []
 
+    # Trigger matcher (Layers 1 + 2) runs BEFORE triage. Operator-
+    # curated triggers are the highest-confidence signal in the
+    # pipeline — they're literally the operator declaring "this exact
+    # pattern means this action." Gating them behind triage's LLM
+    # keep/ignore guess was dropping legitimate matches when the
+    # message happened to look like one of triage's 8 universal
+    # IGNORE categories (TP-hit announcements being the classic
+    # offender: triage drops them as category 5 noise, but operator
+    # may have a CLOSE_FULL trigger for exactly that pattern).
+    #
+    # The cost rationale for triage running first no longer applies:
+    # triage's job is to skip Sonnet, but the matcher path doesn't
+    # call Sonnet either, so triage couldn't save anything for
+    # matcher-bound messages. Triage now runs only on the residual
+    # set the matcher didn't catch — same Sonnet-cost-savings, no
+    # false-negative drops on operator-confirmed patterns.
+    #
+    # Errors inside the matcher must never break the live path —
+    # wrapped + logged + falls through.
+    matched_actions: list[Action] | None = None
+    try:
+        matched_actions = trigger_matcher.match(text, conn)
+    except Exception as e:  # noqa: BLE001 — must not break live path
+        log.warning("trigger_matcher raised for msg_id=%s: %s", msg_id, e)
+        log_call(ai_log_path, {
+            "msg_id": msg_id, "stage": "trigger_matcher", "error": str(e),
+        })
+    if matched_actions:
+        log_call(ai_log_path, {
+            "msg_id": msg_id,
+            "stage": "trigger_matcher",
+            "matched_actions": [a.type for a in matched_actions],
+        })
+        trades.info(
+            "trigger_match msg_id=%s types=[%s]",
+            msg_id,
+            ",".join(a.type for a in matched_actions),
+        )
+        return _persist_actions(
+            conn, msg_id, matched_actions, ai_log_path,
+            auto_execute_delay_sec, is_backfill=is_backfill,
+        )
+
+    # Triage runs only on messages the matcher didn't catch — i.e.
+    # genuinely novel content the operator hasn't curated a trigger
+    # for. Its job is to skip the expensive Sonnet call on clear
+    # noise; it never sees matcher-bound messages, so it can't
+    # false-negative a confirmed pattern. Built-in "WHEN IN DOUBT →
+    # keep" bias keeps Sonnet as the safety net for anything triage
+    # is unsure about.
     if triage is not None:
         try:
             tri = triage.classify(text, _open_positions_count(conn))
@@ -248,9 +298,43 @@ def process_message(
             signal_memory.summarize(result.response),
         )
 
+    inserted = _persist_actions(
+        conn, msg_id, list(result.response.actions), ai_log_path,
+        auto_execute_delay_sec, is_backfill=is_backfill,
+    )
+    # signal_memory clear runs only when an OPEN-shape action persisted.
+    # The matcher path doesn't emit OPEN/ATTACH_SIGNAL so this stays
+    # AI-path-specific. Re-derive open_persisted from the actions list
+    # rather than threading another return value through _persist_actions.
+    if SIGNAL_MEMORY_ENABLED:
+        if any(isinstance(a, (OpenAction, OpenInstantAction, AttachSignalAction))
+               for a in result.response.actions):
+            signal_memory.clear_on_open(conn, chat_id)
+    return inserted
+
+
+def _persist_actions(
+    conn: sqlite3.Connection,
+    msg_id: int,
+    actions: list[Action],
+    ai_log_path: Path | str,
+    auto_execute_delay_sec: int,
+    *,
+    is_backfill: bool,
+) -> list[int]:
+    """Shared persistence loop used by both the AI path and the trigger
+    matcher path. Iterates `actions`, validates each, inserts the
+    appropriate row (rejected / executed / sent / pending), and runs
+    the evaluator kick for OPEN-shape actions.
+
+    Splitting this out lets the trigger matcher short-circuit the LLM
+    call without duplicating ~150 lines of insert + validation +
+    branch logic — and guarantees both paths obey the same fingerprint
+    dedup, validator gates, CANCEL_PENDING server-side handling, ALERT
+    terminal-row policy, and backfill-management guard.
+    """
     inserted: list[int] = []
-    open_persisted = False
-    for i, action in enumerate(result.response.actions):
+    for i, action in enumerate(actions):
         payload = json.dumps(_payload_for(action))
         fp: str | None = None
         if isinstance(action, OpenAction):
@@ -274,7 +358,7 @@ def process_message(
         # [CLOSE_FULL, OPEN] (close+reopen rule for new structured signals
         # when the existing position should be flushed).
         v = validate_action(
-            action, conn, preceding_actions=result.response.actions[:i]
+            action, conn, preceding_actions=actions[:i]
         )
         if not v.ok:
             cur = conn.execute(
@@ -375,7 +459,6 @@ def process_message(
             msg_id, cur.lastrowid, _action_type(action),
         )
         if isinstance(action, (OpenAction, OpenInstantAction)):
-            open_persisted = True
             # Async signal-quality evaluation. Doesn't block this function;
             # the action is already 'pending' and will be promoted on the
             # bot's next sweep regardless of the evaluator outcome. The
@@ -390,15 +473,7 @@ def process_message(
             # gives the dashboard a score within seconds of the naked
             # open, instead of waiting for ATTACH_SIGNAL.
             _kick_evaluator_for_open(cur.lastrowid, _payload_for(action))
-        elif isinstance(action, AttachSignalAction):
-            # ATTACH_SIGNAL is a "trade became fully actionable" event —
-            # clear the chat's signal-memory buffer like we do on OPEN.
-            # No evaluator kick: the evaluator already ran on the
-            # preceding OPEN_INSTANT (same `side`, no new information).
-            open_persisted = True
 
-    if SIGNAL_MEMORY_ENABLED and open_persisted:
-        signal_memory.clear_on_open(conn, chat_id)
     if not inserted:
         # No action ended up referencing this message (pure context, all
         # actions filtered, etc.) — drop the raw row per project policy.

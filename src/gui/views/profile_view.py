@@ -35,7 +35,7 @@ from src.gui.services.playground import PlaygroundResult, format_actions, run_pl
 from src.gui.services.stack_registry import Stack
 
 
-_SHORT_FIELDS = ("name", "symbol", "language", "price_range_hint")
+_SHORT_FIELDS = ("name", "symbol", "language")
 _PROSE_FIELDS = ("description", "header", "compound_messages")
 # Triggers-derived prompt fragments — `vocabulary_table`,
 # `commentary_filter`, `worked_examples`, `triage_keep_triggers` — are
@@ -59,7 +59,6 @@ _FIELD_ORDER = (
     "description",
     "symbol",
     "language",
-    "price_range_hint",
     "shorthand_decode_example",
     "header",
     "vocabulary_table",
@@ -76,7 +75,7 @@ _REQUIRED = ("name", "symbol", "header", "vocabulary_table", "worked_examples")
 # tuple is (group_title, (field_key, ...)). Fields present in the data
 # but not listed here fall through to "_PROFILE_EDITOR_FALLBACK_GROUP".
 _PROFILE_EDITOR_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Identity",        ("name", "symbol", "language", "price_range_hint")),
+    ("Identity",        ("name", "symbol", "language")),
     ("Prompt content",  ("description", "shorthand_decode_example", "header",
                          "compound_messages", "directional_command_flow")),
     # `vocabulary_table`, `commentary_filter`, `worked_examples`, and
@@ -98,7 +97,6 @@ def _profile_field_meta(key: str):
         "description":    (FluentIcon.INFO,     "One-paragraph description of the channel character."),
         "symbol":         (FluentIcon.PIE_SINGLE, "Trading symbol (single-symbol invariant — XAUUSD only)."),
         "language":       (FluentIcon.LANGUAGE, "Source-channel language code (drives language-specific rules)."),
-        "price_range_hint": (FluentIcon.UNIT,   "Hint for the AI's price-range decoder (e.g. \"4500-5500\")."),
         "shorthand_decode_example": (FluentIcon.CODE, "Example of two-digit shorthand expansion anchored on market mid."),
         "header":         (FluentIcon.DOCUMENT, "Top of the SYSTEM prompt — sets persona and invariants."),
         "compound_messages": (FluentIcon.MESSAGE, "Compound-emit rules (e.g. MOVE_SL_BE + CLOSE_PARTIAL)."),
@@ -462,6 +460,11 @@ class ProfileView(QWidget):
         wiz = ProfileGeneratorWizard(self._stack, self)
         if wiz.exec():
             self._load_from_disk()
+            # The Triggers tab caches its own in-memory copy of the
+            # profile's triggers; without rebind it sits stale after
+            # the wizard finishes and the operator has to click Revert
+            # (or restart the GUI) to see freshly-generated rows.
+            self._triggers_tab.rebind(self._stack)
 
     def _reload_listener(self) -> None:
         if self._dirty:

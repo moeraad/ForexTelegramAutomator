@@ -35,6 +35,14 @@ class HeaderBar(QWidget):
         super().__init__()
         self._halt = halt
         self.setFixedHeight(48)
+        # objectName drives the per-widget QSS below so the header reads
+        # as its own band, visually separated from the services bar
+        # immediately beneath it. Without this, both stripes shared the
+        # default surface and ran together.
+        self.setObjectName("HeaderBar")
+        self._apply_band_style()
+        from src.gui.theme import bus as _theme_bus
+        _theme_bus.theme_changed.connect(lambda _pal: self._apply_band_style())
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 6, 12, 6)
@@ -74,6 +82,24 @@ class HeaderBar(QWidget):
         new = "light" if current_palette().name == "dark" else "dark"
         apply_theme(QApplication.instance(), new)
         persist(new)
+
+    def _apply_band_style(self) -> None:
+        """Paint the header as its own elevated band with a thin bottom
+        divider so it reads as a separate stripe from the services bar
+        immediately below. Theme-aware: re-applied on every
+        theme_changed so light/dark both look intentional.
+        """
+        from src.gui.theme import current_palette
+        pal = current_palette()
+        # `#HeaderBar` targets just this widget; `> *` keeps the inner
+        # buttons / labels transparent so they inherit the band colour
+        # instead of repainting it. The 1px bottom border is the visual
+        # seam — `border_strong` for a touch more contrast than the
+        # default border so the seam is unmistakable.
+        self.setStyleSheet(
+            f"#HeaderBar {{ background: {pal.surface}; "
+            f"border-bottom: 1px solid {pal.border_strong}; }}"
+        )
 
     def _refresh_theme_btn(self) -> None:
         from src.gui.theme import current_palette

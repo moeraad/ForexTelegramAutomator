@@ -159,7 +159,7 @@ class TelegramWizard(QWizard):
             self,
             "Setup complete",
             f"Saved settings for {self.stack.name}.\n\n"
-            f"Channel: {d.selected_chat_title} ({d.selected_chat_id})\n\n"
+            f"Channel: {d.selected_chat_title}\n\n"
             "Open Settings to start the services.",
         )
 
@@ -805,22 +805,21 @@ class _WelcomePage(_BasePage):
     def __init__(self) -> None:
         super().__init__()
         self.setTitle("Welcome to CopyTrades")
-        self.setSubTitle("This wizard will take about 10 minutes.")
+        self.setSubTitle("Walks you through every credential the bridge needs.")
         body = QLabel(
-            "<p>You'll need the following ready before continuing:</p>"
+            "<p>Have these ready before you start:</p>"
             "<ul>"
             "<li><b>An AI provider API key</b> — Anthropic (Claude) or OpenAI.</li>"
-            "<li><b>A Telegram bot</b> created via @BotFather (get the token).</li>"
-            "<li><b>Telegram API credentials</b> from https://my.telegram.org "
-            "(api_id + api_hash).</li>"
-            "<li><b>The phone number</b> of the Telegram account that will read "
+            "<li><b>A Telegram bot token</b> from @BotFather.</li>"
+            "<li><b>Telegram API credentials</b> (api_id + api_hash) from "
+            "<a href='https://my.telegram.org'>my.telegram.org</a>.</li>"
+            "<li><b>The phone number</b> of the Telegram account that reads "
             "the channel.</li>"
-            "<li><b>MT5 installed</b> with the CopyTrades EA compiled "
-            "(handled outside this wizard — last page has the checklist).</li>"
+            "<li><b>MT5</b> with the CopyTrades EA compiled — the final page "
+            "lists the steps for that.</li>"
             "</ul>"
-            "<p style='color:#787b86;'>Each step validates your input before "
-            "moving on. You can re-run this wizard later from Settings → Setup "
-            "wizard to change any value.</p>"
+            "<p style='color:#787b86;'>Each step validates before moving on. "
+            "Anything you enter can be changed later from Settings → Setup wizard.</p>"
         )
         body.setTextFormat(Qt.TextFormat.RichText)
         body.setWordWrap(True)
@@ -920,7 +919,6 @@ def _write_blank_channel_profile(name: str, symbol: str) -> None:
         "description": "",
         "symbol": symbol,
         "language": "",
-        "price_range_hint": "",
         "shorthand_decode_example": "",
         "header": "",
         "vocabulary_table": "",

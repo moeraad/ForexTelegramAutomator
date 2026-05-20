@@ -74,6 +74,23 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; \
 ; createallsubdirs ensures empty dirs (rare) survive too.
 Source: "{#MyBundleDir}\*"; DestDir: "{app}"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
+; Top-level copy of the application icon. PyInstaller embeds it
+; under {app}\_internal\copytrades.ico when bundled as a data file,
+; but the [Icons] entries below (and Windows shortcut creation in
+; general) reference {app}\copytrades.ico. Without this top-level
+; copy the desktop / Start-menu shortcut points at a non-existent
+; IconFilename, Windows shows a blank icon, and the embedded-icon
+; fallback never fires because the IconFilename is explicit.
+Source: "{#MyIconFile}"; DestDir: "{app}"; Flags: ignoreversion
+; Standalone uninstall-time helper. Kept outside the PyInstaller
+; bundle so its path is stable across PyInstaller layout changes;
+; the [UninstallRun] entry below relies on a fixed {app}-relative
+; path. uninstallneveruninstall keeps it on disk until uninstall
+; actually fires (Inno deletes installed files before running
+; [UninstallRun], so without this flag the script would be gone by
+; the time we try to invoke it).
+Source: "tools\uninstall_services.cmd"; DestDir: "{app}"; \
+    Flags: ignoreversion uninsneveruninstall
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; \
@@ -91,17 +108,38 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 [UninstallRun]
 ; Stop + delete any CopyTrades services (CT-*) before wiping the install
 ; dir, otherwise %LOCALAPPDATA%\CopyTrades survives as a directory full
-; of locked DLLs until reboot. The bundled nssm.exe does both in one
-; command. The shell loop enumerates current services; if none exist,
-; the loop body just doesn't execute — no error, no popup.
-Filename: "{cmd}"; Parameters: "/C for /f ""tokens=2"" %S in ('sc.exe query state^= all ^| findstr /b ""SERVICE_NAME: CT-""') do ""{app}\src\gui\resources\nssm.exe"" remove %S confirm"; \
-    Flags: runhidden; RunOnceId: "RemoveCopyTradesServices"
+; of locked DLLs until reboot.
+;
+; Three things the previous one-liner got wrong (and why this entry is
+; now an external script + shellexec/runas):
+;   1. PATH: the bundled nssm.exe lives under {app}\_internal\... after
+;      PyInstaller, not {app}\src\..., so the old `nssm remove` invocation
+;      pointed at a non-existent path and silently no-op'd under runhidden.
+;   2. ELEVATION: PrivilegesRequired=lowest means the uninstaller runs as
+;      the user. Modifying the SCM (stop/delete a service) requires admin,
+;      so the old `nssm remove` calls would have been denied by the SCM
+;      even if the path were correct. shellexec + Verb: runas now prompts
+;      for UAC at uninstall time.
+;   3. STOP-THEN-DELETE: deleting a RUNNING service marks it for deletion
+;      but leaves it active until the next reboot, defeating the purpose.
+;      The helper script stops first, waits, then deletes.
+;
+; The script uses sc.exe (always present in Windows) instead of the
+; bundled nssm.exe so it can't break if PyInstaller's layout shifts.
+Filename: "{app}\uninstall_services.cmd"; \
+    Flags: shellexec waituntilterminated; \
+    Verb: "runas"; \
+    StatusMsg: "Removing CopyTrades Windows services..."; \
+    RunOnceId: "RemoveCopyTradesServices"
 
 [UninstallDelete]
 ; Wipe the install dir on uninstall — PyInstaller scatters .pyc + cache
 ; files that don't get tracked by [Files].
 Type: filesandordirs; Name: "{app}\_internal"
 Type: filesandordirs; Name: "{app}\src"
+; uninstall_services.cmd is flagged uninsneveruninstall so it survives
+; until [UninstallRun] has used it; clean it up afterwards.
+Type: files; Name: "{app}\uninstall_services.cmd"
 
 [Code]
 { Refuse to install if PyInstaller bundle is missing — typical cause is

@@ -13,6 +13,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+from PySide6.QtCore import QLockFile, QStandardPaths
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -155,11 +156,62 @@ def _maybe_run_setup_wizard(stack: Stack, parent_widget) -> None:
     TelegramWizard(stack, parent_widget).exec()
 
 
+def _acquire_single_instance_lock(app: QApplication) -> QLockFile | None:
+    """Acquire a single-instance lock for the GUI process.
+
+    QLockFile sits at <temp>/copytrades-gui.lock. The default 30s
+    stale-lock-recovery is fine: if a previous GUI crashed and Windows
+    didn't get to release the file handle, the next launch (after the
+    grace window) reclaims it instead of being permanently locked out.
+
+    Returns the QLockFile pinned to `app` (so its lifetime matches the
+    process and the lock isn't GC'd mid-run) when acquired, or None
+    when another instance already holds it — caller pops a message
+    box and exits.
+
+    Service entry points (CopyTrades.exe --service api|bot|listener)
+    bypass `run()` entirely (see gui_launcher.py), so they're not
+    gated by this lock. Per-stack service uniqueness is enforced
+    by NSSM at the SCM level.
+    """
+    lock_dir = Path(QStandardPaths.writableLocation(
+        QStandardPaths.StandardLocation.TempLocation
+    ))
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / "copytrades-gui.lock"
+    lock = QLockFile(str(lock_path))
+    lock.setStaleLockTime(30_000)  # 30s — matches Qt's default; explicit
+    if lock.tryLock(0):
+        # Pin to the QApplication so the QLockFile (and thus the OS-
+        # level lock) outlives this function. Without the attachment
+        # Python would GC it, releasing the lock immediately.
+        app._copytrades_single_instance_lock = lock  # type: ignore[attr-defined]
+        return lock
+    return None
+
+
 def run(argv: list[str] | None = None) -> int:
     argv = list(argv if argv is not None else sys.argv)
     app = QApplication(argv)
     app.setApplicationName("CopyTrades")
     app.setOrganizationName("CopyTrades")
+
+    # Single-instance guard: refuse to start if another GUI is already
+    # running. Two concurrent GUIs against the same DB cause confusing
+    # conflicts (each rebuilds the same trigger cache, each runs its
+    # own crash watcher, both write to logs/ at the same time, etc.).
+    # Better to surface the duplicate clearly and let the operator
+    # find the existing window.
+    if _acquire_single_instance_lock(app) is None:
+        QMessageBox.information(
+            None,  # type: ignore[arg-type]  # app-modal, no parent yet
+            "CopyTrades already running",
+            "Another instance of CopyTrades is already open. Look for "
+            "its window in the taskbar (or system tray) — this launch "
+            "will exit so you don't have two competing GUIs against "
+            "the same database.",
+        )
+        return 0
 
     # Apply the persisted theme BEFORE any view is built so qfluentwidgets
     # and inline-styled widgets get the right palette on first paint.

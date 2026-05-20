@@ -32,22 +32,29 @@ class RenderedPrompt:
     notes: str = ""
 
 
-PROMPT_IDS = ("interpreter", "triage", "evaluator", "discovery", "discovery_batch")
+PROMPT_IDS = ("interpreter", "triage", "evaluator", "discovery")
 
 
 # --- Demo fixtures --------------------------------------------------------
+#
+# Generalised, channel-agnostic samples so the inspector is presentable
+# regardless of which stack the operator is looking at. Earlier versions
+# used Arabic phrasing and channel-specific tags from one stack, which
+# read as a debug snippet rather than a neutral example. The shapes
+# below mirror what a real OPEN signal + chat + system-state block look
+# like, just in plain English with anonymised tags.
 
-_DEMO_MESSAGE = "أمن دخولك واحجز نصف أرباحك واستمر للهدف 💪🏻"
+_DEMO_MESSAGE = "Secure your entry, take half profit, ride the rest to target."
 
 _DEMO_RECENT_CHAT = (
-    "[02:14:33] FXENGIN: GOLD🔻SELL🔻@ 📝 4808-4806 / TP1 🔽 4795 / "
-    "TP2 🔽 4780 / TP3 🔽 4760 / SL 👀 4820\n"
-    "[02:16:01] FXENGIN: إن شاء الله ❤️\n"
-    "[02:24:18] FXENGIN: TP1 تم بحمد الله 🙏🏻"
+    "[02:14:33] SignalChannel: GOLD SELL @ 4808-4806 / "
+    "TP1 4795 / TP2 4780 / TP3 4760 / SL 4820\n"
+    "[02:16:01] SignalChannel: Order placed.\n"
+    "[02:24:18] SignalChannel: TP1 hit — close half and trail."
 )
 
 _DEMO_STATE_BLOCK = """OPEN POSITIONS (XAUUSD):
-  ticket=56661916330 side=SELL entry=4807.00 sl=4820.00 tp=4760.00
+  ticket=10000001 side=SELL entry=4807.00 sl=4820.00 tp=4760.00
     vol=0.08 of orig=0.08  partials_taken=0  at_BE=false  moved=false  age=10m
 
 PENDING OPEN SIGNALS: (none)
@@ -63,7 +70,7 @@ _DEMO_OPEN_PAYLOAD = {
     "entry_high": 4808.0,
     "sl": 4820.0,
     "tps": [4795.0, 4780.0, 4760.0],
-    "comment": "FXENGIN",
+    "comment": "SignalChannel",
 }
 
 
@@ -258,17 +265,32 @@ def _render_evaluator(db_path: Path, mode: Mode) -> RenderedPrompt:
 
 
 def _render_discovery(db_path: Path, mode: Mode) -> RenderedPrompt:
-    from src.ai_discovery import _TEMPLATE
+    from src.ai_discovery import _render_discovery_prompt
     msg = _DEMO_MESSAGE
     if mode == "live":
         live_msg, _ = _latest_message_from_db(db_path)
         if live_msg:
             msg = live_msg
-    rendered = _TEMPLATE.substitute(message=msg)
+    # Try to load real channel context for inspection so the operator
+    # sees the prompt that would actually be sent. Falls back to
+    # defaults (XAUUSD, no language note, no price hint) when profile
+    # is missing.
+    context: dict = {}
+    try:
+        import json
+        profile_path = db_path.parent / "profile.json"
+        if profile_path.exists():
+            data = json.loads(profile_path.read_text(encoding="utf-8"))
+            context = {
+                "symbol": data.get("symbol", ""),
+                "language_note": data.get("language_note", ""),
+            }
+    except Exception:
+        context = {}
+    rendered = _render_discovery_prompt(msg, context)
     expected = (
-        'JSON: {"action_type":"<one of 14 buckets>", '
-        '"phrase":"<verbatim trigger>", "reasoning":"<short>", '
-        '"confidence":0.0-1.0}'
+        'JSON: {"action_types":["<bucket>"], "pending":true|false|null, '
+        '"phrase":"<verbatim>", "reasoning":"<short>", "confidence":0.0-1.0}'
     )
     return RenderedPrompt(
         title="Discovery classifier (single-message — wizard / bulk-import)",
@@ -276,31 +298,9 @@ def _render_discovery(db_path: Path, mode: Mode) -> RenderedPrompt:
         user_content=rendered,
         expected_output=expected,
         notes="Used by the profile generator wizard (after the triage gate) "
-              "and the Triggers tab's Bulk import. Independent of the "
-              "channel profile.",
-    )
-
-
-def _render_discovery_batch(db_path: Path, mode: Mode) -> RenderedPrompt:
-    from src.ai_discovery import _BATCH_TEMPLATE
-    sample_msgs = [_DEMO_MESSAGE, "خرجنا 🤝🏻", "GOLD BUY @ 4790-4792 SL 4780 TP1 4800"]
-    numbered = "\n\n".join(f"{i + 1}. {m}" for i, m in enumerate(sample_msgs))
-    rendered = _BATCH_TEMPLATE.substitute(
-        count=len(sample_msgs),
-        messages=numbered,
-    )
-    expected = (
-        f"JSON array of exactly {len(sample_msgs)} objects with the same "
-        "shape as the single-message classifier."
-    )
-    return RenderedPrompt(
-        title="Discovery classifier (batched — wizard's parallel path)",
-        system_prompt="Reply with strict JSON only. No code fences.",
-        user_content=rendered,
-        expected_output=expected,
-        notes="Same prompt as the single-message classifier but batched "
-              "for cost. Batch size and concurrency configurable in "
-              "Settings → Tuning → CLASSIFIER.",
+              "and the Triggers tab's Bulk import. Substitutes symbol / "
+              "language_note from profile.json when available; falls "
+              "back to XAUUSD/empty otherwise.",
     )
 
 
@@ -312,7 +312,6 @@ _RENDERERS = {
     "triage": _render_triage,
     "evaluator": _render_evaluator,
     "discovery": _render_discovery,
-    "discovery_batch": _render_discovery_batch,
 }
 
 

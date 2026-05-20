@@ -35,6 +35,7 @@ hiddenimports = [
     "src.gui.helpers._helper_log",
     "src.gui.helpers.bootstrap_nssm_install",
     "src.gui.helpers.bootstrap_services_install",
+    "src.gui.helpers.bootstrap_services_uninstall",
     "src.ai_discovery",
     "src.profile_render",
     "src.secret_box",

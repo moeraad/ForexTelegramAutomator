@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import time
 
 
 _CREATE_NO_WINDOW = 0x08000000
@@ -63,10 +64,44 @@ def service_running(name: str) -> bool:
     return "RUNNING" in proc.stdout
 
 
+def _is_service_paused_throttle(output: str) -> bool:
+    """NSSM emits "Unexpected status SERVICE_PAUSED in response to START
+    control." when the target service is sitting in its post-crash
+    restart-throttle window. The state is transient: NSSM will auto-
+    resume after AppRestartDelay. Callers should wait and retry rather
+    than treat this as a hard failure.
+    """
+    lo = output.lower()
+    return "service_paused" in lo and "start control" in lo
+
+
 def nssm_start(name: str) -> tuple[bool, str]:
-    proc = _run(["nssm", "start", name], timeout=30.0)
-    ok = proc.returncode == 0 or "already" in (proc.stdout + proc.stderr).lower()
-    return ok, (proc.stdout + proc.stderr).strip()
+    """Start an NSSM service, transparently riding out SERVICE_PAUSED throttle.
+
+    Some operator flows (e.g. clicking Start before the relevant config
+    is in place) can leave the service in NSSM's restart-throttle window.
+    A naive `nssm start` returns the throttle artifact instead of doing
+    anything useful. We detect that, send `nssm continue` to clear the
+    paused state, and retry. Total retry budget caps at ~30s so the GUI
+    splash never hangs longer than the AppRestartDelay (5s) plus margin.
+    """
+    deadline = time.monotonic() + 30.0
+    last_out = ""
+    while True:
+        proc = _run(["nssm", "start", name], timeout=30.0)
+        out = (proc.stdout + proc.stderr).strip()
+        last_out = out
+        if proc.returncode == 0 or "already" in out.lower():
+            return True, out
+        if _is_service_paused_throttle(out) and time.monotonic() < deadline:
+            # Best-effort resume; ignore output. NSSM accepts `continue`
+            # to take a service out of SERVICE_PAUSED.
+            _run(["nssm", "continue", name], timeout=10.0)
+            time.sleep(2.0)
+            continue
+        return False, out
+    # unreachable; keeps type-checkers happy
+    return False, last_out
 
 
 def nssm_stop(name: str) -> tuple[bool, str]:

@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 from src.db import connect, init_schema
 from src.api import build_app
@@ -1123,10 +1123,16 @@ def test_last_closed_legacy_open_lineage_unchanged(tmp_path):
     assert sig["tps"] == [4710, 4720, 4735]
 
 
-def test_last_closed_no_attach_signal_falls_back_to_sparse_payload(tmp_path):
-    """Defensive: naked position whose ATTACH_SIGNAL never fired (orphan
-    from before the bugfix) — the endpoint shouldn't 500. It returns the
-    sparse OPEN_INSTANT payload so the EA can decide cleanly."""
+def test_last_closed_skips_unreplayable_open_instant_orphan(tmp_path):
+    """OPEN_INSTANT-origin close whose ATTACH_SIGNAL never fired is
+    unreplayable: surfacing it would cause the EA to fail with
+    last_closed_unparseable. The endpoint must skip such rows.
+
+    When NO replayable trade exists in the window, return 404 so the
+    EA emits `rejected: no_recent_close` and the AI prompt's
+    `LAST CLOSED POSITION` block shows the "none" marker — which is
+    what the prompt's rules treat as "emit ALERT, not REOPEN_LAST."
+    """
     conn = _setup(tmp_path)
     now_iso = datetime.now(timezone.utc).isoformat()
     cur = conn.execute(
@@ -1143,11 +1149,49 @@ def test_last_closed_no_attach_signal_falls_back_to_sparse_payload(tmp_path):
     )
     client = TestClient(build_app(conn))
     r = client.get("/positions/last_closed?symbol=XAUUSD&within_hours=24")
+    assert r.status_code == 404
+
+
+def test_last_closed_walks_back_past_unreplayable_to_earlier_replayable(tmp_path):
+    """When the most recent close is an unreplayable OPEN_INSTANT
+    orphan but an earlier close in the same window has a full signal,
+    the endpoint surfaces the earlier one. This is the operator-facing
+    fix for the `last_closed_unparseable` REOPEN_LAST failures."""
+    conn = _setup(tmp_path)
+    # Earlier: plain OPEN with full signal.
+    earlier = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    earlier_payload = json.dumps({
+        "type": "OPEN", "symbol": "XAUUSD", "side": "BUY",
+        "entry_low": 4699, "entry_high": 4701,
+        "sl": 4690, "tps": [4710, 4720, 4735],
+    })
+    _open_position(conn, 88010, payload=earlier_payload)
+    conn.execute(
+        "UPDATE positions SET status='closed', closed_at=?, opened_at=?, "
+        "close_reason='mt5_sl' WHERE mt5_ticket=88010",
+        (earlier, earlier),
+    )
+    # Later: OPEN_INSTANT orphan, no ATTACH_SIGNAL.
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status, created_at) "
+        "VALUES('OPEN_INSTANT', ?, 'executed', ?)",
+        (json.dumps({"symbol": "XAUUSD", "side": "BUY", "comment": "x"}), now_iso),
+    )
+    aid = cur.lastrowid
+    conn.execute(
+        "INSERT INTO positions(action_id, mt5_ticket, symbol, side, volume, "
+        "entry_price, status, opened_at, closed_at, close_reason) "
+        "VALUES(?, 88011, 'XAUUSD', 'BUY', 1.0, 4700, 'closed', ?, ?, 'mt5_not_found')",
+        (aid, now_iso, now_iso),
+    )
+    client = TestClient(build_app(conn))
+    r = client.get("/positions/last_closed?symbol=XAUUSD&within_hours=24")
     assert r.status_code == 200
-    sig = r.json()["signal"]
-    assert sig is not None
-    assert "entry_low" not in sig
-    assert sig["side"] == "BUY"
+    body = r.json()
+    assert body["ticket"] == 88010
+    assert body["signal"]["sl"] == 4690
+    assert body["signal"]["tps"] == [4710, 4720, 4735]
 
 
 # ---- Phase 5: GET /actions/{id} + ResultBody.status=watching ----------

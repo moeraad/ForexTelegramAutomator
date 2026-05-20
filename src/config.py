@@ -80,23 +80,52 @@ _TYPE_DEFAULT = {"str": "", "int": 0, "float": 0.0, "bool": False}
 _cache: dict[str, dict[str, object]] = {}
 
 
+def _schema_default(key: str, kind: str):
+    """Schema-aware default: prefer the value in db_settings.DEFAULT_SETTINGS,
+    fall back to the bare type zero.
+
+    Without this, a setting whose DB row hasn't been seeded yet would
+    resolve to the type zero (0.0 / 0 / "" / False) rather than the
+    schema's intended default. That was the source of the
+    ZeroDivisionError in fingerprint matching: `fingerprint_band_price`
+    has a schema default of "5.0", but tests using an ephemeral DB
+    without seeded settings would land on 0.0 from `_TYPE_DEFAULT`,
+    and the orchestrator's `_bucket(price / band)` would explode.
+    """
+    from src.db_settings import DEFAULT_SETTINGS
+    raw = DEFAULT_SETTINGS.get(key)
+    if raw is None or raw == "":
+        return _TYPE_DEFAULT[kind]
+    try:
+        if kind == "int":
+            return int(raw)
+        if kind == "float":
+            return float(raw)
+        if kind == "bool":
+            return raw not in ("0", "false", "False", "")
+        return raw
+    except (ValueError, TypeError):
+        return _TYPE_DEFAULT[kind]
+
+
 def _read(name: str) -> object:
     key, kind = _LAZY[name]
     bucket = _cache.setdefault(DB_PATH, {})
     if name in bucket:
         return bucket[name]
     path = Path(DB_PATH)
+    fallback = _schema_default(key, kind)
     if not path.exists():
-        return _TYPE_DEFAULT[kind]
+        return fallback
     from src import db_settings
     if kind == "str":
-        value = db_settings.get_str(path, key, "")
+        value = db_settings.get_str(path, key, fallback)
     elif kind == "int":
-        value = db_settings.get_int(path, key, 0)
+        value = db_settings.get_int(path, key, fallback)
     elif kind == "float":
-        value = db_settings.get_float(path, key, 0.0)
+        value = db_settings.get_float(path, key, fallback)
     else:
-        value = db_settings.get_bool(path, key, False)
+        value = db_settings.get_bool(path, key, fallback)
     bucket[name] = value
     return value
 
