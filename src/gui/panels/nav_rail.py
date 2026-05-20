@@ -23,15 +23,16 @@ from qfluentwidgets import (
 
 # (route_key, FluentIcon, label)
 _ITEMS = [
-    ("live",     FluentIcon.SPEED_HIGH,        "Live"),
-    ("journal",  FluentIcon.HISTORY,           "Journal"),
-    ("rejected", FluentIcon.CANCEL,            "Rejected"),
-    ("cost",     FluentIcon.PIE_SINGLE,        "Cost"),
-    ("risk",     FluentIcon.CERTIFICATE,       "Risk"),
-    ("replay",   FluentIcon.UPDATE,            "Replay"),
-    ("profile",  FluentIcon.PEOPLE,            "Profile"),
-    ("prompts",  FluentIcon.CHAT,              "Prompts"),
-    ("settings", FluentIcon.SETTING,           "Settings"),
+    ("live",       FluentIcon.SPEED_HIGH,        "Live"),
+    ("journal",    FluentIcon.HISTORY,           "Journal"),
+    ("evaluation", FluentIcon.SEARCH,            "Evaluation"),
+    ("rejected",   FluentIcon.CANCEL,            "Rejected"),
+    ("cost",       FluentIcon.PIE_SINGLE,        "Cost"),
+    ("risk",       FluentIcon.CERTIFICATE,       "Risk"),
+    ("replay",     FluentIcon.UPDATE,            "Replay"),
+    ("profile",    FluentIcon.PEOPLE,            "Profile"),
+    ("prompts",    FluentIcon.CHAT,              "Prompts"),
+    ("settings",   FluentIcon.SETTING,           "Settings"),
 ]
 
 

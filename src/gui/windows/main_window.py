@@ -24,6 +24,7 @@ from src.gui.services.stack_registry import Stack, discover_stacks
 from src.gui.services.stack_state import load_state, save_state
 from src.gui.services.tray import TrayController
 from src.gui.views.cost_view import CostView
+from src.gui.views.evaluation_view import EvaluationView
 from src.gui.views.journal_view import JournalView
 from src.gui.views.live_view import LiveView
 from src.gui.views.profile_view import ProfileView
@@ -34,7 +35,10 @@ from src.gui.views.risk_view import RiskView
 from src.gui.views.settings_view import SettingsView
 
 
-_VIEW_KEYS = ("live", "journal", "rejected", "cost", "risk", "replay", "profile", "prompts", "settings")
+_VIEW_KEYS = (
+    "live", "journal", "evaluation", "rejected", "cost", "risk",
+    "replay", "profile", "prompts", "settings",
+)
 
 
 class MainWindow(QMainWindow):
@@ -215,6 +219,7 @@ class MainWindow(QMainWindow):
         self._views: dict[str, QWidget] = {
             "live": LiveView(self._stack),
             "journal": JournalView(self._stack),
+            "evaluation": EvaluationView(self._stack),
             "rejected": rejected_view,
             "cost": CostView(self._stack),
             "risk": RiskView(self._stack, self._risk_monitor),

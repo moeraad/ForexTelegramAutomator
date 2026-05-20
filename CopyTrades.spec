@@ -71,6 +71,8 @@ hiddenimports += _collect("openai")
 hiddenimports += _collect("telegram")  # python-telegram-bot
 hiddenimports += _collect("fastapi")
 hiddenimports += _collect("uvicorn")
+# pyqtgraph backs the Evaluation tab's calibration chart.
+hiddenimports += _collect("pyqtgraph")
 
 from PyInstaller.utils.hooks import collect_submodules
 hiddenimports += collect_submodules("telethon")

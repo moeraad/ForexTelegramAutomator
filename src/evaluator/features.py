@@ -120,6 +120,29 @@ def gather_inputs(
     if f"market_{sym}_at" in price_rows:
         out["market_at"] = price_rows[f"market_{sym}_at"]
 
+    # 4. News window — derived state, recomputed every call. The
+    # GDELT-based feeds publish a 4-hour-tone-aggregated geopolitical
+    # index, but the catalyst sub-scorer and regime classifier need the
+    # *imminent-event* view (next high-impact release in N minutes).
+    # That view changes by the minute as events approach, so caching it
+    # in feature_store would always be stale. We call into news_calendar
+    # directly here. Import is local to avoid pulling the calendar
+    # module's parsing into the evaluator's import graph at startup.
+    try:
+        from src.news_calendar import time_since_last_event, time_to_next_event
+        nxt = time_to_next_event()
+        last = time_since_last_event()
+        if nxt is not None or last is not None:
+            out["news_window"] = {
+                "next_event": nxt,
+                "last_event": last,
+            }
+    except Exception:
+        # Missing calendar file or parsing failure -> no news_window in
+        # the dict. Catalyst sub-scorer treats absence as "clear", same
+        # as before this fix landed.
+        pass
+
     return out
 
 

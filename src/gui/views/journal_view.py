@@ -1,21 +1,18 @@
-"""JOURNAL view: closed-trade history, summary stats, equity curve, CSV export."""
+"""JOURNAL view: closed-trade history, summary stats, equity curve, CSV export.
+
+Redesigned 2026-05-20 to use a vertical-scroll layout (so each section
+gets the room it needs instead of fighting splitters) and pyqtgraph for
+the charts (consistent with the Evaluation tab).
+"""
 from __future__ import annotations
 
 import csv
+from datetime import datetime, timezone
 from pathlib import Path
 
-from PySide6.QtCharts import (
-    QBarCategoryAxis,
-    QBarSeries,
-    QBarSet,
-    QChart,
-    QChartView,
-    QDateTimeAxis,
-    QLineSeries,
-    QValueAxis,
-)
-from PySide6.QtCore import QDateTime, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+import pyqtgraph as pg
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -26,7 +23,10 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTableView,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -42,6 +42,7 @@ from src.gui.services.journal_data import (
     summary,
 )
 from src.gui.services.stack_registry import Stack
+from src.gui.views._pg_hover import HoverPoint, HoverTracker
 
 
 _RANGES: list[tuple[str, int | None]] = [
@@ -52,6 +53,15 @@ _RANGES: list[tuple[str, int | None]] = [
     ("Last 90 days", 90),
     ("All time", None),
 ]
+
+
+# Per-section minimum heights. The outer QScrollArea handles overflow,
+# so each section can claim the space it actually needs to be readable
+# rather than fighting the others through splitters.
+_HEIGHT_EQUITY_CHART = 320
+_HEIGHT_DAILY_CHART = 260
+_HEIGHT_TRADES_TABLE = 360
+_HEIGHT_REASON_TABLE = 220
 
 
 class JournalView(QWidget):
@@ -72,62 +82,111 @@ class JournalView(QWidget):
         self.refresh()
 
     def _on_theme(self, _pal=None) -> None:
-        from src.gui.views._chart_theme import apply_dark_theme
-        apply_dark_theme(self._chart, self._chart_view)
-        apply_dark_theme(self._daily_chart, self._daily_view)
-        self._restyle_reason_table()
+        """pyqtgraph uses its own config-options for bg/fg colors. We
+        set those once at view construction; on theme change we apply
+        them again and re-render the charts so the new colors take
+        effect."""
+        self._apply_chart_theme()
         self.refresh()
 
-    def _restyle_reason_table(self) -> None:
-        from src.gui.theme import current_palette
-        p = current_palette()
-        self._reason_table.setStyleSheet(
-            f"QLabel {{ background: {p.surface}; color: {p.text};"
-            f" border: 1px solid {p.border}; padding: 6px;"
-            f" font-family: Consolas, monospace; }}"
-        )
+    # ---- pyqtgraph theming ---------------------------------------------
 
-    def refresh(self) -> None:
-        trades = closed_trades(self._stack.db_path, days=self._days)
-        self._model.set_rows(trades)
-        self._summary = summary(trades)
-        self._update_stats()
-        self._update_chart(equity_curve(trades))
-        self._update_daily_chart(pnl_by_day(trades))
-        self._update_reason_table(pnl_by_close_reason(trades))
+    def _apply_chart_theme(self) -> None:
+        """Push the current palette into pyqtgraph's module-level
+        defaults. Affects all PlotWidgets going forward, including
+        ours after they're cleared and repopulated on refresh.
+
+        Falls back to dark defaults when current_palette() can't be
+        imported (tests / early init).
+        """
+        try:
+            from src.gui.theme import current_palette
+            p = current_palette()
+            bg, fg = p.bg, p.text
+        except Exception:
+            bg, fg = "#0f1115", "#d1d4dc"
+        pg.setConfigOption("background", bg)
+        pg.setConfigOption("foreground", fg)
+        # Re-apply to existing plots so the colors swap immediately,
+        # not just on next clear.
+        for plot in (
+            getattr(self, "_equity_plot", None),
+            getattr(self, "_daily_plot", None),
+        ):
+            if plot is not None:
+                plot.setBackground(bg)
+
+    # ---- Build ---------------------------------------------------------
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(10)
 
+        # Toolbar — title + range + refresh + export. Lives OUTSIDE the
+        # scroll area so it's always visible regardless of how far the
+        # operator has scrolled down the body.
+        outer.addLayout(self._build_toolbar())
+
+        # Scrollable body. Each section gets a stable minimum height
+        # via _HEIGHT_* so charts don't compress into illegibility on
+        # short windows; the scrollbar absorbs the rest.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(14)
+
+        body_layout.addLayout(self._build_stats_row())
+        body_layout.addWidget(self._build_equity_section())
+        body_layout.addWidget(self._build_daily_section())
+        body_layout.addWidget(self._build_trades_section())
+        body_layout.addWidget(self._build_reason_section())
+        body_layout.addStretch()
+
+        scroll.setWidget(body)
+        outer.addWidget(scroll, 1)
+
+        # pyqtgraph theming uses module-level defaults — apply after the
+        # plots exist so the bg color propagates immediately.
+        self._apply_chart_theme()
+
+    def _build_toolbar(self) -> QHBoxLayout:
         top = QHBoxLayout()
-        title = QLabel("<span style='font-size:16px; font-weight:700;'>JOURNAL</span>")
+        title = QLabel(
+            "<span style='font-size:16px; font-weight:700;'>JOURNAL</span>"
+        )
         title.setTextFormat(Qt.TextFormat.RichText)
-        from src.gui.panels._a11y import mark_heading
-        mark_heading(title, "Journal")
+        try:
+            from src.gui.panels._a11y import mark_heading
+            mark_heading(title, "Journal")
+        except Exception:
+            pass
         top.addWidget(title)
         top.addSpacing(16)
         top.addWidget(QLabel("Range:"))
         self._range_combo = QComboBox()
         for label, days in _RANGES:
             self._range_combo.addItem(label, days)
-        self._range_combo.setCurrentIndex(3)  # default: Last 30 days
+        self._range_combo.setCurrentIndex(3)  # Last 30 days default.
         self._range_combo.currentIndexChanged.connect(self._on_range_changed)
         top.addWidget(self._range_combo)
         top.addStretch()
-
         self._refresh_btn = QPushButton("Refresh")
         self._refresh_btn.clicked.connect(self.refresh)
         top.addWidget(self._refresh_btn)
         self._export_btn = QPushButton("Export CSV")
         self._export_btn.clicked.connect(self._export_csv)
         top.addWidget(self._export_btn)
-        layout.addLayout(top)
+        return top
 
+    def _build_stats_row(self) -> QHBoxLayout:
         from src.gui.panels._stat_card import StatCard
-        self._stats_row = QHBoxLayout()
-        self._stats_row.setSpacing(8)
+        row = QHBoxLayout()
+        row.setSpacing(8)
         for key, label, accent in (
             ("total_pnl", "Total PnL", ""),
             ("trades", "Trades", ""),
@@ -138,90 +197,162 @@ class JournalView(QWidget):
         ):
             card = StatCard(label=label, value="—", accent=accent)
             self._stat_boxes[key] = card
-            self._stats_row.addWidget(card)
-        self._stats_row.addStretch()
-        layout.addLayout(self._stats_row)
+            row.addWidget(card)
+        row.addStretch()
+        return row
 
+    def _section_header(self, text: str) -> QLabel:
+        """Common style for the section captions above each chart/table."""
+        lbl = QLabel(text)
+        lbl.setStyleSheet(
+            "font-size: 12px; font-weight: 700; letter-spacing: 1.5px; "
+            "color: #787b86; padding-top: 4px; padding-bottom: 4px;"
+        )
+        return lbl
+
+    def _build_equity_section(self) -> QWidget:
+        """Equity curve — cumulative PnL over closed-at time.
+
+        pyqtgraph DateAxisItem renders Unix-time floats as nice
+        timestamps. Single LineGraph in the accent color; pen width 2
+        for readability against the dark bg.
+        """
+        wrap = QWidget()
+        layout = QVBoxLayout(wrap)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self._equity_header = self._section_header(
+            "EQUITY CURVE  ·  cumulative PnL over time"
+        )
+        layout.addWidget(self._equity_header)
+        # DateAxisItem on the bottom so x-axis ticks render as dates.
+        # autoSIPrefix=False on the y-axis so we get raw dollar values
+        # (default '12.5k' is unhelpful at the scale we trade).
+        self._equity_plot = pg.PlotWidget(
+            axisItems={"bottom": pg.DateAxisItem(orientation="bottom")}
+        )
+        self._equity_plot.setMinimumHeight(_HEIGHT_EQUITY_CHART)
+        self._equity_plot.showGrid(x=False, y=True, alpha=0.2)
+        self._equity_plot.setLabel("left", "Cumulative PnL ($)")
+        self._equity_plot.setMenuEnabled(False)
+        self._equity_plot.getAxis("left").enableAutoSIPrefix(False)
+        self._equity_plot.getAxis("bottom").enableAutoSIPrefix(False)
+        # Hover tooltip: timestamp + cumulative PnL at the closest
+        # trade. The format callback receives the HoverPoint with
+        # label set to the trade's closed_at string.
+        self._equity_hover = HoverTracker(
+            self._equity_plot,
+            format_fn=lambda p: (
+                f"<b>{p.label}</b><br>"
+                f"cumulative PnL: <b style='color:"
+                f"{'#26a69a' if p.y >= 0 else '#ef5350'};'>${p.y:+.2f}</b>"
+            ),
+        )
+        layout.addWidget(self._equity_plot)
+        return wrap
+
+    def _build_daily_section(self) -> QWidget:
+        """PnL per day — diverging bar chart (green wins, red losses).
+
+        Two BarGraphItems on the same plot, offset by zero so they
+        stack visually without overlap (each only carries values of one
+        sign). x-axis uses categorical labels via setTicks.
+        """
+        wrap = QWidget()
+        layout = QVBoxLayout(wrap)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self._daily_header = self._section_header(
+            "PNL PER DAY  ·  net by trading day"
+        )
+        layout.addWidget(self._daily_header)
+        self._daily_plot = pg.PlotWidget()
+        self._daily_plot.setMinimumHeight(_HEIGHT_DAILY_CHART)
+        self._daily_plot.showGrid(x=False, y=True, alpha=0.2)
+        self._daily_plot.setLabel("left", "PnL ($)")
+        self._daily_plot.setMenuEnabled(False)
+        self._daily_plot.getAxis("left").enableAutoSIPrefix(False)
+        # Hover tooltip: day label + net PnL for that day. Bar charts
+        # use x = bar index (0..N-1); the hover snaps to whichever bar
+        # x is closest.
+        self._daily_hover = HoverTracker(
+            self._daily_plot,
+            format_fn=lambda p: (
+                f"<b>{p.label}</b><br>"
+                f"net PnL: <b style='color:"
+                f"{'#26a69a' if p.y >= 0 else '#ef5350'};'>${p.y:+.2f}</b>"
+            ),
+        )
+        layout.addWidget(self._daily_plot)
+        return wrap
+
+    def _build_trades_section(self) -> QWidget:
+        wrap = QWidget()
+        layout = QVBoxLayout(wrap)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self._trades_header = self._section_header("CLOSED TRADES")
+        layout.addWidget(self._trades_header)
         self._table = QTableView()
         self._table.setModel(self._model)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
-        from src.gui.panels._table_utils import apply_full_width_headers
-        apply_full_width_headers(
-            self._table,
-            content_columns=tuple(range(self._model.columnCount() - 1)),
-        )
+        try:
+            from src.gui.panels._table_utils import apply_full_width_headers
+            apply_full_width_headers(
+                self._table,
+                content_columns=tuple(range(self._model.columnCount() - 1)),
+            )
+        except Exception:
+            pass
         self._table.setAlternatingRowColors(True)
         self._table.setShowGrid(False)
+        self._table.setMinimumHeight(_HEIGHT_TRADES_TABLE)
+        layout.addWidget(self._table)
+        return wrap
 
-        # Layout (REVIEW.md follow-up):
-        #   Top row = closed-trades table + "By close reason" side-by-side.
-        #   Bottom row = equity curve + PnL-per-day charts.
-        # This frees up vertical space for the charts (they used to share
-        # the bottom strip with the reason panel) and keeps the reason
-        # breakdown adjacent to the data it summarises.
-        from PySide6.QtWidgets import QSplitter
+    def _build_reason_section(self) -> QWidget:
+        """Close-reason breakdown as a real QTableWidget — was a
+        word-wrapped HTML <table> inside a QLabel previously, which
+        rendered cramped and couldn't be sorted."""
+        wrap = QWidget()
+        layout = QVBoxLayout(wrap)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self._reason_header = self._section_header(
+            "BY CLOSE REASON  ·  count and PnL per reason"
+        )
+        layout.addWidget(self._reason_header)
+        self._reason_table = QTableWidget(0, 3)
+        self._reason_table.setHorizontalHeaderLabels(("Reason", "Count", "PnL"))
+        self._reason_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._reason_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._reason_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._reason_table.verticalHeader().setVisible(False)
+        self._reason_table.setAlternatingRowColors(True)
+        self._reason_table.setMinimumHeight(_HEIGHT_REASON_TABLE)
+        hdr = self._reason_table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self._reason_table)
+        return wrap
 
-        top_row = QSplitter(Qt.Orientation.Horizontal)
-        top_row.setChildrenCollapsible(False)
-        top_row.addWidget(self._table)
+    # ---- Refresh -------------------------------------------------------
 
-        reason_panel = QWidget()
-        reason_panel_layout = QVBoxLayout(reason_panel)
-        reason_panel_layout.setContentsMargins(0, 0, 0, 0)
-        reason_panel_layout.setSpacing(6)
-        self._reason_label = QLabel("<b>By close reason</b>")
-        self._reason_label.setTextFormat(Qt.TextFormat.RichText)
-        reason_panel_layout.addWidget(self._reason_label)
-        self._reason_table = QLabel("(no closed trades in range)")
-        self._restyle_reason_table()
-        self._reason_table.setTextFormat(Qt.TextFormat.RichText)
-        self._reason_table.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self._reason_table.setWordWrap(True)
-        reason_panel_layout.addWidget(self._reason_table, 1)
-        top_row.addWidget(reason_panel)
-        top_row.setStretchFactor(0, 3)
-        top_row.setStretchFactor(1, 1)
-        top_row.setSizes([900, 320])
-
-        body_split = QSplitter(Qt.Orientation.Vertical)
-        body_split.addWidget(top_row)
-
-        charts_container = QWidget()
-        charts_row = QHBoxLayout(charts_container)
-        charts_row.setContentsMargins(0, 0, 0, 0)
-        charts_row.setSpacing(8)
-
-        from src.gui.views._chart_theme import apply_dark_theme
-        self._chart = QChart()
-        self._chart.setTitle("Equity curve")
-        self._chart.legend().hide()
-        self._chart_view = QChartView(self._chart)
-        self._chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self._chart_view.setMinimumHeight(220)
-        apply_dark_theme(self._chart, self._chart_view)
-        charts_row.addWidget(self._chart_view, 2)
-
-        self._daily_chart = QChart()
-        self._daily_chart.setTitle("PnL per day")
-        self._daily_chart.legend().hide()
-        self._daily_view = QChartView(self._daily_chart)
-        self._daily_view.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self._daily_view.setMinimumHeight(220)
-        apply_dark_theme(self._daily_chart, self._daily_view)
-        charts_row.addWidget(self._daily_view, 1)
-
-        body_split.addWidget(charts_container)
-        body_split.setStretchFactor(0, 2)
-        body_split.setStretchFactor(1, 3)
-        body_split.setCollapsible(1, False)
-        layout.addWidget(body_split, 1)
+    def refresh(self) -> None:
+        trades = closed_trades(self._stack.db_path, days=self._days)
+        self._model.set_rows(trades)
+        self._summary = summary(trades)
+        self._update_stats()
+        self._update_equity(equity_curve(trades))
+        self._update_daily(pnl_by_day(trades))
+        self._update_reason_table(pnl_by_close_reason(trades))
 
     def _on_range_changed(self, _idx: int) -> None:
-        days = self._range_combo.currentData()
-        self._days = days
+        self._days = self._range_combo.currentData()
         self.refresh()
 
     def _update_stats(self) -> None:
@@ -242,114 +373,119 @@ class JournalView(QWidget):
             f"${s.worst:+.2f}" if s.total_trades else "—", "danger",
         )
 
-    def _update_chart(self, points: list[EquityPoint]) -> None:
-        self._chart.removeAllSeries()
-        for ax in list(self._chart.axes()):
-            self._chart.removeAxis(ax)
+    # ---- Charts --------------------------------------------------------
 
+    def _update_equity(self, points: list[EquityPoint]) -> None:
+        # PlotWidget.clear() removes the crosshair items too — reattach
+        # via the tracker's public method so subsequent mouse events
+        # still find live widgets to update.
+        self._equity_plot.clear()
+        self._equity_hover.reattach()
         if not points:
-            self._chart.setTitle("Equity curve  ·  no closed trades in range")
+            self._equity_header.setText(
+                "EQUITY CURVE  ·  no closed trades in range"
+            )
+            self._equity_hover.set_points([])
             return
-
-        series = QLineSeries()
-        pen = QPen(QColor("#2962ff"))
-        pen.setWidth(2)
-        series.setPen(pen)
-        for p in points:
-            series.append(QDateTime(p.closed_at).toMSecsSinceEpoch(), p.cumulative_pnl)
-        self._chart.addSeries(series)
-
-        axis_x = QDateTimeAxis()
-        axis_x.setFormat("MM-dd HH:mm")
-        axis_x.setTitleText("closed at")
-        axis_x.setLabelsAngle(-30)
-        self._chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
-        series.attachAxis(axis_x)
-
-        axis_y = QValueAxis()
-        axis_y.setTitleText("cumulative PnL ($)")
-        ymin = min(p.cumulative_pnl for p in points)
-        ymax = max(p.cumulative_pnl for p in points)
+        # x in Unix seconds (UTC) for DateAxisItem; y in dollars.
+        xs = [p.closed_at.replace(tzinfo=timezone.utc).timestamp()
+              if p.closed_at.tzinfo is None else p.closed_at.timestamp()
+              for p in points]
+        ys = [p.cumulative_pnl for p in points]
+        accent = QColor("#5b8def")
+        self._equity_plot.plot(
+            xs, ys, pen=pg.mkPen(accent, width=2),
+            symbol="o", symbolSize=4,
+            symbolBrush=accent, symbolPen=accent,
+        )
+        # Y range with 10% padding so the line doesn't kiss the borders.
+        ymin, ymax = min(ys), max(ys)
         pad = max(1.0, (ymax - ymin) * 0.1)
-        axis_y.setRange(ymin - pad, ymax + pad)
-        self._chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
-        series.attachAxis(axis_y)
-        from src.gui.views._chart_theme import theme_axis
-        theme_axis(axis_x)
-        theme_axis(axis_y)
-
-        self._chart.setTitle(
-            f"Equity curve  ·  {len(points)} trades  ·  "
-            f"end ${points[-1].cumulative_pnl:+.2f}"
+        self._equity_plot.setYRange(ymin - pad, ymax + pad, padding=0)
+        self._equity_hover.set_points([
+            HoverPoint(
+                x=xs[i],
+                y=ys[i],
+                label=points[i].closed_at.strftime("%Y-%m-%d %H:%M"),
+            )
+            for i in range(len(points))
+        ])
+        self._equity_header.setText(
+            f"EQUITY CURVE  ·  {len(points)} trades  ·  end ${ys[-1]:+.2f}"
         )
 
-    def _update_daily_chart(self, days) -> None:
-        self._daily_chart.removeAllSeries()
-        for ax in list(self._daily_chart.axes()):
-            self._daily_chart.removeAxis(ax)
+    def _update_daily(self, days) -> None:
+        """Diverging bar chart. Wins green, losses red, color-coded
+        per bar. x ticks are MM-DD strings (categorical)."""
+        self._daily_plot.clear()
+        self._daily_hover.reattach()
         if not days:
-            self._daily_chart.setTitle("PnL per day  ·  no data")
+            self._daily_header.setText("PNL PER DAY  ·  no data")
+            self._daily_hover.set_points([])
             return
-        win_set = QBarSet("Wins")
-        loss_set = QBarSet("Losses")
-        win_set.setColor(QColor("#26a69a"))
-        loss_set.setColor(QColor("#ef5350"))
-        labels: list[str] = []
-        for d in days:
-            labels.append(d.day[5:])  # "MM-DD"
-            if d.pnl >= 0:
-                win_set.append(d.pnl)
-                loss_set.append(0)
-            else:
-                win_set.append(0)
-                loss_set.append(d.pnl)
-        series = QBarSeries()
-        series.append(win_set)
-        series.append(loss_set)
-        self._daily_chart.addSeries(series)
-        axis_x = QBarCategoryAxis()
-        axis_x.append(labels)
-        self._daily_chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
-        series.attachAxis(axis_x)
-        axis_y = QValueAxis()
-        axis_y.setTitleText("PnL ($)")
-        self._daily_chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
-        series.attachAxis(axis_y)
-        from src.gui.views._chart_theme import theme_axis
-        theme_axis(axis_x)
-        theme_axis(axis_y)
+        win_color = QColor("#26a69a")
+        loss_color = QColor("#ef5350")
+        xs = list(range(len(days)))
+        wins_y = [d.pnl if d.pnl >= 0 else 0.0 for d in days]
+        loss_y = [d.pnl if d.pnl < 0 else 0.0 for d in days]
+        self._daily_plot.addItem(pg.BarGraphItem(
+            x=xs, height=wins_y, width=0.7,
+            brush=win_color, pen=win_color,
+        ))
+        self._daily_plot.addItem(pg.BarGraphItem(
+            x=xs, height=loss_y, width=0.7,
+            brush=loss_color, pen=loss_color,
+        ))
+        x_axis = self._daily_plot.getAxis("bottom")
+        x_axis.setTicks([
+            [(i, d.day[5:]) for i, d in enumerate(days)],
+        ])
+        # Hover points: bar index as x, total pnl as y, full date as
+        # label. The crosshair will snap to the bar nearest the cursor.
+        self._daily_hover.set_points([
+            HoverPoint(x=float(i), y=d.pnl, label=d.day)
+            for i, d in enumerate(days)
+        ])
         total = sum(d.pnl for d in days)
-        self._daily_chart.setTitle(f"PnL per day  ·  net ${total:+.2f}")
+        self._daily_header.setText(f"PNL PER DAY  ·  net ${total:+.2f}")
 
     def _update_reason_table(self, by_reason: dict[str, tuple[float, int]]) -> None:
+        self._reason_table.setRowCount(0)
         if not by_reason:
-            self._reason_table.setText("(no closed trades in range)")
             return
-        items = sorted(by_reason.items(), key=lambda kv: -kv[1][1])
-        rows = []
-        for reason, (pnl, n) in items:
-            color = "#26a69a" if pnl >= 0 else "#ef5350"
-            rows.append(
-                f"<tr><td style='padding:2px 12px;'>{reason}</td>"
-                f"<td style='padding:2px 12px;'>{n}</td>"
-                f"<td style='padding:2px 12px; color:{color};'>${pnl:+.2f}</td></tr>"
-            )
-        self._reason_table.setText(
-            "<table>"
-            "<tr><th style='text-align:left; padding:2px 12px;'>reason</th>"
-            "<th style='text-align:left; padding:2px 12px;'>#</th>"
-            "<th style='text-align:left; padding:2px 12px;'>PnL</th></tr>"
-            + "".join(rows)
-            + "</table>"
+        # Sort by descending count (most-frequent reason first), then by
+        # absolute PnL so big losers/winners surface above one-offs.
+        items = sorted(
+            by_reason.items(),
+            key=lambda kv: (-kv[1][1], -abs(kv[1][0])),
         )
+        for reason, (pnl, n) in items:
+            row = self._reason_table.rowCount()
+            self._reason_table.insertRow(row)
+            reason_item = QTableWidgetItem(str(reason))
+            count_item = QTableWidgetItem(str(n))
+            pnl_item = QTableWidgetItem(f"${pnl:+.2f}")
+            if pnl > 0:
+                pnl_item.setForeground(QColor("#26a69a"))
+            elif pnl < 0:
+                pnl_item.setForeground(QColor("#ef5350"))
+            self._reason_table.setItem(row, 0, reason_item)
+            self._reason_table.setItem(row, 1, count_item)
+            self._reason_table.setItem(row, 2, pnl_item)
+
+    # ---- Export --------------------------------------------------------
 
     def _export_csv(self) -> None:
         rows = self._model.rows()
         if not rows:
-            QMessageBox.information(self, "Export CSV", "No trades to export in this range.")
+            QMessageBox.information(
+                self, "Export CSV", "No trades to export in this range."
+            )
             return
         suggested = f"copytrades_journal_{self._stack.name}.csv"
-        path_str, _ = QFileDialog.getSaveFileName(self, "Export Journal CSV", suggested, "CSV (*.csv)")
+        path_str, _ = QFileDialog.getSaveFileName(
+            self, "Export Journal CSV", suggested, "CSV (*.csv)"
+        )
         if not path_str:
             return
         path = Path(path_str)
@@ -366,4 +502,6 @@ class JournalView(QWidget):
                     r.original_volume, r.entry_price, r.exit_price,
                     r.realized_pnl, r.close_reason, r.opened_at,
                 ])
-        QMessageBox.information(self, "Export CSV", f"Exported {len(rows)} trades to {path}")
+        QMessageBox.information(
+            self, "Export CSV", f"Exported {len(rows)} trades to {path}"
+        )

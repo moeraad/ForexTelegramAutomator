@@ -275,3 +275,78 @@ def test_evaluate_signal_v2_carries_vetoes(tmp_path):
     out = evaluate_signal_v2({"side": "BUY"}, conn, ai_client=None)
     assert "news_high_impact_imminent" in out["vetoes"]
     assert out["score"] <= 30
+
+
+# ---- news_window synthesis in gather_inputs --------------------------
+#
+# `gather_inputs` injects a news_window dict computed from the calendar
+# on every call (not via feature_store). This closes the gap that left
+# the catalyst sub-scorer always missing data.
+
+def test_gather_inputs_injects_news_window_when_calendar_has_event(tmp_path, monkeypatch):
+    """A future high-impact event in the calendar must appear under
+    `inputs['news_window']['next_event']` after gather_inputs runs."""
+    import json
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+    from src.evaluator.features import gather_inputs
+
+    # Seed a tiny calendar file with one future event.
+    cal_path = tmp_path / "economic_calendar.json"
+    future = datetime.now(timezone.utc) + timedelta(minutes=20)
+    cal_path.write_text(json.dumps({
+        "events": [
+            {"event": "NFP", "impact": "high", "ts": future.isoformat()},
+        ],
+    }), encoding="utf-8")
+    # Point news_calendar at the fixture by monkeypatching _DEFAULT_PATH
+    # and clearing its module-level cache. Importing here keeps the
+    # monkeypatch scoped to this test.
+    from src import news_calendar
+    monkeypatch.setattr(news_calendar, "_DEFAULT_PATH", cal_path)
+    news_calendar._cache.clear()
+
+    conn = _setup(tmp_path)
+    inputs = gather_inputs(conn)
+    assert "news_window" in inputs
+    nw = inputs["news_window"]
+    assert isinstance(nw, dict)
+    assert nw["next_event"] is not None
+    assert nw["next_event"]["event"] == "NFP"
+    assert nw["next_event"]["impact"] == "high"
+    # ~20 min, allowing for test latency.
+    assert 10 <= nw["next_event"]["minutes"] <= 25
+
+
+def test_gather_inputs_omits_news_window_when_calendar_empty(tmp_path, monkeypatch):
+    """No events scheduled and none in history -> no news_window key.
+    The catalyst sub-scorer reads absence as 'clear', not as 'missing'."""
+    import json
+    from pathlib import Path
+    from src.evaluator.features import gather_inputs
+
+    cal_path = tmp_path / "empty_calendar.json"
+    cal_path.write_text(json.dumps({"events": []}), encoding="utf-8")
+    from src import news_calendar
+    monkeypatch.setattr(news_calendar, "_DEFAULT_PATH", cal_path)
+    news_calendar._cache.clear()
+
+    conn = _setup(tmp_path)
+    inputs = gather_inputs(conn)
+    assert "news_window" not in inputs
+
+
+def test_gather_inputs_tolerates_missing_calendar_file(tmp_path, monkeypatch):
+    """When the calendar file doesn't exist, gather_inputs must not
+    raise — the catalyst axis just goes into reduced mode."""
+    from pathlib import Path
+    from src.evaluator.features import gather_inputs
+
+    from src import news_calendar
+    monkeypatch.setattr(news_calendar, "_DEFAULT_PATH",
+                        tmp_path / "this_file_does_not_exist.json")
+    news_calendar._cache.clear()
+
+    conn = _setup(tmp_path)
+    inputs = gather_inputs(conn)  # must not raise
+    assert "news_window" not in inputs
