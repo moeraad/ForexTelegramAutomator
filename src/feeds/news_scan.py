@@ -32,6 +32,8 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
+from src.feeds._http import SSL_CONTEXT
+
 log = logging.getLogger(__name__)
 
 
@@ -41,10 +43,25 @@ _ENDPOINT = "https://api.gdeltproject.org/api/v2/doc/doc"
 # to the geopolitical risk premium gold prices in: military escalation,
 # energy supply shocks, currency-system stress, and terror. Generic
 # "Trump" / "election" coverage is noisy and excluded.
+#
+# Syntax: GDELT's DOC 2.0 parser changed circa 2026-05-20 to reject
+# parens that don't wrap an OR'd statement — `(Iran Israel)` now errors
+# with "Parentheses may only be used around OR'd statements." Switched
+# to **quoted phrases** which are an exact-match against the headline
+# / article text. "Iran Israel" matches articles whose body contains
+# the literal phrase; "Russia Ukraine" matches "Russia-Ukraine war"
+# and most crisis-coverage headlines that pair the two. Single-word
+# terms (`sanctions`) stay bare. Compatible with the new parser AND
+# more selective than the implicit-OR fallback would be.
+# GDELT now also requires "Queries containing OR'd terms must be
+# surrounded by ()" — so the outer parens are mandatory around the
+# full OR chain. Inner parens around individual phrases are still
+# forbidden (the previous bug); use quoted phrases for multi-word
+# entity pairs.
 _QUERY = (
-    "(Iran Israel) OR (Russia Ukraine) OR (China Taiwan) OR "
-    "(North Korea) OR (oil shock) OR (terror attack) OR "
-    "(Federal Reserve emergency) OR (banking crisis) OR (sanctions)"
+    '("Iran Israel" OR "Russia Ukraine" OR "China Taiwan" OR '
+    '"North Korea" OR "oil shock" OR "terror attack" OR '
+    '"Federal Reserve emergency" OR "banking crisis" OR sanctions)'
 )
 
 # Article count where we saturate the index to 1.0. Calibrated from
@@ -81,7 +98,7 @@ def _fetch_raw_sync() -> dict | None:
             _build_url(),
             headers={"User-Agent": "copytrades-news/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=SSL_CONTEXT) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
     except Exception as e:  # noqa: BLE001
         log.warning("news_scan: fetch failed: %s", e)

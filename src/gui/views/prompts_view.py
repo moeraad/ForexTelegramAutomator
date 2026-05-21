@@ -131,7 +131,13 @@ class PromptsView(QWidget):
         theme_bus.theme_changed.connect(lambda _pal: self._apply_sel_bar_style())
         sel_row = QHBoxLayout(sel_bar)
         sel_row.setContentsMargins(12, 6, 12, 6)
-        sel_row.addWidget(QLabel("Prompt:"))
+        # Inline labels inside the dark sel_bar inherit the global
+        # theme's opaque background, which paints a black rectangle
+        # behind their text even though the parent bar has its own
+        # colored fill. Force transparency on each label.
+        _prompt_lbl = QLabel("Prompt:")
+        _prompt_lbl.setStyleSheet("background: transparent;")
+        sel_row.addWidget(_prompt_lbl)
         # SegmentedWidget for prompt selection — read-only inspector
         # affordance reads better than radio buttons, and we get
         # accent-coloured indicator built-in (REVIEW.md §4.8). Falls back
@@ -170,7 +176,9 @@ class PromptsView(QWidget):
 
         # Mode selector — kept as radio buttons; SegmentedWidget for a
         # 2-item demo/live binary would feel oversized.
-        sel_row.addWidget(QLabel("Mode:"))
+        _mode_lbl = QLabel("Mode:")
+        _mode_lbl.setStyleSheet("background: transparent;")
+        sel_row.addWidget(_mode_lbl)
         self._mode_group = QButtonGroup(self)
         for mode_id, label in (("demo", "Demo"), ("live", "Live")):
             rb = QRadioButton(label)
@@ -223,6 +231,9 @@ class PromptsView(QWidget):
         # global stylesheet.
         self._sel_bar.setStyleSheet(
             "QWidget#PromptsSelBar { background-color: %s; border-radius: 6px; }"
+            "QWidget#PromptsSelBar > QLabel, "
+            "QWidget#PromptsSelBar > QRadioButton "
+            "{ background: transparent; }"
             % bar_bg
         )
 

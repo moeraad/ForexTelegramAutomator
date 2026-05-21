@@ -36,7 +36,12 @@ input double MaxLotsPerSignal        = 100.0;
 //
 // Default 2.0%: a $10,000 account risks at most $200 per trade. Two
 // consecutive losers cost ~4% of balance, recoverable in a single winner.
-input double MaxSlLossPercent        = 2.0;
+// Hard ceiling on the dollar loss a single trade can take. EA pulls
+// the live value from the GUI's `max_sl_loss_percent` setting (via
+// /settings/{key}); the input below is used as the fallback when the
+// API is unreachable on the first OnInit. Default 1.0% is conservative
+// for retail accounts.
+input double MaxSlLossPercent        = 1.0;
 // Score-tied sizing — when ON, the EA reads `evaluation.sizing.multiplier`
 // from the action's payload (populated by the Python-side evaluator) and
 // scales the baseline lot size by that multiplier. A `skip=true` from the
@@ -142,7 +147,7 @@ input ENUM_FINAL_STAGE_MODE FinalStageMode = FINAL_KEEP_TP;
 input bool   EnableInstantOpen        = true;
 input double InstantRiskPercent       = 1.0;
 input int    InstantTimeoutMinutes    = 5;
-input int    InstantTrailPoints       = 300;
+input int    InstantTrailPoints       = 1000;
 input double InstantTpMultiplier      = 2.0;
 
 CTrade trade;
@@ -908,6 +913,191 @@ void OnTick() {
 static bool g_last_kill_switch = false;
 static bool g_kill_switch_known = false;
 
+// Cached SL-risk cap. Fetched from /settings/max_sl_loss_percent on
+// first use and every 60 seconds thereafter, so operator edits in
+// Settings → Tuning take effect within one minute without restarting
+// the EA. Falls back to the MaxSlLossPercent input on API failure.
+static double g_max_sl_loss_pct_cache = -1.0;
+static ulong  g_max_sl_loss_pct_fetched_at = 0;
+
+// Cached BE base-price preference. Mirrors MaxSlLossPercentLive — read
+// from /settings/{key}, cached 60s, falls back to entry_fill on API
+// failure. Two settings drive the BE anchor:
+//   be_target               : "entry_fill" | "signal_zone"
+//   be_signal_zone_position : "low" | "mid" | "high"
+static string g_be_target_cache = "";
+static string g_be_position_cache = "";
+static ulong  g_be_settings_fetched_at = 0;
+
+void RefreshBeSettings() {
+   ulong now = GetTickCount();
+   if(g_be_settings_fetched_at != 0
+      && (now - g_be_settings_fetched_at) < 60000) {
+      return;
+   }
+   string body;
+   // be_target
+   string resolved_target = "entry_fill";
+   if(HttpGet(ApiBaseUrl + "/settings/be_target", body) && body != "") {
+      string v = JsonField(body, "value");
+      if(v == "signal_zone" || v == "entry_fill") {
+         resolved_target = v;
+      }
+   }
+   g_be_target_cache = resolved_target;
+   // be_signal_zone_position
+   string resolved_pos = "mid";
+   if(HttpGet(ApiBaseUrl + "/settings/be_signal_zone_position", body) && body != "") {
+      string v = JsonField(body, "value");
+      if(v == "low" || v == "mid" || v == "high") {
+         resolved_pos = v;
+      }
+   }
+   g_be_position_cache = resolved_pos;
+   g_be_settings_fetched_at = now;
+}
+
+string BeTargetLive() {
+   RefreshBeSettings();
+   if(g_be_target_cache == "") return "entry_fill";
+   return g_be_target_cache;
+}
+
+string BePositionLive() {
+   RefreshBeSettings();
+   if(g_be_position_cache == "") return "mid";
+   return g_be_position_cache;
+}
+
+// Compute the BE base price for `ticket` per the active settings.
+// Returns 0.0 when the caller should use the legacy `entry_fill` path
+// (signal_zone selected but no zone data available).
+double BeBasePriceForTicket(ulong ticket) {
+   string target = BeTargetLive();
+   if(target != "signal_zone") return 0.0;  // signals fallback to entry_fill
+   int idx = FindPlanIdx(ticket);
+   if(idx < 0) return 0.0;
+   double el = g_plans[idx].entryLow;
+   double eh = g_plans[idx].entryHigh;
+   // Naked OPEN_INSTANT plans registered before ATTACH_SIGNAL carry
+   // zone=0/0 (see DoOpenInstant's emergency plan). Treat as no-zone.
+   if(el <= 0.0 || eh <= 0.0) return 0.0;
+   if(el > eh) { double t = el; el = eh; eh = t; }
+   string pos = BePositionLive();
+   if(pos == "low")  return el;
+   if(pos == "high") return eh;
+   return (el + eh) / 2.0;
+}
+
+// Cached InstantOpen fallback settings. Mirror the same 60s-cached
+// pattern MaxSlLossPercentLive uses so operator edits in Settings →
+// Tuning → INSTANT OPEN FALLBACK take effect within a minute without
+// restarting the EA. Falls back to the matching `input` value on
+// any API failure (HTTP, JSON parse, missing key) — so an EA running
+// while the API process is briefly down still behaves correctly.
+static double g_instant_risk_pct_cache = -1.0;
+static int    g_instant_timeout_min_cache = -1;
+static double g_instant_tp_mult_cache = -1.0;
+static int    g_instant_trail_pts_cache = -1;
+static ulong  g_instant_settings_fetched_at = 0;
+
+void RefreshInstantSettings() {
+   ulong now = GetTickCount();
+   if(g_instant_settings_fetched_at != 0
+      && (now - g_instant_settings_fetched_at) < 60000) {
+      return;
+   }
+   string body;
+   double risk_pct = InstantRiskPercent;
+   if(HttpGet(ApiBaseUrl + "/settings/instant_risk_percent", body)
+      && body != "") {
+      string v = JsonField(body, "value");
+      if(v != "") {
+         double parsed = StringToDouble(v);
+         if(parsed > 0.0 && parsed < 100.0) risk_pct = parsed;
+      }
+   }
+   g_instant_risk_pct_cache = risk_pct;
+   int timeout_min = InstantTimeoutMinutes;
+   if(HttpGet(ApiBaseUrl + "/settings/instant_timeout_minutes", body)
+      && body != "") {
+      string v = JsonField(body, "value");
+      if(v != "") {
+         int parsed = (int)StringToInteger(v);
+         if(parsed >= 0 && parsed <= 1440) timeout_min = parsed;
+      }
+   }
+   g_instant_timeout_min_cache = timeout_min;
+   double tp_mult = InstantTpMultiplier;
+   if(HttpGet(ApiBaseUrl + "/settings/instant_tp_multiplier", body)
+      && body != "") {
+      string v = JsonField(body, "value");
+      if(v != "") {
+         double parsed = StringToDouble(v);
+         if(parsed > 0.0 && parsed < 100.0) tp_mult = parsed;
+      }
+   }
+   g_instant_tp_mult_cache = tp_mult;
+   int trail_pts = InstantTrailPoints;
+   if(HttpGet(ApiBaseUrl + "/settings/instant_trail_points", body)
+      && body != "") {
+      string v = JsonField(body, "value");
+      if(v != "") {
+         int parsed = (int)StringToInteger(v);
+         if(parsed >= 1 && parsed <= 100000) trail_pts = parsed;
+      }
+   }
+   g_instant_trail_pts_cache = trail_pts;
+   g_instant_settings_fetched_at = now;
+}
+
+double InstantRiskPercentLive() {
+   RefreshInstantSettings();
+   return g_instant_risk_pct_cache >= 0.0
+      ? g_instant_risk_pct_cache : InstantRiskPercent;
+}
+int InstantTimeoutMinutesLive() {
+   RefreshInstantSettings();
+   return g_instant_timeout_min_cache >= 0
+      ? g_instant_timeout_min_cache : InstantTimeoutMinutes;
+}
+double InstantTpMultiplierLive() {
+   RefreshInstantSettings();
+   return g_instant_tp_mult_cache >= 0.0
+      ? g_instant_tp_mult_cache : InstantTpMultiplier;
+}
+int InstantTrailPointsLive() {
+   RefreshInstantSettings();
+   return g_instant_trail_pts_cache >= 0
+      ? g_instant_trail_pts_cache : InstantTrailPoints;
+}
+
+
+double MaxSlLossPercentLive() {
+   ulong now = GetTickCount();
+   if(g_max_sl_loss_pct_cache >= 0.0
+      && (now - g_max_sl_loss_pct_fetched_at) < 60000) {
+      return g_max_sl_loss_pct_cache;
+   }
+   string body;
+   double resolved = MaxSlLossPercent;
+   if(HttpGet(ApiBaseUrl + "/settings/max_sl_loss_percent", body)
+      && body != "") {
+      string v = JsonField(body, "value");
+      if(v != "") {
+         double parsed = StringToDouble(v);
+         // Accept 0 (disables the cap) and anything in a sane range.
+         // Negative values fall through to the input fallback.
+         if(parsed >= 0.0 && parsed < 100.0) {
+            resolved = parsed;
+         }
+      }
+   }
+   g_max_sl_loss_pct_cache = resolved;
+   g_max_sl_loss_pct_fetched_at = now;
+   return resolved;
+}
+
 bool KillSwitchOn() {
    string body;
    if(!HttpGet(ApiBaseUrl + "/settings/kill_switch", body)) {
@@ -1137,16 +1327,19 @@ double LotsFromRisk(double slPrice, double entryPrice) {
 
    // Step 2: per-trade risk-percentage cap (when enabled, slPrice valid,
    // and broker tick info available). Computes dollars-at-risk if SL is
-   // hit at the proposed size; if it exceeds balance * MaxSlLossPercent / 100,
-   // shrink the size to the largest that fits the cap.
+   // hit at the proposed size; if it exceeds balance * cap%, shrink the
+   // size to the largest that fits the cap. The cap percentage is read
+   // from the GUI's `max_sl_loss_percent` setting via the API (cached
+   // for 60s); the input value is the fallback on API failure.
    string riskCapMsg = "";
-   if(MaxSlLossPercent > 0 && slPrice > 0 && entryPrice > 0) {
+   double maxSlLossPct = MaxSlLossPercentLive();
+   if(maxSlLossPct > 0 && slPrice > 0 && entryPrice > 0) {
       double tickSize = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_SIZE);
       double tickValue = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_VALUE);
       if(tickSize > 0 && tickValue > 0) {
          double slDistance = MathAbs(entryPrice - slPrice);
          double dollarsPerLot = (slDistance / tickSize) * tickValue;
-         double maxLossDollars = balance * MaxSlLossPercent / 100.0;
+         double maxLossDollars = balance * maxSlLossPct / 100.0;
          double riskAtLots = dollarsPerLot * lots;
          if(riskAtLots > maxLossDollars && dollarsPerLot > 0) {
             double cappedLots = maxLossDollars / dollarsPerLot;
@@ -1157,7 +1350,7 @@ double LotsFromRisk(double slPrice, double entryPrice) {
                Print("CT LotsFromRisk REJECT: even minLot=", minLot,
                      " loses $", DoubleToString(dollarsPerLot * minLot, 2),
                      " > max $", DoubleToString(maxLossDollars, 2),
-                     " (", MaxSlLossPercent, "% of balance ", balance,
+                     " (", maxSlLossPct, "% of balance ", balance,
                      "). slDistance=", slDistance);
                return 0.0;
             }
@@ -1865,6 +2058,47 @@ bool ClampStopForBroker(bool isBuy, double requestedSl, double currentExit,
 }
 
 
+// Mirror of ClampStopForBroker for TPs. For BUY, TP must sit ABOVE
+// current bid by at least stopsLevel; for SELL, TP must sit BELOW
+// current ask. Brokers reject inside-freeze-level TPs with retcode
+// 10025 (TRADE_RETCODE_INVALID_STOPS). Pushing the TP just past the
+// freeze level keeps the modify alive when the signal's TP happens
+// to drift inside the cushion (e.g. price ran into TP1 already and
+// the channel is now sending a re-emit).
+//
+// Returns false on a wrong-side TP (e.g. BUY's TP at or below price);
+// the caller should treat that as a real rejection — it means the
+// signal is nonsensical for the current quote, not a clamp issue.
+bool ClampTpForBroker(bool isBuy, double requestedTp, double currentExit,
+                      double &finalTp, bool &wasClamped) {
+   wasClamped = false;
+   finalTp = requestedTp;
+   if(requestedTp <= 0 || currentExit <= 0) return false;
+   long stopsLevel = SymbolInfoInteger(Symbol_Override, SYMBOL_TRADE_STOPS_LEVEL);
+   double pointSize = SymbolInfoDouble(Symbol_Override, SYMBOL_POINT);
+   if(pointSize <= 0) pointSize = 0.01;
+   double minDist = (double)stopsLevel * pointSize;
+   double buffer = pointSize;  // 1 point past minDist for safety
+   int digits = (int)SymbolInfoInteger(Symbol_Override, SYMBOL_DIGITS);
+   if(isBuy) {
+      if(requestedTp <= currentExit) return false;  // wrong side
+      double minAllowed = currentExit + minDist + buffer;
+      if(requestedTp < minAllowed) {
+         finalTp = NormalizeDouble(minAllowed, digits);
+         wasClamped = (MathAbs(finalTp - requestedTp) > pointSize / 2.0);
+      }
+   } else {
+      if(requestedTp >= currentExit) return false;  // wrong side
+      double maxAllowed = currentExit - minDist - buffer;
+      if(requestedTp > maxAllowed) {
+         finalTp = NormalizeDouble(maxAllowed, digits);
+         wasClamped = (MathAbs(finalTp - requestedTp) > pointSize / 2.0);
+      }
+   }
+   return true;
+}
+
+
 double SignalAnchorSl(const TradePlan &p, double currentExit) {
    double anchor = p.isBuy ? p.entryLow : p.entryHigh;
    if(anchor <= 0.0) return p.entry;  // legacy plan, no zone persisted
@@ -1905,7 +2139,14 @@ double PositionCommissionAccrued(ulong position_id) {
    return total;
 }
 
-double TrueBreakEvenSl(ulong ticket) {
+// Returns the cost-adjusted BE price for `ticket`.
+//
+// When `basePriceOverride > 0`, the cost offset is layered on top of
+// that base instead of `PositionGetDouble(POSITION_PRICE_OPEN)`. Used
+// by the be_target=signal_zone path so BE anchors at a chosen price
+// inside the signal's entry zone rather than at the broker's actual
+// fill. Pass 0 for legacy entry-fill behavior.
+double TrueBreakEvenSl(ulong ticket, double basePriceOverride = 0.0) {
    if(!PositionSelectByTicket(ticket)) return 0.0;
    string sym = PositionGetString(POSITION_SYMBOL);
    double entry = PositionGetDouble(POSITION_PRICE_OPEN);
@@ -1917,24 +2158,26 @@ double TrueBreakEvenSl(ulong ticket) {
    double ts    = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
    int    digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
 
+   double base = (basePriceOverride > 0.0) ? basePriceOverride : entry;
+
    if(vol <= 0.0 || tv <= 0.0 || ts <= 0.0) {
-      return NormalizeDouble(entry, digits);
+      return NormalizeDouble(base, digits);
    }
 
    double total_cost = MathAbs(comm) * CommissionMultiplier + MathAbs(swap);
    double offset     = total_cost * ts / (tv * vol);
 
    bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
-   double be  = isBuy ? entry + offset : entry - offset;
+   double be  = isBuy ? base + offset : base - offset;
 
    // Validity guard: BE must be on the correct side of the current
    // close-side price (BID for BUY, ASK for SELL). If price hasn't moved
-   // enough yet, fall back to entry — at least SL = entry covers move
+   // enough yet, fall back to `base` — at least SL = base covers move
    // risk even if commission/swap will be eaten as a small net loss.
    double bid = SymbolInfoDouble(sym, SYMBOL_BID);
    double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
-   if(isBuy  && be >= bid) be = entry;
-   if(!isBuy && be <= ask) be = entry;
+   if(isBuy  && be >= bid) be = base;
+   if(!isBuy && be <= ask) be = base;
 
    return NormalizeDouble(be, digits);
 }
@@ -2051,7 +2294,12 @@ void ManagePlans() {
          //   remaining 30% can ride the trail past TP2 if the move extends.
          //   3-TP keeps the broker TP at TP3 as a worst-case ceiling
          //   through stage 1; it is removed at the stage-1→2 transition.
-         double newSl = TrueBreakEvenSl(p.ticket);
+         // Same be_target preference as the manual MOVE_SL_BE path so
+         // the automatic stage-0 BE move respects the operator's
+         // configured anchor (entry_fill vs signal_zone). BeBasePrice
+         // returns 0 when zone is unavailable; TrueBreakEvenSl falls
+         // back to entry_fill in that case.
+         double newSl = TrueBreakEvenSl(p.ticket, BeBasePriceForTicket(p.ticket));
          if(newSl <= 0.0) newSl = SignalAnchorSl(p, exitPrice);  // hard fallback
          // 2-TP stage-0 broker TP removal is gated by FinalStageMode:
          //   FINAL_TRAIL  → remove TP (0.0) so trail can capture extensions
@@ -2431,13 +2679,22 @@ void DoMoveSlBe(long id, string payload) {
    if(!PositionSelectByTicket(ticket)) { PostResult(id, "failed", ticket, "no_position"); return; }
    double entry = PositionGetDouble(POSITION_PRICE_OPEN);
    double curTp = PositionGetDouble(POSITION_TP);
-   // True break-even: SL price where the open position nets $0 after
-   // broker costs (commission × CommissionMultiplier + abs(swap)).
-   // For BUY this is ABOVE entry; for SELL this is BELOW. Falls back
-   // to entry when costs unknown or when current price hasn't moved
-   // enough yet (TrueBreakEvenSl internal guard).
-   double beSl = TrueBreakEvenSl(ticket);
+   // BE base price selection per `be_target` setting:
+   //   - entry_fill (default)  -> position's actual fill price
+   //   - signal_zone           -> chosen position within entry_low/high
+   //                              (BeBasePriceForTicket returns 0 when
+   //                              the plan has no zone — fall back to
+   //                              entry_fill to avoid a no-op).
+   // The cost offset (commission + swap) is layered on top by
+   // TrueBreakEvenSl regardless of which base is chosen.
+   double beBase = BeBasePriceForTicket(ticket);
+   double beSl = TrueBreakEvenSl(ticket, beBase);
    if(beSl <= 0.0) beSl = entry;  // hard fallback (ticket vanished mid-call)
+   if(beBase > 0.0) {
+      Print("CT MOVE_SL_BE id=", id, " ticket=", ticket,
+            " be_target=signal_zone(", BePositionLive(), ")",
+            " base=", beBase, " sl=", beSl);
+   }
    // Broker minDist clamp (BE often lands close to current price by design;
    // some brokers reject SL inside SYMBOL_TRADE_STOPS_LEVEL).
    bool isBuyBe = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
@@ -2545,10 +2802,34 @@ void DoModifyTps(long id, string payload) {
    double curSl = PositionGetDouble(POSITION_SL);
    double finalTp = tps[tpCount - 1];
 
+   // Broker freeze-level clamp on the new TP. Without this, modifies
+   // submitted while price has run past the signal's TP1 (channel
+   // re-emit on a hot move) get rejected with retcode 10025. Push the
+   // TP to just past the freeze level when needed; the trade still
+   // closes at the next stage transition (RegisterPlan below covers
+   // the remaining staged closes).
+   double curExitT = isBuy ? SymbolInfoDouble(Symbol_Override, SYMBOL_BID)
+                           : SymbolInfoDouble(Symbol_Override, SYMBOL_ASK);
+   double clampedTp;
+   bool wasClampedT;
+   double requestedTp = finalTp;
+   if(!ClampTpForBroker(isBuy, finalTp, curExitT, clampedTp, wasClampedT)) {
+      PostResult(id, "rejected", ticket,
+                 StringFormat("invalid_tp_modify: tp=%.2f vs price=%.2f",
+                              finalTp, curExitT));
+      return;
+   }
+   finalTp = clampedTp;
+
    if(!trade.PositionModify(ticket, curSl, finalTp)) {
       PostResult(id, "failed", ticket,
                  "modify_failed:" + IntegerToString(trade.ResultRetcode()));
       return;
+   }
+   if(wasClampedT) {
+      Print("CT MODIFY_TPS id=", id, " ticket=", ticket,
+            " clamped tp ", requestedTp, " -> ", finalTp,
+            " (broker minDist)");
    }
 
    double curVol = PositionGetDouble(POSITION_VOLUME);
@@ -3209,7 +3490,8 @@ void DoOpenInstant(long id, string payload) {
    }
    double price = SymbolInfoDouble(Symbol_Override, isBuy ? SYMBOL_ASK : SYMBOL_BID);
    if(price <= 0) { PostResult(id, "failed", 0, "no_price"); return; }
-   double slDistance = EmergencySlDistance(lots, InstantRiskPercent);
+   double riskPct = InstantRiskPercentLive();
+   double slDistance = EmergencySlDistance(lots, riskPct);
    if(slDistance <= 0) {
       PostResult(id, "failed", 0, "emergency_sl_calc_failed");
       return;
@@ -3288,7 +3570,7 @@ void DoOpenInstant(long id, string payload) {
    }
    Print("CT OPEN_INSTANT id=", id, " ticket=", ticket, " side=", side,
          " lots=", lots, " entry=", fillPrice, " emergency_sl=", slPrice,
-         " (risk=", InstantRiskPercent, "% balance)");
+         " (risk=", riskPct, "% balance)");
    g_stats_executed++;
    g_last_action_status = "executed";
    g_last_action_at = TimeCurrent();
@@ -3356,6 +3638,65 @@ void DoAttachSignal(long id, string payload) {
    }
    sl = clampedSl;
 
+   // Risk-cap check at attach time. OPEN_INSTANT opened with an
+   // emergency SL sized via InstantRiskPercent; ATTACH_SIGNAL now
+   // swaps in the channel's real SL which may be wider. If the
+   // current lot size at the new SL would exceed
+   // max_sl_loss_percent of balance, partial-close down to fit
+   // (or reject the trade entirely if even minLot is too risky).
+   double maxSlLossPctA = MaxSlLossPercentLive();
+   if(maxSlLossPctA > 0) {
+      double tickSizeA = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_SIZE);
+      double tickValueA = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_VALUE);
+      double balanceA = AccountInfoDouble(ACCOUNT_BALANCE);
+      double curVol = PositionGetDouble(POSITION_VOLUME);
+      double minLotA = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_MIN);
+      double lotStepA = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_STEP);
+      if(lotStepA <= 0) lotStepA = 0.01;
+      if(minLotA <= 0) minLotA = lotStepA;
+      if(tickSizeA > 0 && tickValueA > 0 && balanceA > 0 && curVol > 0) {
+         double slDistanceA = MathAbs(entry - sl);
+         double dollarsPerLotA = (slDistanceA / tickSizeA) * tickValueA;
+         double maxLossA = balanceA * maxSlLossPctA / 100.0;
+         double riskA = dollarsPerLotA * curVol;
+         if(riskA > maxLossA && dollarsPerLotA > 0) {
+            double targetLots = maxLossA / dollarsPerLotA;
+            // Floor to lot step so we don't propose a fractional
+            // volume the broker rejects. NormalizeDouble after.
+            targetLots = MathFloor(targetLots / lotStepA) * lotStepA;
+            if(targetLots < minLotA) {
+               // Even minLot at this signal SL exceeds the cap —
+               // can't safely keep the position open. Close
+               // entirely and reject the attach so the operator
+               // sees why.
+               trade.PositionClose(ticket);
+               PostResult(id, "rejected", ticket,
+                  StringFormat("sl_too_wide_for_max_risk_pct: "
+                               "minLot=%.2f loses $%.2f > $%.2f "
+                               "(%.2f%% of $%.2f)",
+                               minLotA, dollarsPerLotA * minLotA,
+                               maxLossA, maxSlLossPctA, balanceA));
+               g_stats_rejected++;
+               return;
+            }
+            // Partial-close to bring volume down to the target.
+            double volToClose = NormalizeDouble(curVol - targetLots, 2);
+            if(volToClose > 0) {
+               if(!trade.PositionClosePartial(ticket, volToClose)) {
+                  Print("CT ATTACH_SIGNAL risk-cap partial-close failed: ",
+                        "retcode=", trade.ResultRetcode(),
+                        " curVol=", curVol, " volToClose=", volToClose);
+               } else {
+                  Print("CT ATTACH_SIGNAL risk-cap reduced ",
+                        curVol, " -> ", targetLots, " lots "
+                        "(would have lost $", DoubleToString(riskA, 2),
+                        " > cap $", DoubleToString(maxLossA, 2), ")");
+               }
+            }
+         }
+      }
+   }
+
    if(!trade.PositionModify(ticket, sl, tpFinal)) {
       PostResult(id, "failed", ticket,
                  "attach_modify_failed:" + IntegerToString(trade.ResultRetcode()));
@@ -3389,10 +3730,16 @@ void DoAttachSignal(long id, string payload) {
 void ManageNakedPlans() {
    if(ArraySize(g_naked) == 0) return;
    datetime now = TimeCurrent();
-   int timeoutSec = InstantTimeoutMinutes * 60;
+   // Live-read once per ManageNakedPlans tick so all naked positions
+   // in this loop iteration see the same values. Refresh happens at
+   // most every 60s inside the cached getters.
+   int timeoutMin = InstantTimeoutMinutesLive();
+   double tpMult = InstantTpMultiplierLive();
+   int trailPts = InstantTrailPointsLive();
+   int timeoutSec = timeoutMin * 60;
    double pointSize = SymbolInfoDouble(Symbol_Override, SYMBOL_POINT);
    if(pointSize <= 0) pointSize = 0.01;
-   double trailDist = InstantTrailPoints * pointSize;
+   double trailDist = trailPts * pointSize;
    long stopsLevel = SymbolInfoInteger(Symbol_Override, SYMBOL_TRADE_STOPS_LEVEL);
    double minDist = (double)stopsLevel * pointSize;
    int digits = (int)SymbolInfoInteger(Symbol_Override, SYMBOL_DIGITS);
@@ -3406,11 +3753,15 @@ void ManageNakedPlans() {
       }
       int age = (int)(now - p.openedAt);
       if(!p.fallbackArmed) {
-         if(age < timeoutSec) continue;
-         // Timeout fired. Install fallback TP at InstantTpMultiplier ×
+         // timeoutMin == 0 disables the fallback entirely — operator
+         // can set this when they prefer to manage naked positions by
+         // hand without the EA installing a fallback TP behind their
+         // back.
+         if(timeoutMin == 0 || age < timeoutSec) continue;
+         // Timeout fired. Install fallback TP at tpMult ×
          // emergency-SL distance from entry; leave SL where it is.
          double slDist = MathAbs(p.entry - p.emergencySl);
-         double tpDist = slDist * InstantTpMultiplier;
+         double tpDist = slDist * tpMult;
          double newTp = p.isBuy ? p.entry + tpDist : p.entry - tpDist;
          newTp = NormalizeDouble(newTp, digits);
          double curSl = PositionGetDouble(POSITION_SL);
@@ -3419,13 +3770,13 @@ void ManageNakedPlans() {
             g_naked[i] = p;
             PersistNaked(p);
             Print("CT naked timeout fallback ticket=", p.ticket,
-                  " tp=", newTp, " (", InstantTpMultiplier,
+                  " tp=", newTp, " (", tpMult,
                   "x emergency_sl_distance ", slDist, ")");
             string alertBody = StringFormat(
                "{\"level\":\"warning\",\"text\":\"naked timeout ticket=%I64d "
                "after %d min; fallback TP=%.2f, trailing SL @ %d pts now active. "
                "No structured signal arrived.\"}",
-               p.ticket, InstantTimeoutMinutes, newTp, InstantTrailPoints);
+               p.ticket, timeoutMin, newTp, trailPts);
             string ar;
             HttpPostJson(ApiBaseUrl + "/alerts", alertBody, ar);
          } else {

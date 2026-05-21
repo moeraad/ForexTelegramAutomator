@@ -663,6 +663,59 @@ async def etf_flows_feed_loop(app: Application):
         await asyncio.sleep(3600.0)
 
 
+async def calendar_feed_loop(app: Application):
+    """Refresh the economic calendar (ForexFactory) every 6 hours.
+
+    Why 6h: ForexFactory publishes a 1-week-rolling XML and refreshes
+    forecast / actual columns intraday as numbers come in. 6h is
+    enough to catch corrections without polling more than necessary.
+
+    Output goes to `<db_dir>/economic_calendar.json` so
+    `news_calendar._resolve_default_path()` picks it up in preference
+    to the bundled seed. First fetch on startup so a freshly-installed
+    stack gets a live calendar within seconds rather than 6 hours.
+    """
+    import json as _json
+    from pathlib import Path
+    from src import config
+    from src.feeds.calendar_fetch import fetch_economic_calendar
+    while True:
+        try:
+            snap = await fetch_economic_calendar()
+            if snap is None:
+                log.warning("calendar_feed: no data this cycle")
+            else:
+                events = snap.get("events") or []
+                db_path = getattr(config, "DB_PATH", None)
+                if db_path:
+                    out = Path(db_path).parent / "economic_calendar.json"
+                    try:
+                        out.write_text(
+                            _json.dumps({"events": events}, ensure_ascii=False),
+                            encoding="utf-8",
+                        )
+                        log.info(
+                            "calendar_feed: wrote %d events to %s",
+                            len(events), out,
+                        )
+                        # Invalidate the news_calendar mtime cache so
+                        # the next evaluator call sees the fresh file
+                        # without waiting for stat() to land at a
+                        # different mtime second.
+                        try:
+                            from src import news_calendar
+                            news_calendar._cache.clear()
+                        except Exception:
+                            pass
+                    except OSError as e:
+                        log.warning("calendar_feed: write failed: %s", e)
+                else:
+                    log.warning("calendar_feed: DB_PATH unset; skipping write")
+        except Exception as e:
+            log.exception("calendar_feed_loop error: %s", e)
+        await asyncio.sleep(6 * 3600)
+
+
 async def news_scan_feed_loop(app: Application):
     """Refresh GDELT geopolitical risk index every 15 minutes.
 
@@ -831,6 +884,7 @@ async def post_init(app: Application):
     _supervise(asyncio.create_task(cot_feed_loop(app)), "cot_feed_loop")
     _supervise(asyncio.create_task(etf_flows_feed_loop(app)), "etf_flows_feed_loop")
     _supervise(asyncio.create_task(news_scan_feed_loop(app)), "news_scan_feed_loop")
+    _supervise(asyncio.create_task(calendar_feed_loop(app)), "calendar_feed_loop")
     _supervise(asyncio.create_task(telegram_heartbeat_loop(app)), "telegram_heartbeat_loop")
     _supervise(asyncio.create_task(cost_guard_loop(app)), "cost_guard_loop")
 

@@ -157,13 +157,20 @@ async def test_fetch_macro_snapshot_returns_none_when_all_fail():
 # ---- FRED real-yield helper --------------------------------------------
 
 def _stub_urlopen(csv_text: str):
-    """Build a fake context manager that mimics urlopen()."""
+    """Build a fake context manager that mimics urlopen().
+
+    Accepts **kwargs so the stub stays compatible with extra arguments
+    the production caller passes (e.g. `context=` for the certifi SSL
+    fix). Without this, adding any new urlopen kwarg breaks every test
+    that mocks the helper, even though the new kwarg is irrelevant to
+    what the test is exercising.
+    """
     class _Resp:
         def __init__(self, text): self._b = text.encode("utf-8")
         def __enter__(self): return self
         def __exit__(self, *a): return False
         def read(self): return self._b
-    return lambda url, timeout=10: _Resp(csv_text)
+    return lambda url, *args, **kwargs: _Resp(csv_text)
 
 
 def test_fred_csv_parses_last_two_values(monkeypatch):

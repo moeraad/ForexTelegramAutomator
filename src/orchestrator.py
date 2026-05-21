@@ -102,27 +102,31 @@ def _open_positions_count(conn: sqlite3.Connection) -> int:
 
 
 def _cleanup_message_if_orphan(conn: sqlite3.Connection, msg_id: int) -> None:
-    """Delete the messages row when no action ended up referencing it.
+    """Mark a message as processed even when no action was produced.
 
-    Per project policy: the messages table only retains rows that produced
-    at least one action. Triage-ignored, pure-context, or otherwise no-op
-    messages are dropped so the table stays lean.
+    Originally this DELETEd the row "to keep the table lean", but that
+    removed the only dedup tombstone we had — the UNIQUE(chat_id,
+    tg_message_id) index. After Telethon reconnected and called
+    `get_difference`, the same Telegram message would be redelivered
+    and `_insert_message` would happily reinsert it (the unique row
+    was gone). The orchestrator then re-ran the full pipeline:
+    triage + Sonnet + persistence, burning $0.01–0.05 per re-process.
+    Forensic logs showed msg_id 2303 re-processed 22 times overnight
+    on a single channel.
 
-    signal_memory entries that pointed at the deleted message have their
-    message_id NULLed so the distilled summary survives the cleanup
-    (the summary is what the prompt cares about, not the raw text).
+    The fix is to KEEP the row so the UNIQUE index keeps rejecting
+    redelivery. Lean-table is a non-goal compared to dedup correctness;
+    a row per ignored message is < 1KB and a chatty channel produces
+    ~200/day, so a year of orphans is ~70k rows — fine for SQLite.
+    Operators who care can prune `messages WHERE id NOT IN
+    (SELECT source_msg_id FROM actions WHERE source_msg_id IS NOT NULL)
+    AND received_at < datetime('now', '-30 days')` on a schedule.
+
+    The function name + signature are kept for back-compat; it's now a
+    no-op when there are no actions referencing the message (the only
+    case the old code wanted to act on).
     """
-    row = conn.execute(
-        "SELECT 1 FROM actions WHERE source_msg_id = ? LIMIT 1",
-        (msg_id,),
-    ).fetchone()
-    if row is not None:
-        return  # at least one action references the message → keep it
-    conn.execute(
-        "UPDATE signal_memory SET message_id = NULL WHERE message_id = ?",
-        (msg_id,),
-    )
-    conn.execute("DELETE FROM messages WHERE id = ?", (msg_id,))
+    return
 
 
 def _load_channel_profile_for_prefilter() -> dict:

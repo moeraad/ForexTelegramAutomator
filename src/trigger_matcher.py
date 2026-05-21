@@ -313,9 +313,17 @@ def _layer1_deterministic(
         ):
             continue
         if not _precondition_ok(rule.action_type, ctx):
-            log.debug(
-                "trigger_match skip (precondition) type=%s phrase=%r",
+            # Bumped from DEBUG to INFO: when an operator's CLOSE_FULL
+            # trigger phrase matches a TP1 message but the position is
+            # already closed (broker-side SL/TP hit before the channel
+            # confirmed), the operator needs to SEE the skip in the
+            # default INFO-level log to understand why no action fired.
+            # The corresponding `messages.received` line on its own
+            # left the trail looking like a system failure.
+            log.info(
+                "trigger_match skip (precondition) type=%s phrase=%r reason=%s",
                 rule.action_type, rule.phrase,
+                _precondition_label(rule.action_type),
             )
             continue
         candidates.append(rule)

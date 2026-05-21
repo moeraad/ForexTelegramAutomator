@@ -12,7 +12,19 @@ datas = [
     (str(ROOT / "src/gui/styles.qss"), "src/gui"),
     (str(ROOT / "src/schema.sql"), "src"),
     (str(ROOT / "copytrades.ico"), "."),
+    # Seed economic calendar — read by src/news_calendar.py for the
+    # evaluator's catalyst sub-scorer when no stack-local writable copy
+    # exists yet. The bot's calendar_feed_loop later writes a refreshed
+    # version to <db_dir>/economic_calendar.json which takes precedence.
+    (str(ROOT / "data/economic_calendar.json"), "data"),
 ]
+# certifi ships `cacert.pem` as a data file — needs explicit collection
+# to land in the bundle. Without this the feed workers (cot, news_scan,
+# FRED via macro) hit SSL_CERTIFICATE_VERIFY_FAILED on the bundled exe
+# because urllib falls back to the OS store, which isn't reachable from
+# a NSSM service running as LocalSystem.
+from PyInstaller.utils.hooks import collect_data_files
+datas += collect_data_files("certifi")
 binaries = [
     (str(ROOT / "src/gui/resources/nssm.exe"), "src/gui/resources"),
 ]

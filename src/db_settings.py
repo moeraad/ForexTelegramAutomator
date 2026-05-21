@@ -70,6 +70,53 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # to v1 in production if v2 produces obviously bad scores during
     # the rollout window.
     "evaluator_version": "v2",
+    # Per-trade SL risk cap. The EA computes the dollar loss that would
+    # be taken if the signal's stop-loss hits at the baseline lot size;
+    # if that loss exceeds `max_sl_loss_percent` of the account balance,
+    # the lot is shrunk to keep the worst-case loss at the cap. When
+    # even minLot can't fit under the cap (very wide SL), the trade is
+    # rejected with reason `sl_too_wide_for_max_risk_pct`. Default 1%
+    # is conservative for retail accounts; raise carefully — losing 5%
+    # on a single trade requires 20 winners to recover.
+    "max_sl_loss_percent": "1.0",
+    # Break-even base price selection. `entry_fill` (default) uses the
+    # position's actual fill price — what's been there forever. The
+    # alternative `signal_zone` reads the signal's entry_low/entry_high
+    # off the registered plan and anchors BE to a position within that
+    # zone, picked by `be_signal_zone_position` below. The cost offset
+    # (commission + swap) layers on top of whichever base is chosen.
+    # When `signal_zone` is selected but the plan has no zone data
+    # (e.g. naked OPEN_INSTANT before ATTACH_SIGNAL fires), the EA
+    # silently falls back to entry_fill.
+    "be_target": "signal_zone",
+    # Where in the signal's entry zone to anchor BE when
+    # `be_target = "signal_zone"`. Operator-facing terms are price-
+    # range positional: `low` = entry_low (more conservative SL for
+    # BUYs, more aggressive for SELLs), `mid` = midpoint, `high` =
+    # entry_high (more aggressive SL for BUYs, more conservative for
+    # SELLs). Defaults to `mid` so the choice is neutral.
+    "be_signal_zone_position": "mid",
+    # OPEN_INSTANT "naked position" fallback settings. These govern the
+    # behavior between an OPEN_INSTANT and its expected ATTACH_SIGNAL,
+    # and what happens if the structured signal never arrives.
+    #
+    #   instant_risk_percent     — emergency SL is placed so its hit
+    #                              loses this % of balance. Default 1%.
+    #   instant_timeout_minutes  — wait this long for ATTACH_SIGNAL.
+    #                              After timeout, install fallback TP +
+    #                              start trailing SL. Default 2 min.
+    #   instant_tp_multiplier    — fallback TP distance from entry =
+    #                              this × emergency-SL distance. 2.0 =
+    #                              2:1 R:R. Default 2.0.
+    #   instant_trail_points     — once fallback is armed, trail SL
+    #                              this many MT5 points behind price
+    #                              (ratchet-only). 1000 ≈ $10 on XAUUSD,
+    #                              roughly 1× H1 ATR in calm regimes.
+    #                              Default 1000.
+    "instant_risk_percent":    "1.0",
+    "instant_timeout_minutes": "2",
+    "instant_tp_multiplier":   "2.0",
+    "instant_trail_points":    "1000",
     # Score-tied sizing — the evaluator writes a `sizing` block into
     # every evaluation. The EA reads `sizing.multiplier` and scales
     # lots accordingly when its `EnableScoreTiedSizing` input is on.

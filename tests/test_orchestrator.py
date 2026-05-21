@@ -83,26 +83,33 @@ def test_process_message_skips_duplicate_message_when_action_emitted(tmp_path):
     assert ai.call.call_count == 1  # second call short-circuited on dedup
 
 
-def test_no_action_message_is_not_persisted(tmp_path):
-    """Per project policy: only action-producing messages stay in the DB."""
+def test_no_action_message_is_persisted_as_dedup_tombstone(tmp_path):
+    """No-action messages stay in the DB so the UNIQUE(chat_id,
+    tg_message_id) index can reject re-delivery from Telethon's
+    `get_difference` after a reconnect. The lean-table policy that
+    previously DELETEd these rows opened a re-processing loop that
+    burned ~22 Sonnet calls per orphan message overnight.
+    """
     conn = connect(str(tmp_path / "o.db"))
     init_schema(conn)
     ai = _make_ai([])  # AI returns zero actions
     process_message(conn, ai, 5, 42, "Y", "hi", tmp_path / "a.jsonl", 30)
     n = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-    assert n == 0
+    assert n == 1
 
 
-def test_no_action_message_repeated_re_processes(tmp_path):
-    """Side effect of cleanup: same tg_message_id with no action gets
-    processed each time it arrives. Operator should know this trade-off."""
+def test_no_action_message_is_not_re_processed_on_redelivery(tmp_path):
+    """The dedup tombstone means a second arrival of the same
+    tg_message_id is dropped by `_insert_message` and Sonnet runs only
+    once. Locks in the fix for the orchestrator re-processing loop
+    observed in the diagnostics dump."""
     conn = connect(str(tmp_path / "o.db"))
     init_schema(conn)
     ai = _make_ai([])
     process_message(conn, ai, 5, 42, "Y", "hi", tmp_path / "a.jsonl", 30)
     process_message(conn, ai, 5, 42, "Y", "hi", tmp_path / "a.jsonl", 30)
-    assert ai.call.call_count == 2
-    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
+    assert ai.call.call_count == 1
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
 
 
 def test_process_message_ai_exception_writes_alert(tmp_path):
@@ -227,8 +234,10 @@ def test_triage_ignore_short_circuits(tmp_path):
     assert ai.call.call_count == 0
     assert conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM signal_memory").fetchone()[0] == 0
-    # Per action-only-persistence policy: triage-ignored messages are not stored.
-    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
+    # Message row kept as a dedup tombstone so Telethon's get_difference
+    # redelivery doesn't re-trigger triage (see
+    # test_no_action_message_is_not_re_processed_on_redelivery).
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
 
 
 def test_triage_keep_proceeds_to_sonnet(tmp_path):

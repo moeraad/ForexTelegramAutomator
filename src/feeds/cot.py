@@ -32,6 +32,8 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
+from src.feeds._http import SSL_CONTEXT
+
 log = logging.getLogger(__name__)
 
 # CFTC market code for COMEX gold futures (88691) on the disaggregated
@@ -68,7 +70,7 @@ def _fetch_raw_sync() -> list[dict] | None:
     url = f"{_ENDPOINT}?{urllib.parse.urlencode(params)}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "copytrades-cot/1.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=SSL_CONTEXT) as resp:
             raw = resp.read().decode("utf-8")
     except Exception as e:  # noqa: BLE001 — network/IO
         log.warning("cot: fetch failed: %s", e)

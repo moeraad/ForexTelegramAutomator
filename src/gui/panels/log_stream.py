@@ -66,7 +66,10 @@ class LogStream(QWidget):
         self._window_start = time.monotonic()
         self._tailer: LogTailer | None = None
         self._build_ui()
-        self._switch_source("api")
+        # Default first source. Falls back to 'api' for backward
+        # compatibility if `_SOURCES` ever omits 'system' again.
+        _default = "system" if any(k == "system" for k, _f, _w in _SOURCES) else _SOURCES[0][0]
+        self._switch_source(_default)
 
         self._rate_timer = QTimer(self)
         self._rate_timer.setInterval(2000)
@@ -91,15 +94,42 @@ class LogStream(QWidget):
         header = QHBoxLayout()
         header.addWidget(QLabel("LOG STREAM"))
 
-        self._radio_group = QButtonGroup(self)
-        for key, _filename, _where in _SOURCES:
-            rb = QRadioButton(key)
-            rb.setProperty("source_key", key)
-            self._radio_group.addButton(rb)
-            header.addWidget(rb)
-            if key == "api":
-                rb.setChecked(True)
-        self._radio_group.buttonClicked.connect(self._on_source_changed)
+        # Source selector — SegmentedWidget gives a connected tab-bar
+        # look matching the Prompts view, while falling back to plain
+        # radios when qfluentwidgets isn't importable (dev environments,
+        # minimal installs).
+        self._radio_group: QButtonGroup | None = None
+        self._source_seg = None
+        # Default-checked source key. system is the catch-all per-stack
+        # log so it's the safest first impression for a new operator.
+        default_key = "system" if any(
+            k == "system" for k, _f, _w in _SOURCES
+        ) else _SOURCES[0][0]
+        try:
+            from qfluentwidgets import SegmentedWidget
+            self._source_seg = SegmentedWidget(self)
+            for key, _filename, _where in _SOURCES:
+                # See PromptsView for the lambda signature — the
+                # SegmentedWidget routes `clicked(bool)` into onClick;
+                # without accepting & discarding the bool we'd pass it
+                # in place of the route key.
+                self._source_seg.addItem(
+                    routeKey=key,
+                    text=key,
+                    onClick=lambda _clicked=False, _k=key: self._switch_source(_k),
+                )
+            self._source_seg.setCurrentItem(default_key)
+            header.addWidget(self._source_seg)
+        except Exception:
+            self._radio_group = QButtonGroup(self)
+            for key, _filename, _where in _SOURCES:
+                rb = QRadioButton(key)
+                rb.setProperty("source_key", key)
+                self._radio_group.addButton(rb)
+                header.addWidget(rb)
+                if key == default_key:
+                    rb.setChecked(True)
+            self._radio_group.buttonClicked.connect(self._on_source_changed)
 
         header.addStretch()
 

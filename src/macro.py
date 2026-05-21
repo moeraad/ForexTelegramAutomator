@@ -134,8 +134,13 @@ def _fetch_fred_csv_sync(
     try:
         import urllib.request
 
+        # Route through certifi's bundled CAs so the request works
+        # under the PyInstaller-bundled exe + NSSM service context
+        # where the OS cert store isn't reachable. Same fix applied
+        # in src.feeds.cot and src.feeds.news_scan.
+        from src.feeds._http import SSL_CONTEXT
         url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
-        with urllib.request.urlopen(url, timeout=10) as resp:
+        with urllib.request.urlopen(url, timeout=10, context=SSL_CONTEXT) as resp:
             data = resp.read().decode("utf-8")
         lines = [ln for ln in data.splitlines() if ln.strip()]
         if len(lines) < 3:

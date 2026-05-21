@@ -537,19 +537,36 @@ class _TuningTab(QWidget):
             dsb.setToolTip(f.tooltip)
             return dsb
         if f.kind == "choice":
+            # Opts can be either:
+            #   - a list of bare values: ["scalp", "intraday", ...] —
+            #     display text = value (legacy form)
+            #   - a list of (label, value) tuples: [("Signal zone",
+            #     "signal_zone"), ...] — display the friendly label,
+            #     persist the value
+            # Both forms coexist because most existing fields only need
+            # the bare-value form; the BE settings introduce labels.
             cb = QComboBox()
-            for v in (f.opts[0] if f.opts else []):
-                cb.addItem(str(v), v)
+            items = list(f.opts[0]) if f.opts else []
+            for entry in items:
+                if isinstance(entry, tuple) and len(entry) == 2:
+                    label, value = entry
+                    cb.addItem(str(label), value)
+                else:
+                    cb.addItem(str(entry), entry)
             cb.setEditable(f.editable)
             if f.editable:
                 cb.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
             cb.setToolTip(f.tooltip)
-            # Size to the longest option so labels like
-            # "gpt-5-nano-2025-08-07" aren't clipped behind the dropdown
-            # arrow. Add ~50px for the arrow + padding.
+            # Size to the longest display label so values like
+            # "gpt-5-nano-2025-08-07" or "Low end of zone (entry_low)"
+            # don't get clipped behind the dropdown arrow.
             fm = cb.fontMetrics()
+            display_strings = [
+                str(e[0]) if isinstance(e, tuple) and len(e) == 2 else str(e)
+                for e in items
+            ]
             longest = max(
-                (fm.horizontalAdvance(str(v)) for v in (f.opts[0] if f.opts else [])),
+                (fm.horizontalAdvance(s) for s in display_strings),
                 default=0,
             )
             cb.setMinimumWidth(max(220, longest + 50))
@@ -872,6 +889,101 @@ _TUNING_SECTIONS: list[tuple[str, list[_Field]]] = [
                    "startup. Determines the AI prompt's vocabulary table, "
                    "worked examples, and language. Must match a file in channels/."
                )),
+    ]),
+    ("RISK MANAGEMENT", [
+        _Field("max_sl_loss_percent", "Max SL loss (% of balance)", "float",
+               tooltip=(
+                   "Hard cap on the dollar loss a single trade can take "
+                   "if its stop-loss hits. Computed as "
+                   "(SL distance × tick value × lot size) vs account "
+                   "balance × this percent. If the baseline lot would "
+                   "exceed the cap, lot size is shrunk to fit. If even "
+                   "minLot would exceed the cap (signal's SL is too "
+                   "wide for this account), the trade is rejected with "
+                   "reason 'sl_too_wide_for_max_risk_pct'. Default 1.0%. "
+                   "Set 0 to disable the cap entirely (lot sizing then "
+                   "uses LotsPer100Balance + MaxLotsPerSignal only)."
+               ),
+               opts=(0.0, 20.0, 0.1)),
+        _Field("be_target", "Break-even base price", "choice",
+               tooltip=(
+                   "Which price to use as the BE anchor when MOVE_SL_BE "
+                   "fires.\n\n"
+                   "• Signal zone — a position within the signal's "
+                   "entry_low/entry_high zone (see next setting). "
+                   "Default.\n"
+                   "• Entry fill price — the position's actual broker "
+                   "fill price (legacy behavior).\n\n"
+                   "The cost offset (commission + swap) is added on "
+                   "top of whichever base is chosen, so 'true "
+                   "break-even' is always honored. Falls back to entry "
+                   "fill when signal_zone has no zone data (e.g. naked "
+                   "OPEN_INSTANT before ATTACH_SIGNAL)."
+               ),
+               opts=([
+                   ("Signal zone", "signal_zone"),
+                   ("Entry fill price", "entry_fill"),
+               ],),
+               editable=False),
+        _Field("be_signal_zone_position", "BE position in signal zone", "choice",
+               tooltip=(
+                   "When 'Break-even base price' = Signal zone, this "
+                   "picks where in the entry_low/entry_high zone the "
+                   "BE anchor sits.\n\n"
+                   "• Low — entry_low (for a BUY: more room / wider "
+                   "SL; for a SELL: tighter SL / more profit locked).\n"
+                   "• Middle — midpoint of the zone (neutral default).\n"
+                   "• High — entry_high (mirror of Low).\n\n"
+                   "Ignored when base price = Entry fill price."
+               ),
+               opts=([
+                   ("Low end of zone (entry_low)", "low"),
+                   ("Middle of zone", "mid"),
+                   ("High end of zone (entry_high)", "high"),
+               ],),
+               editable=False),
+    ]),
+    ("INSTANT OPEN FALLBACK", [
+        _Field("instant_risk_percent", "Emergency SL risk (%)", "float",
+               tooltip=(
+                   "When an OPEN_INSTANT signal fires (channel sent a "
+                   "bare 'BUY' / 'SELL' before the structured signal), "
+                   "the EA opens at market with an emergency SL placed "
+                   "so hitting it loses this percent of balance. The "
+                   "real SL/TPs swap in via ATTACH_SIGNAL within a few "
+                   "minutes — this only governs the naked period. "
+                   "Default 1.0%."
+               ),
+               opts=(0.1, 10.0, 0.1)),
+        _Field("instant_timeout_minutes", "Wait for ATTACH_SIGNAL (min)", "int",
+               tooltip=(
+                   "How long the EA waits for ATTACH_SIGNAL after an "
+                   "OPEN_INSTANT before giving up and installing the "
+                   "fallback TP + trailing SL. If you set 0 the "
+                   "fallback never engages — naked positions ride on "
+                   "the emergency SL until the structured signal "
+                   "arrives or the operator closes manually. Default 2."
+               ),
+               opts=(0, 120)),
+        _Field("instant_tp_multiplier", "Fallback TP × SL distance", "float",
+               tooltip=(
+                   "When the wait timeout fires, the fallback TP is set "
+                   "at this multiple of the emergency-SL distance from "
+                   "entry. 2.0 = 2:1 reward-to-risk. Higher = bigger "
+                   "expected move per trade, fewer hits. Default 2.0."
+               ),
+               opts=(0.5, 10.0, 0.1)),
+        _Field("instant_trail_points", "Fallback trail (MT5 points)", "int",
+               tooltip=(
+                   "Once the fallback is armed, the SL ratchets along "
+                   "behind price at this distance in MT5 points. On "
+                   "XAUUSD with the standard tick scheme, 1000 points "
+                   "≈ $10.00 — roughly 1× H1 ATR in calm regimes. "
+                   "Larger = more room for normal pullbacks; smaller "
+                   "= locks profit faster but stops out more often on "
+                   "noise. Default 1000."
+               ),
+               opts=(10, 10000)),
     ]),
     ("TRADING STYLE", [
         _Field("trading_style", "Default style", "choice",

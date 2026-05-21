@@ -32,8 +32,49 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-# Default location. Tests override via `_load_calendar(path=...)`.
-_DEFAULT_PATH = Path(__file__).resolve().parent.parent / "data" / "economic_calendar.json"
+# Bundled seed location — read-only after PyInstaller packaging.
+# Stays as the fallback when no stack-local writable copy exists yet
+# (e.g. fresh install, calendar_feed_loop hasn't ticked).
+_BUNDLED_PATH = Path(__file__).resolve().parent.parent / "data" / "economic_calendar.json"
+
+
+def _resolve_default_path() -> Path:
+    """Pick the file the reader uses by default.
+
+    Preference order:
+      1. Test override — when callers monkeypatch the module-level
+         `_DEFAULT_PATH` to a fixture, honor that. Detected via `is not`
+         identity against the bundled path so production code never
+         confuses a real file with a test override.
+      2. `<DB_PATH parent>/economic_calendar.json` — the writable stack-
+         local copy that `calendar_feed_loop` refreshes daily.
+      3. `_BUNDLED_PATH` — the read-only seed shipped in the PyInstaller
+         exe. Used until the feed worker has populated the writable
+         path at least once.
+
+    Falling back to the bundled path even when missing is fine — the
+    file-stat in `_load_calendar` will then log the missing-file warning
+    once and the catalyst axis goes into reduced mode (no news veto).
+    """
+    if _DEFAULT_PATH is not _BUNDLED_PATH:
+        return Path(_DEFAULT_PATH)
+    try:
+        from src import config
+        db_path = getattr(config, "DB_PATH", None)
+        if db_path:
+            local = Path(db_path).parent / "economic_calendar.json"
+            if local.exists():
+                return local
+    except Exception:
+        pass
+    return _BUNDLED_PATH
+
+
+# Kept as a module-level alias for back-compat with callers that
+# import _DEFAULT_PATH directly (tests monkeypatch this). The
+# resolver function gets called lazily in _load_calendar when no
+# explicit path is supplied so a delayed config.DB_PATH still wins.
+_DEFAULT_PATH = _BUNDLED_PATH
 
 # In-memory cache: keyed on the path string so multiple files (test
 # fixtures + production) coexist without stomping each other. Value:
@@ -60,8 +101,13 @@ def _parse_iso(s: str) -> datetime | None:
 def _load_calendar(path: Path | None = None) -> list[dict]:
     """Return the parsed events list, using the mtime-keyed cache. Empty
     list on any failure so callers don't need to special-case missing
-    file vs empty file."""
-    p = (path or _DEFAULT_PATH).resolve()
+    file vs empty file.
+
+    When no path is supplied, resolves writable-first via
+    `_resolve_default_path()` so stack-local refreshed copies win over
+    the bundled seed.
+    """
+    p = (path or _resolve_default_path()).resolve()
     key = str(p)
     try:
         mtime = p.stat().st_mtime
