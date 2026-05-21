@@ -557,6 +557,14 @@ void PostMarketSnapshot() {
    double adxBuf[];
    if(hAdxH1 != INVALID_HANDLE && CopyBuffer(hAdxH1, MAIN_LINE, 0, 1, adxBuf) > 0) {
       ext += StringFormat(",\"adx_h1\":%.2f", adxBuf[0]);
+   } else if(hAdxH1 != INVALID_HANDLE) {
+      // CopyBuffer failed despite a valid handle — indicator likely recalculating
+      // after a bar close or MT5 reconnect. Release and reset so the next cycle
+      // re-creates it fresh rather than silently omitting adx_h1 indefinitely.
+      Print("PostMarketSnapshot: ADX H1 CopyBuffer failed (err=", GetLastError(),
+            ") — releasing handle for re-creation next cycle");
+      IndicatorRelease(hAdxH1);
+      hAdxH1 = INVALID_HANDLE;
    }
 
    // h1_recent_closes: last 5 closed H1 bars (shifts 5..1, oldest first).
@@ -1322,24 +1330,37 @@ double LotsFromRisk(double slPrice, double entryPrice) {
    if(balance <= 0 || LotsPer100Balance <= 0) return minLot;
 
    // Step 1: balance-based proposed size.
+   // Uses ACCOUNT_BALANCE deliberately — the lot multiplier is a
+   // policy ratio ("X lots per $100 of total account size"), not a
+   // risk gauge. Switching this to free-margin would silently shrink
+   // new trades whenever an existing position is open, which is a
+   // bigger behavioral change than the operator asked for.
    double lots = (balance / 100.0) * LotsPer100Balance;
    lots = MathFloor(lots / lotStep) * lotStep;
 
-   // Step 2: per-trade risk-percentage cap (when enabled, slPrice valid,
-   // and broker tick info available). Computes dollars-at-risk if SL is
-   // hit at the proposed size; if it exceeds balance * cap%, shrink the
-   // size to the largest that fits the cap. The cap percentage is read
-   // from the GUI's `max_sl_loss_percent` setting via the API (cached
-   // for 60s); the input value is the fallback on API failure.
+   // Step 2: per-trade risk-percentage cap. Computes dollars-at-risk
+   // if SL hits at the proposed size; if it exceeds the cap, shrink
+   // to the largest size that fits.
+   //
+   // Denominator is ACCOUNT_FREEMARGIN, not ACCOUNT_BALANCE — what
+   // matters for "can I afford to lose X% on this trade" is the
+   // capital I have left to lose, not the gross account size. With
+   // an open position eating 30% of margin, free-margin already
+   // reflects the reduced cushion; tying the cap to balance alone
+   // would let stacked positions compound risk past the operator's
+   // intent. Falls back to balance when free-margin is unavailable
+   // (broker hasn't reported it yet on a fresh terminal).
    string riskCapMsg = "";
    double maxSlLossPct = MaxSlLossPercentLive();
    if(maxSlLossPct > 0 && slPrice > 0 && entryPrice > 0) {
       double tickSize = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_SIZE);
       double tickValue = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_VALUE);
+      double freeMargin = AccountInfoDouble(ACCOUNT_FREEMARGIN);
+      double capDenom = (freeMargin > 0) ? freeMargin : balance;
       if(tickSize > 0 && tickValue > 0) {
          double slDistance = MathAbs(entryPrice - slPrice);
          double dollarsPerLot = (slDistance / tickSize) * tickValue;
-         double maxLossDollars = balance * maxSlLossPct / 100.0;
+         double maxLossDollars = capDenom * maxSlLossPct / 100.0;
          double riskAtLots = dollarsPerLot * lots;
          if(riskAtLots > maxLossDollars && dollarsPerLot > 0) {
             double cappedLots = maxLossDollars / dollarsPerLot;
@@ -1350,13 +1371,14 @@ double LotsFromRisk(double slPrice, double entryPrice) {
                Print("CT LotsFromRisk REJECT: even minLot=", minLot,
                      " loses $", DoubleToString(dollarsPerLot * minLot, 2),
                      " > max $", DoubleToString(maxLossDollars, 2),
-                     " (", maxSlLossPct, "% of balance ", balance,
+                     " (", maxSlLossPct, "% of free-margin ", capDenom,
                      "). slDistance=", slDistance);
                return 0.0;
             }
             riskCapMsg = StringFormat(
-               " [risk-capped: orig %.2f lots @ $%.2f loss > $%.2f max -> %.2f lots @ $%.2f loss]",
-               lots, riskAtLots, maxLossDollars, cappedLots, dollarsPerLot * cappedLots);
+               " [risk-capped: orig %.2f lots @ $%.2f loss > $%.2f max (free-margin $%.2f) -> %.2f lots @ $%.2f loss]",
+               lots, riskAtLots, maxLossDollars, capDenom,
+               cappedLots, dollarsPerLot * cappedLots);
             lots = cappedLots;
          }
       }
@@ -3638,64 +3660,16 @@ void DoAttachSignal(long id, string payload) {
    }
    sl = clampedSl;
 
-   // Risk-cap check at attach time. OPEN_INSTANT opened with an
-   // emergency SL sized via InstantRiskPercent; ATTACH_SIGNAL now
-   // swaps in the channel's real SL which may be wider. If the
-   // current lot size at the new SL would exceed
-   // max_sl_loss_percent of balance, partial-close down to fit
-   // (or reject the trade entirely if even minLot is too risky).
-   double maxSlLossPctA = MaxSlLossPercentLive();
-   if(maxSlLossPctA > 0) {
-      double tickSizeA = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_SIZE);
-      double tickValueA = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_VALUE);
-      double balanceA = AccountInfoDouble(ACCOUNT_BALANCE);
-      double curVol = PositionGetDouble(POSITION_VOLUME);
-      double minLotA = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_MIN);
-      double lotStepA = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_STEP);
-      if(lotStepA <= 0) lotStepA = 0.01;
-      if(minLotA <= 0) minLotA = lotStepA;
-      if(tickSizeA > 0 && tickValueA > 0 && balanceA > 0 && curVol > 0) {
-         double slDistanceA = MathAbs(entry - sl);
-         double dollarsPerLotA = (slDistanceA / tickSizeA) * tickValueA;
-         double maxLossA = balanceA * maxSlLossPctA / 100.0;
-         double riskA = dollarsPerLotA * curVol;
-         if(riskA > maxLossA && dollarsPerLotA > 0) {
-            double targetLots = maxLossA / dollarsPerLotA;
-            // Floor to lot step so we don't propose a fractional
-            // volume the broker rejects. NormalizeDouble after.
-            targetLots = MathFloor(targetLots / lotStepA) * lotStepA;
-            if(targetLots < minLotA) {
-               // Even minLot at this signal SL exceeds the cap —
-               // can't safely keep the position open. Close
-               // entirely and reject the attach so the operator
-               // sees why.
-               trade.PositionClose(ticket);
-               PostResult(id, "rejected", ticket,
-                  StringFormat("sl_too_wide_for_max_risk_pct: "
-                               "minLot=%.2f loses $%.2f > $%.2f "
-                               "(%.2f%% of $%.2f)",
-                               minLotA, dollarsPerLotA * minLotA,
-                               maxLossA, maxSlLossPctA, balanceA));
-               g_stats_rejected++;
-               return;
-            }
-            // Partial-close to bring volume down to the target.
-            double volToClose = NormalizeDouble(curVol - targetLots, 2);
-            if(volToClose > 0) {
-               if(!trade.PositionClosePartial(ticket, volToClose)) {
-                  Print("CT ATTACH_SIGNAL risk-cap partial-close failed: ",
-                        "retcode=", trade.ResultRetcode(),
-                        " curVol=", curVol, " volToClose=", volToClose);
-               } else {
-                  Print("CT ATTACH_SIGNAL risk-cap reduced ",
-                        curVol, " -> ", targetLots, " lots "
-                        "(would have lost $", DoubleToString(riskA, 2),
-                        " > cap $", DoubleToString(maxLossA, 2), ")");
-               }
-            }
-         }
-      }
-   }
+   // Note: max_sl_loss_percent is NOT applied here. ATTACH_SIGNAL
+   // attaches the channel's SL/TPs to an already-open position; the
+   // operator's risk policy was decided at OPEN time (for structured
+   // OPENs via LotsFromRisk) or by InstantRiskPercent (for the
+   // OPEN_INSTANT emergency SL). Re-applying the cap here would
+   // partial-close naked positions every time the channel's SL is a
+   // hair wider than the emergency SL — surprising, noisy, and not
+   // what the operator asked for. The risk cap is now strictly an
+   // "OPEN-action lot-sizing input," not an "anything-that-modifies-
+   // a-position guard."
 
    if(!trade.PositionModify(ticket, sl, tpFinal)) {
       PostResult(id, "failed", ticket,

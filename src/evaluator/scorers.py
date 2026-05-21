@@ -257,10 +257,12 @@ def score_regime(side: str, inputs: dict[str, Any]) -> AxisScore:
         missing.append("vix")
 
     score = clamp(score)
-    rationale = (
-        f"{side} regime axis: {'; '.join(parts)}" if parts else
-        f"{side} regime axis: no regime data"
-    )
+    if parts:
+        rationale = f"{side} regime axis: {'; '.join(parts)}"
+    elif missing:
+        rationale = f"{side} regime axis: no regime data ({', '.join(missing)} missing)"
+    else:
+        rationale = f"{side} regime axis: normal (no extreme readings)"
     return AxisScore(
         score=round(score, 3),
         rationale=rationale,

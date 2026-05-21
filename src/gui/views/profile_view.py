@@ -507,33 +507,20 @@ class ProfileView(QWidget):
             )
 
 
-_AI_OPTIONS: list[tuple[str, str, str]] = [
-    ("Default (.env)", "", ""),
-    ("Anthropic — Claude Sonnet 4.6", "anthropic", "claude-sonnet-4-6"),
-    ("Anthropic — Claude Opus 4.7",   "anthropic", "claude-opus-4-7"),
-    ("Anthropic — Claude Haiku 4.5",  "anthropic", "claude-haiku-4-5-20251001"),
-    ("OpenAI — gpt-5",       "openai", "gpt-5"),
-    ("OpenAI — gpt-5-mini",  "openai", "gpt-5-mini"),
-    ("OpenAI — gpt-5-nano",  "openai", "gpt-5-nano"),
-]
-
-
 class _PlaygroundRunner(QThread):
     finished_with = Signal(object)
 
-    def __init__(self, stack: Stack, message: str, provider: str, model: str) -> None:
+    def __init__(self, stack: Stack, message: str) -> None:
         super().__init__()
         self._stack = stack
         self._message = message
-        self._provider = provider
-        self._model = model
 
     def run(self) -> None:
         result = run_playground(
             self._stack,
             self._message,
-            provider_override=self._provider or None,
-            interpreter_model_override=self._model or None,
+            provider_override=None,
+            interpreter_model_override=None,
         )
         self.finished_with.emit(result)
 
@@ -569,12 +556,6 @@ class _PlaygroundTab(QWidget):
         layout.addWidget(self._input)
 
         action_row = QHBoxLayout()
-        action_row.addWidget(QLabel("AI:"))
-        self._ai_combo = QComboBox()
-        for label, provider, model in _AI_OPTIONS:
-            self._ai_combo.addItem(label, (provider, model))
-        self._ai_combo.setMinimumWidth(260)
-        action_row.addWidget(self._ai_combo)
         self._run_btn = QPushButton("Run  ·  triage → interpret")
         self._run_btn.clicked.connect(self._on_run)
         action_row.addWidget(self._run_btn)
@@ -611,8 +592,7 @@ class _PlaygroundTab(QWidget):
         self._status.setText("running…")
         self._left_panel.setPlainText("")
         self._right_panel.setPlainText("")
-        provider, model = self._ai_combo.currentData()
-        self._runner = _PlaygroundRunner(stack, message, provider, model)
+        self._runner = _PlaygroundRunner(stack, message)
         self._runner.finished_with.connect(self._on_finished)
         self._runner.finished.connect(self._on_thread_done)
         from src.gui.services.thread_registry import register

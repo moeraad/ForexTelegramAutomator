@@ -68,10 +68,9 @@ DROP ("ignore") only when the message clearly fits one of these UNIVERSAL noise 
 2. Pure greetings or sign-offs with no trading content.
 3. Pure thanks, blessings, encouragement, motivational filler.
 4. Promotional / sponsorship / referral / ad content.
-5. TP/SL hit auto-close announcements (e.g. with pip counts or trophy markers).
-6. Channel performance brags / boasts / weekly recaps.
-7. Banter / hype / self-talk / emotional reactions with no instruction.
-8. Bare price pings with no instruction.
+5. Channel performance brags / boasts / weekly recaps.
+6. Banter / hype / self-talk / emotional reactions with no instruction.
+7. Bare price pings with no instruction.
 
 Channel-specific PROMO / AD indicators (any of these in the message → strong evidence of category 4):
 ${promo_indicators}

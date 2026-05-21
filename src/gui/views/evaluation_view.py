@@ -777,7 +777,36 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
             + "</div>"
         )
 
-    # 6b. Synthesizer breadcrumb. Always rendered (even when probabilities
+    # 6b. Missing inputs — shown when any axis ran with incomplete data.
+    # `missing` entries are formatted as "AXIS:field_name" by compose.py;
+    # we group by axis for readability.
+    missing_inputs = e.get("missing") or []
+    if missing_inputs:
+        grouped: dict[str, list[str]] = {}
+        for entry in missing_inputs:
+            if ":" in entry:
+                axis, field = entry.split(":", 1)
+            else:
+                axis, field = "?", entry
+            grouped.setdefault(axis, []).append(field)
+        rows_html = "".join(
+            f"<tr>"
+            f"<td style='color:#f6c453; font-weight:600; padding:2px 10px 2px 0;'>{_html_escape(ax)}</td>"
+            f"<td style='color:#d1d4dc; font-size:11px;'>{_html_escape(', '.join(fields))}</td>"
+            f"</tr>"
+            for ax, fields in grouped.items()
+        )
+        parts.append(
+            "<h4 style='margin-top:14px; margin-bottom:6px; color:#f6c453;'>"
+            f"⚠ Missing inputs ({len(missing_inputs)})</h4>"
+            "<table cellspacing='0' cellpadding='2'>"
+            + rows_html
+            + "</table>"
+            "<div style='color:#787b86; font-size:10px; margin-top:4px;'>"
+            "Axes with missing inputs scored on partial data — verdict may be inflated.</div>"
+        )
+
+    # 6c. Synthesizer breadcrumb. Always rendered (even when probabilities
     # are present) so the operator can see WHY a probability table looks
     # the way it does — full = synthesizer ran cleanly; failed = LLM
     # tried but didn't parse; unavailable = no AI client was passed.
@@ -921,24 +950,16 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
             f"{_html_escape(reason)}</div>"
         )
 
-    # 12. Data quality
+    # 12. Data quality — badge only; individual missing inputs are shown
+    # in the dedicated "Missing inputs" section above.
     dq = e.get("data_quality", "—")
-    missing = e.get("missing") or []
-    if missing or dq != "full":
-        dq_col = "#26a69a" if dq == "full" else "#f6c453"
+    if dq != "full":
+        dq_col = "#f6c453"
         parts.append(
             "<h4 style='margin-top:14px; margin-bottom:6px;'>Data quality</h4>"
             f"<div>Status: <span style='color:{dq_col}; font-weight:600;'>"
             f"{_html_escape(dq)}</span></div>"
         )
-        if missing:
-            parts.append(
-                "<div style='color:#787b86; font-size:11px; margin-top:6px;'>"
-                "Missing inputs: "
-                + ", ".join(_html_escape(m) for m in missing[:15])
-                + ("…" if len(missing) > 15 else "")
-                + "</div>"
-            )
 
     # 13. Context excerpt (smaller; the synthesizer input).
     ctx = e.get("context_excerpt")

@@ -241,6 +241,7 @@ RULE C — IN-PLACE UPDATE. If signal.side == cur_side AND partials_taken == 0:
 
 Notes:
 - RULE B fires on partials_taken >= 1 alone. Do NOT gate on P&L.
+- RULE B applies to BOTH managed AND naked positions. A naked position with partials_taken>=1 hits RULE B (CLOSE_FULL + OPEN), NOT ATTACH_SIGNAL.
 - The SL ratchet is ONE-WAY: tighten only.
 - Channel-direct MOVE_SL is NOT a RULE C emit — it follows the channel literally.
 - NEVER emit MODIFY_TPS in any context other than RULE C.

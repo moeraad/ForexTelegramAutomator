@@ -177,6 +177,8 @@ def _build_user_input(
     ):
         if k in raw_inputs_excerpt:
             v = raw_inputs_excerpt[k]
+            if isinstance(v, dict):
+                v = {ik: iv for ik, iv in v.items() if iv is not None}
             parts.append(f"  {k}: {json.dumps(v, default=str)[:200]}")
     parts.append("")
 

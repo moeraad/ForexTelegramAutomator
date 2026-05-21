@@ -54,10 +54,13 @@ class PlaygroundResult:
 
 
 def _refresh_prompts_for(stack: Stack) -> None:
-    profile_name = stack.profile_path.stem
-    config.CHANNEL_PROFILE = profile_name
-    ai.SYSTEM_PROMPT = ai._render_system_prompt(profile_name)  # noqa: SLF001
-    ai_triage.TRIAGE_SYSTEM_PROMPT = ai_triage._render_triage_prompt(profile_name)  # noqa: SLF001
+    # Point config.DB_PATH at the stack's DB so _load_profile resolves
+    # profile.json from the correct APPDATA directory rather than doing
+    # a name-based lookup that breaks for APPDATA-resident profiles.
+    config.DB_PATH = str(stack.db_path)
+    config.CHANNEL_PROFILE = stack.name
+    ai.SYSTEM_PROMPT = ai._render_system_prompt()  # noqa: SLF001
+    ai_triage.TRIAGE_SYSTEM_PROMPT = ai_triage._render_triage_prompt()  # noqa: SLF001
 
 
 def _state_for(stack: Stack) -> tuple[str, int]:
