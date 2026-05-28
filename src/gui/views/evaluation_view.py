@@ -129,7 +129,8 @@ class EvaluationView(QWidget):
         self._stats_label.setStyleSheet("color: #787b86;")
         top.addWidget(self._stats_label)
         top.addSpacing(8)
-        refresh_btn = QPushButton("Refresh")
+        from src.gui._button_helpers import make_refresh_button
+        refresh_btn = make_refresh_button("Reload evaluations")
         refresh_btn.clicked.connect(self.refresh)
         top.addWidget(refresh_btn)
         layout.addLayout(top)
@@ -265,7 +266,7 @@ class _PerTradeTab(QWidget):
     """Two-pane: table on left, full evaluation JSON on the right."""
 
     _HEADERS = (
-        "When", "Type", "Side", "Score", "Verdict", "Multiplier",
+        "When", "Type", "Side", "Channel", "Score", "Verdict", "Multiplier",
         "P&L", "Close reason", "Hold (min)",
     )
 
@@ -276,15 +277,16 @@ class _PerTradeTab(QWidget):
     # Sum verified at startup; if you tweak these, the constraint check
     # in `_apply_column_weights` will warn at runtime.
     _COLUMN_WEIGHTS: tuple[int, ...] = (
-        14,  # When
-        11,  # Type
-         6,  # Side
+        13,  # When
+        10,  # Type
+         5,  # Side
+        10,  # Channel
          7,  # Score
-        10,  # Verdict
-        10,  # Multiplier
-         9,  # P&L
-        23,  # Close reason
-        10,  # Hold (min)
+         9,  # Verdict
+         9,  # Multiplier
+         8,  # P&L
+        20,  # Close reason
+         9,  # Hold (min)
     )
 
     def __init__(self) -> None:
@@ -457,13 +459,22 @@ class _PerTradeTab(QWidget):
         pnl_str = f"{t.realized_pnl:+.2f}"
         hold_str = str(t.hold_minutes) if t.hold_minutes is not None else "—"
 
+        # Channel column resolves v2 id → friendly name via the shared
+        # helper (cached). Legacy / pre-Step-11 rows render "—".
+        from src.gui.models.actions_model import _channel_display_name
+        channel_label = (
+            _channel_display_name(t.source_channel_id)
+            if t.source_channel_id else "—"
+        )
         cells = (
-            when, t.action_type, t.side, str(score), str(verdict), mult_str,
+            when, t.action_type, t.side, channel_label,
+            str(score), str(verdict), mult_str,
             pnl_str, t.close_reason, hold_str,
         )
         for col, val in enumerate(cells):
             item = QTableWidgetItem(val)
-            if col == 6:  # P&L column — color by sign for quick scan
+            # P&L column index shifted from 6 → 7 with the new Channel col.
+            if col == 7:  # P&L column — color by sign for quick scan
                 if t.realized_pnl > 0:
                     item.setForeground(QColor("#26a69a"))
                 elif t.realized_pnl < 0:

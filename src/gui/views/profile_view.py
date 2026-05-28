@@ -143,9 +143,27 @@ def _prose_font() -> QFont:
 
 
 class ProfileView(QWidget):
+    """Profile editor — Phase-2 cleanup: now per-Profile, not per-Stack.
+
+    The Editor tab + Save / Revert / Export buttons operate on the
+    profile picked in the top-left dropdown, not on whatever profile
+    the current Stack happens to own. Operators editing aggregate-
+    routing setups (where one destination has channels using N
+    different profiles) can pick any profile without switching stacks.
+
+    The sub-tabs (Triggers, Unmatched, Playground) stay stack-scoped
+    because they reference per-destination DB rows (matcher hit counts,
+    unmatched signal pool, latest-action replay). Switching profile via
+    the picker keeps them on the current stack.
+    """
+
     def __init__(self, stack: Stack) -> None:
         super().__init__()
         self._stack = stack
+        # Phase-2: separate "which profile are we editing?" from "which
+        # stack are we on?". Initial value follows the stack so existing
+        # behavior is unchanged until the operator changes the picker.
+        self._active_profile_name: str = stack.name
         self._original: OrderedDict[str, str] = OrderedDict()
         self._editors: dict[str, QWidget] = {}
         self._dirty = False
@@ -154,6 +172,11 @@ class ProfileView(QWidget):
 
     def rebind(self, stack: Stack) -> None:
         self._stack = stack
+        # On stack change, reset the picker to the new stack's profile —
+        # that's the operator's most likely intent ("show me THIS
+        # stack's profile"). They can re-pick another one if they want.
+        self._active_profile_name = stack.name
+        self._refresh_picker_choices()
         self._load_from_disk()
         if hasattr(self, "_triggers_tab"):
             self._triggers_tab.rebind(stack)
@@ -173,37 +196,57 @@ class ProfileView(QWidget):
         self._dirty_marker.setStyleSheet("color: #ff9800;")
         top.addWidget(self._dirty_marker)
         top.addStretch()
-
-        try:
-            from qfluentwidgets import PrimaryPushButton
-            self._reload_btn = PrimaryPushButton("Save")
-        except Exception:
-            self._reload_btn = QPushButton("Save")
-        self._reload_btn.clicked.connect(self._save)
-        top.addWidget(self._reload_btn)
-
-        self._revert_btn = QPushButton("Revert")
-        self._revert_btn.clicked.connect(self._load_from_disk)
-        top.addWidget(self._revert_btn)
-
-        self._export_btn = QPushButton("Export…")
-        self._export_btn.clicked.connect(self._export)
-        top.addWidget(self._export_btn)
-
-        self._restart_btn = QPushButton("Reload Listener")
-        self._restart_btn.setToolTip("nssm restart <listener service>  ·  applies the saved profile")
-        self._restart_btn.clicked.connect(self._reload_listener)
-        top.addWidget(self._restart_btn)
-
-        self._generate_btn = QPushButton("Generate from channel history…")
-        self._generate_btn.setToolTip(
-            "Fetch recent channel messages, classify each via AI, "
-            "and derive a profile JSON from the results."
-        )
-        self._generate_btn.clicked.connect(self._open_generator_wizard)
-        top.addWidget(self._generate_btn)
-
         layout.addLayout(top)
+
+        # Profile-wide ribbon — common to all profile tabs, sits
+        # immediately under the title row. Three groups:
+        #   File       — Save / Revert / Export
+        #   Listener   — Reload listener service (applies saved profile)
+        #   Generate   — Build a fresh profile from channel history
+        from src.gui.panels.ribbon_bar import RibbonAction, RibbonBar, RibbonGroup
+        ribbon = RibbonBar([
+            RibbonGroup("File", [
+                RibbonAction("SAVE", "Save",
+                             "Commit profile edits to disk",
+                             variant="success", callback=self._save),
+                RibbonAction("CANCEL", "Revert",
+                             "Discard pending edits and re-read from disk",
+                             variant="warning", callback=self._load_from_disk),
+                RibbonAction("SHARE", "Export",
+                             "Save the profile JSON to another location",
+                             callback=self._export),
+            ]),
+            RibbonGroup("Listener", [
+                RibbonAction("UPDATE", "Reload",
+                             "nssm restart <listener service> · applies the saved profile",
+                             variant="warning", callback=self._reload_listener),
+            ]),
+            RibbonGroup("Generate", [
+                RibbonAction("ROBOT", "From history",
+                             "Fetch recent channel messages, classify each via AI, "
+                             "and derive a profile JSON from the results.",
+                             variant="success", callback=self._open_generator_wizard),
+            ]),
+        ])
+        layout.addWidget(ribbon)
+
+        # Phase-2: profile picker — operator picks WHICH profile to edit
+        # instead of being implicitly bound to the current stack's profile.
+        # Hidden by _refresh_picker_choices when the active destination has
+        # ≤1 profile (1:1 topology) — switching destinations via the
+        # top-left picker already disambiguates. Visible for aggregate /
+        # mesh routing where one destination serves multiple channels
+        # with different profiles.
+        self._picker_holder = QWidget()
+        picker_row = QHBoxLayout(self._picker_holder)
+        picker_row.setContentsMargins(0, 0, 0, 0)
+        picker_row.addWidget(QLabel("Profile:"))
+        self._picker = QComboBox()
+        self._picker.setMinimumWidth(280)
+        self._picker.currentIndexChanged.connect(self._on_picker_changed)
+        picker_row.addWidget(self._picker)
+        picker_row.addStretch()
+        layout.addWidget(self._picker_holder)
 
         self._meta_label = QLabel()
         self._meta_label.setStyleSheet("color: #787b86; padding-bottom: 4px;")
@@ -225,11 +268,16 @@ class ProfileView(QWidget):
         self._tabs.addTab(self._editor_tab, "Editor")
 
         from src.gui.views.triggers_view import TriggersView
-        self._triggers_tab = TriggersView(self._stack)
+        self._triggers_tab = TriggersView(
+            self._stack, get_profile_name=lambda: self._active_profile_name,
+        )
         self._tabs.addTab(self._triggers_tab, "Triggers")
 
         from src.gui.views.unmatched_view import UnmatchedView
-        self._unmatched_tab = UnmatchedView(self._stack)
+        self._unmatched_tab = UnmatchedView(
+            self._stack,
+            get_profile_name=lambda: self._active_profile_name,
+        )
         # Promotion writes through profile_io, so the Triggers tab must
         # reload from disk to surface the new row. Without this, the
         # operator promotes, switches tabs, and sees stale in-memory
@@ -240,15 +288,203 @@ class ProfileView(QWidget):
         )
         self._tabs.addTab(self._unmatched_tab, "Unmatched")
 
-        self._playground = _PlaygroundTab(lambda: self._stack)
+        self._playground = _PlaygroundTab(
+            lambda: self._stack,
+            get_profile_name=lambda: self._active_profile_name,
+        )
         self._tabs.addTab(self._playground, "Playground")
         layout.addWidget(self._tabs, 1)
 
+    # ---- Phase 2: profile picker ----------------------------------------
+
+    def _discover_profiles(self) -> list[str]:
+        """Return every profile name (stem) discoverable on disk.
+
+        Sources (deduped):
+          - ``%APPDATA%/CopyTrades/<name>/profile.json`` — per-stack files
+            written by the wizard
+          - ``<repo>/channels/<name>.json`` — operator-edited templates
+        """
+        import os
+        from src.gui.services.stack_registry import BASE_DIR
+        names: set[str] = set()
+        try:
+            appdata = Path(os.environ.get("APPDATA", str(Path.home())))
+            root = appdata / "CopyTrades"
+            if root.exists():
+                for sub in root.iterdir():
+                    if sub.is_dir() and (sub / "profile.json").exists():
+                        names.add(sub.name)
+        except Exception:
+            pass
+        try:
+            ch_dir = BASE_DIR / "channels"
+            if ch_dir.exists():
+                for p in ch_dir.glob("*.json"):
+                    if p.stem.endswith("_draft"):
+                        continue
+                    names.add(p.stem)
+        except Exception:
+            pass
+        return sorted(names)
+
+    def _refresh_picker_choices(self) -> None:
+        """Repopulate the picker; preserve the active selection when possible.
+
+        Picker visibility:
+          - ≤1 profile reachable from the active destination → HIDDEN.
+            Top-left picker already disambiguates (1:1 topology).
+          - 2+ profiles reachable → VISIBLE so the operator can switch
+            within the destination (aggregate/mesh routing).
+        """
+        if not hasattr(self, "_picker"):
+            return
+        scoped = self._profiles_for_active_destination()
+        choices = scoped if scoped else self._discover_profiles()
+        # Make sure the active name is in the list even if it doesn't
+        # exist on disk yet (e.g., brand-new stack before first save).
+        if self._active_profile_name and self._active_profile_name not in choices:
+            choices.append(self._active_profile_name)
+            choices.sort()
+        self._picker.blockSignals(True)
+        self._picker.clear()
+        for name in choices:
+            self._picker.addItem(name, name)
+        idx = self._picker.findData(self._active_profile_name)
+        if idx >= 0:
+            self._picker.setCurrentIndex(idx)
+        self._picker.blockSignals(False)
+        # Hide the whole picker row when there's nothing to switch between.
+        if hasattr(self, "_picker_holder"):
+            self._picker_holder.setVisible(len(choices) > 1)
+
+    def _profiles_for_active_destination(self) -> list[str]:
+        """Profile names reachable through routes hitting the active dest.
+
+        Returns [] when v2 config can't be read — caller falls back to
+        the global profile list so the picker still works on legacy
+        single-stack installs.
+        """
+        try:
+            from src import config_v2
+            cfg = config_v2.load_v2(config_v2.config_path())
+            if cfg is None:
+                return []
+        except Exception:
+            return []
+        # Find the destination matching the active stack (by name).
+        dest = next(
+            (d for d in cfg.destinations if d.name == self._stack.name),
+            None,
+        )
+        if dest is None:
+            return []
+        names: list[str] = []
+        seen: set[str] = set()
+        for r in cfg.routes:
+            if r.destination_id != dest.id or not r.enabled:
+                continue
+            ch = cfg.channel(r.channel_id)
+            if ch is None or not ch.enabled:
+                continue
+            prof = cfg.profile(ch.profile_id)
+            if prof is None or prof.name in seen:
+                continue
+            seen.add(prof.name)
+            names.append(prof.name)
+        names.sort()
+        return names
+
+    def _on_picker_changed(self, _idx: int) -> None:
+        picked = self._picker.currentData()
+        if not picked or picked == self._active_profile_name:
+            return
+        # Operator picked a different profile — warn about unsaved edits.
+        if self._dirty:
+            ans = QMessageBox.question(
+                self, "Switch profile",
+                "Unsaved edits in this profile will be lost. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                # Snap the picker back.
+                self._picker.blockSignals(True)
+                self._picker.setCurrentIndex(
+                    self._picker.findData(self._active_profile_name)
+                )
+                self._picker.blockSignals(False)
+                return
+        self._active_profile_name = picked
+        self._load_from_disk()
+        # Tell sub-tabs to re-read from the new profile (TriggersView
+        # owns the writable triggers list; UnmatchedView reads dest-DB
+        # but appends to the active profile on promote).
+        if hasattr(self, "_triggers_tab") and hasattr(self._triggers_tab, "reload"):
+            try:
+                self._triggers_tab.reload()
+            except Exception:
+                pass
+
+    def _active_profile_path(self) -> Path:
+        """Resolve the active profile's JSON path.
+
+        Priority:
+          1. v2 Profile entity matching ``_active_profile_name`` (path
+             is operator-set in V2 Config).
+             - If that absolute path doesn't exist on this machine
+               (config was copied between PCs / installs / users), fall
+               back to the same-basename file under the runtime bundle
+               (``BASE_DIR/channels/<basename>``) or APPDATA.
+          2. Legacy lookup via ``profile_io.profile_path`` (APPDATA
+             stack folder + ``channels/<name>.json`` fallback).
+
+        Decoupled from ``self._stack.profile_path`` so the picker can
+        switch independently of the current stack.
+        """
+        try:
+            from src import config_v2
+            cfg = config_v2.load_v2(config_v2.config_path())
+            if cfg is not None:
+                for p in cfg.profiles:
+                    if p.name == self._active_profile_name and p.path:
+                        recorded = Path(p.path)
+                        if recorded.exists():
+                            return recorded
+                        # Recorded path is stale (different machine /
+                        # install / user) — match the basename against
+                        # locations that actually exist on THIS machine.
+                        return self._resolve_profile_by_basename(
+                            recorded.name,
+                        ) or recorded
+        except Exception:
+            pass
+        from src.gui.services import profile_io
+        return profile_io.profile_path(self._active_profile_name)
+
+    def _resolve_profile_by_basename(self, basename: str) -> Path | None:
+        """Find ``basename`` under the runtime bundle / APPDATA channels.
+
+        Used when the v2 Profile.path was recorded on a different
+        machine and references a path that doesn't exist here.
+        """
+        import os
+        from src.config import BASE_DIR
+        candidates = [
+            BASE_DIR / "channels" / basename,
+            Path(os.environ.get("APPDATA", "")) / "CopyTrades" / "channels" / basename
+            if os.environ.get("APPDATA") else None,
+        ]
+        for c in candidates:
+            if c is not None and c.exists():
+                return c
+        return None
+
     def _load_from_disk(self) -> None:
-        path = self._stack.profile_path
+        path = self._active_profile_path()
         self._title.setText(
             f"<span style='font-size:16px; font-weight:700;'>PROFILE</span>"
-            f"&nbsp;&nbsp;<span style='color:#787b86;'>{self._stack.name}</span>"
+            f"&nbsp;&nbsp;<span style='color:#787b86;'>{self._active_profile_name}</span>"
         )
         self._meta_label.setText(f"file: {path}")
         if not path.exists():
@@ -424,26 +660,37 @@ class ProfileView(QWidget):
         from src.gui.services import profile_io
         # Merge editor-changes onto the on-disk JSON so the triggers array
         # (which the editor does NOT show) survives + drives derived fields.
-        on_disk = profile_io.load_profile(self._stack.name)
+        # Phase-2: uses the picker's active profile, not the stack's name.
+        on_disk = profile_io.load_profile(self._active_profile_name)
         merged = dict(on_disk)
         for k, v in data.items():
             if k in _DERIVED_FIELDS:
                 continue
             merged[k] = v
         try:
-            path = profile_io.save_profile(self._stack.name, merged)
+            path = profile_io.save_profile(self._active_profile_name, merged)
         except OSError as e:
             QMessageBox.critical(self, "Save failed", str(e))
             return
         self._original = data
         self._set_dirty(False)
+        # Day-2 cleanup: with mtime-based ProfileContext invalidation
+        # (src/profile_context.py:get_profile_context), the listener and
+        # API processes pick up the new prompt automatically on the very
+        # next message — no service restart required. The "Reload
+        # Listener" button is still useful when the operator wants to
+        # force-restart for other reasons (e.g. after a code update).
         QMessageBox.information(
             self, "Saved",
-            f"Wrote {path}\n\nClick 'Reload Listener' to apply the new prompt.",
+            f"Wrote {path}\n\n"
+            "✓ Live: the next incoming message will use the new prompt "
+            "(no service restart needed).\n\n"
+            "Use 'Reload Listener' only if you also need to bounce the "
+            "Telethon session.",
         )
 
     def _export(self) -> None:
-        suggested = f"{self._stack.name}_profile_backup.json"
+        suggested = f"{self._active_profile_name}_profile_backup.json"
         path_str, _ = QFileDialog.getSaveFileName(
             self, "Export profile", suggested, "JSON (*.json)"
         )
@@ -493,7 +740,12 @@ class ProfileView(QWidget):
                 self._save()
                 if self._dirty:
                     return
-        listener_svc = self._stack.service_names[2]
+        # Phase-1: service_names is variable-length now; use the
+        # primary headline instead of indexing.
+        listener_svc = self._stack.primary_listener_service or (
+            self._stack.service_names[2]
+            if len(self._stack.service_names) >= 3 else ""
+        )
         ok, msg = nssm_client.nssm_restart(listener_svc)
         if ok:
             QMessageBox.information(
@@ -510,10 +762,14 @@ class ProfileView(QWidget):
 class _PlaygroundRunner(QThread):
     finished_with = Signal(object)
 
-    def __init__(self, stack: Stack, message: str) -> None:
+    def __init__(
+        self, stack: Stack, message: str,
+        profile_name: str | None = None,
+    ) -> None:
         super().__init__()
         self._stack = stack
         self._message = message
+        self._profile_name = profile_name
 
     def run(self) -> None:
         result = run_playground(
@@ -521,14 +777,22 @@ class _PlaygroundRunner(QThread):
             self._message,
             provider_override=None,
             interpreter_model_override=None,
+            profile_name=self._profile_name,
         )
         self.finished_with.emit(result)
 
 
 class _PlaygroundTab(QWidget):
-    def __init__(self, get_stack):
+    def __init__(self, get_stack, get_profile_name=None):
+        """``get_profile_name`` (post-v2 gap fix) is a callback returning
+        the parent ProfileView's active profile name. When given, the
+        playground uses that profile's SYSTEM_PROMPT + TRIAGE_SYSTEM_PROMPT
+        instead of the stack's default. Operator editing an aggregate-
+        routing config sees the playground reflect their edits.
+        """
         super().__init__()
         self._get_stack = get_stack
+        self._get_profile_name = get_profile_name
         self._runner: _PlaygroundRunner | None = None
         self._build_ui()
 
@@ -557,6 +821,7 @@ class _PlaygroundTab(QWidget):
 
         action_row = QHBoxLayout()
         self._run_btn = QPushButton("Run  ·  triage → interpret")
+        self._run_btn.setProperty("variant", "primary")
         self._run_btn.clicked.connect(self._on_run)
         action_row.addWidget(self._run_btn)
         self._status = QLabel("")
@@ -592,7 +857,10 @@ class _PlaygroundTab(QWidget):
         self._status.setText("running…")
         self._left_panel.setPlainText("")
         self._right_panel.setPlainText("")
-        self._runner = _PlaygroundRunner(stack, message)
+        profile_name = (
+            self._get_profile_name() if self._get_profile_name else None
+        )
+        self._runner = _PlaygroundRunner(stack, message, profile_name=profile_name)
         self._runner.finished_with.connect(self._on_finished)
         self._runner.finished.connect(self._on_thread_done)
         from src.gui.services.thread_registry import register

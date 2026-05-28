@@ -38,6 +38,86 @@ def test_open_action_rejects_invalid_side():
                    entry_low=4864, entry_high=4866, tps=[4880], sl=4855)
 
 
+def test_open_action_rejects_sell_with_sl_below_entry():
+    """SL on the wrong side: SELL with SL BELOW entry = instant stop-out."""
+    with pytest.raises(ValidationError, match="wrong side"):
+        OpenAction(
+            symbol="XAUUSD", side="SELL",
+            entry_low=4500, entry_high=4510, tps=[4480], sl=4495,
+        )
+
+
+def test_open_action_rejects_buy_with_sl_above_entry():
+    """SL on the wrong side: BUY with SL ABOVE entry = instant stop-out."""
+    with pytest.raises(ValidationError, match="wrong side"):
+        OpenAction(
+            symbol="XAUUSD", side="BUY",
+            entry_low=4500, entry_high=4502,
+            tps=[4550], sl=4600,
+        )
+
+
+def test_open_action_rejects_sl_at_entry_boundary():
+    """SL exactly at the protected entry edge is degenerate (zero risk
+    distance / immediate trigger)."""
+    with pytest.raises(ValidationError, match="wrong side"):
+        OpenAction(
+            symbol="XAUUSD", side="SELL",
+            entry_low=4500, entry_high=4510, tps=[4480], sl=4510,
+        )
+
+
+def test_open_action_rejects_sell_with_sl_over_2pct_of_price():
+    """Channel typo case: 'sell now 4569.78 sl4674.62 tp4547.39' — SL
+    distance is 105pt = 2.3% of price, far outside the empirical range
+    for real gold signals (max ~1.8%). The "sl4674.62" almost certainly
+    meant "sl 4574.62" (~5pt stop)."""
+    with pytest.raises(ValidationError, match="suggests a typo"):
+        OpenAction(
+            symbol="XAUUSD", side="SELL",
+            entry_low=4569.78, entry_high=4569.78,
+            tps=[4547.39], sl=4674.62,
+        )
+
+
+def test_open_action_rejects_buy_with_sl_over_2pct_of_price():
+    """3% SL distance = clear typo."""
+    with pytest.raises(ValidationError, match="suggests a typo"):
+        OpenAction(
+            symbol="XAUUSD", side="BUY",
+            entry_low=4500, entry_high=4500,
+            tps=[4550], sl=4350,  # 150pt SL, 50pt TP, ratio 3.0; 3.3% of price
+        )
+
+
+def test_open_action_rejects_tps_on_wrong_side():
+    """Both TPs on the loss-direction side — degenerate signal."""
+    with pytest.raises(ValidationError, match="profit direction inverted"):
+        OpenAction(
+            symbol="XAUUSD", side="SELL",
+            entry_low=4500, entry_high=4500,
+            tps=[4550, 4560], sl=4520,
+        )
+
+
+def test_open_action_accepts_sell_with_sl_just_above_zone():
+    """Tight stop just outside the entry zone is fine."""
+    a = OpenAction(
+        symbol="XAUUSD", side="SELL",
+        entry_low=4500, entry_high=4510, tps=[4480], sl=4515,
+    )
+    assert a.sl == 4515
+
+
+def test_open_action_accepts_realistic_rr():
+    """R:R better than 1:1 (10pt SL, 30pt TP)."""
+    a = OpenAction(
+        symbol="XAUUSD", side="SELL",
+        entry_low=4500, entry_high=4500, tps=[4470], sl=4510,
+    )
+    assert a.sl == 4510
+
+
 def test_close_action_requires_ticket():
     a = CloseAction(mt5_ticket=12345, reason="ai")
     assert a.type == "CLOSE"
@@ -196,7 +276,7 @@ def test_move_sl_rejects_zero_or_negative():
 
 def test_parses_close_partial_default_fraction():
     a = ClosePartialAction()
-    assert a.fraction == 0.5
+    assert a.fraction == 0.25
 
 
 def test_close_partial_rejects_invalid_fraction():

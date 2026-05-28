@@ -1,8 +1,24 @@
+def _reply_context_block(reply_parent_text: str | None) -> str:
+    """Return a short '↳ in reply to' block for DM notifications, or
+    an empty string when the action's source message wasn't a reply or
+    the parent isn't available. Helps the operator see the same
+    antecedent the AI used (e.g. "cancel that order" was a reply to
+    a specific limit-order signal)."""
+    if not reply_parent_text:
+        return ""
+    snippet = reply_parent_text.strip()
+    if len(snippet) > 160:
+        snippet = snippet[:160] + "..."
+    return f"\n↳ in reply to: \"{snippet}\""
+
+
 def render_action_notification(
     action_id: int, action_type: str, payload: dict,
     source_text: str, auto_execute_delay_sec: int,
+    reply_parent_text: str | None = None,
 ) -> str:
     when = "now" if auto_execute_delay_sec <= 0 else f"in {auto_execute_delay_sec}s"
+    reply = _reply_context_block(reply_parent_text)
     if action_type == "OPEN":
         tps = " / ".join(str(t) for t in payload.get("tps", []))
         return (
@@ -11,33 +27,33 @@ def render_action_notification(
             f"Entry: {payload['entry_low']}–{payload['entry_high']}\n"
             f"SL:    {payload['sl']}\n"
             f"TPs:   {tps}\n\n"
-            f"Source: \"{source_text[:120]}\""
+            f"Source: \"{source_text[:120]}\"{reply}"
         )
     if action_type == "MODIFY":
         return (
             f"🔧 MODIFY #{action_id}  (auto {when})\n"
             f"Ticket: {payload['mt5_ticket']}\n"
             f"new_sl: {payload.get('new_sl')}  new_tp: {payload.get('new_tp')}\n\n"
-            f"Source: \"{source_text[:120]}\""
+            f"Source: \"{source_text[:120]}\"{reply}"
         )
     if action_type == "CLOSE":
         return (
             f"🔴 CLOSE #{action_id}  (auto {when})\n"
             f"Ticket: {payload['mt5_ticket']}\n"
             f"Reason: {payload.get('reason','')}\n\n"
-            f"Source: \"{source_text[:120]}\""
+            f"Source: \"{source_text[:120]}\"{reply}"
         )
     if action_type == "CLOSE_ALL":
         return (
             f"🔴 CLOSE_ALL #{action_id}  (auto {when})\n"
             f"Symbol: {payload['symbol']}\n"
             f"Reason: {payload.get('reason','')}\n\n"
-            f"Source: \"{source_text[:120]}\""
+            f"Source: \"{source_text[:120]}\"{reply}"
         )
     if action_type == "ALERT":
         level = payload.get("level", "info").upper()
-        return f"⚠️ ALERT [{level}] #{action_id}\n{payload.get('text','')}"
-    return f"#{action_id} {action_type}: {payload}"
+        return f"⚠️ ALERT [{level}] #{action_id}\n{payload.get('text','')}{reply}"
+    return f"#{action_id} {action_type}: {payload}{reply}"
 
 
 # ---- Phase 5: terminal-state + MT5-event notifications ------------------
@@ -118,6 +134,8 @@ def render_action_terminal(
     *,
     actual_entry: float | None = None,
     actual_volume: float | None = None,
+    source_channel_name: str = "",
+    reply_parent_text: str | None = None,
 ) -> str:
     """One-line DM for an action that just reached a terminal state.
 
@@ -126,10 +144,15 @@ def render_action_terminal(
       "✅ #42 MOVE_SL_BE executed"
       "🚫 #43 CLOSE_PARTIAL rejected — fraction=0.5 (no_open_position)"
       "✅ #137 OPEN executed — BUY XAUUSD lots 0.61 signal-entry 4575-4577 actual 4576.42 sl 4566 tps [4588,4600,4610]"
+      "✅ #137 OPEN executed [from: SMC Daily] — BUY XAUUSD ..."
 
-    `actual_entry`: optional broker fill price (OPEN only).
-    `actual_volume`: optional broker-filled lot size (OPEN only).
-    Both surface signal-vs-reality deltas in the DM.
+    Args:
+        actual_entry: optional broker fill price (OPEN only).
+        actual_volume: optional broker-filled lot size (OPEN only).
+        source_channel_name: Step 12 — when the destination receives
+            messages from multiple channels (aggregate routing), prefix
+            the DM with the originating channel so the operator can tell
+            them apart. Pass "" (default) for single-channel destinations.
     """
     glyph = _STATUS_GLYPH.get(status, "•")
     body = _payload_summary(
@@ -137,12 +160,23 @@ def render_action_terminal(
         actual_entry=actual_entry,
         actual_volume=actual_volume,
     )
-    parts = [f"{glyph} #{action_id} {action_type} {status}"]
+    head = f"{glyph} #{action_id} {action_type} {status}"
+    if source_channel_name:
+        head += f" [from: {source_channel_name}]"
+    parts = [head]
     if body:
         parts.append(f"— {body}")
     if ea_response:
         parts.append(f"({ea_response})")
-    return " ".join(parts)
+    line = " ".join(parts)
+    # When the source message was a Telegram reply, append a short
+    # "↳ in reply to" tail so the operator sees the same antecedent the
+    # AI used (e.g. CANCEL_PENDING fired because the operator's
+    # "cancel that order" was a reply to a specific limit-order signal).
+    reply_tail = _reply_context_block(reply_parent_text)
+    if reply_tail:
+        line += reply_tail
+    return line
 
 
 def render_position_closed(

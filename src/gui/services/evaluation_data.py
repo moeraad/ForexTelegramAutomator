@@ -47,6 +47,9 @@ class EvaluatedTrade:
     closed_at: str
     hold_minutes: int | None
     evaluation: dict[str, Any] | None
+    # v2 per-channel attribution (Step 11). Empty string on pre-tagging
+    # rows so the view renders "—" rather than failing the dataclass.
+    source_channel_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -203,7 +206,7 @@ def evaluated_trades(db_path: Path, days: int | None = 30) -> list[EvaluatedTrad
         "SELECT p.mt5_ticket, p.action_id, a.action_type, p.side, "
         "       p.original_volume, p.entry_price, p.exit_price, "
         "       p.realized_pnl, p.close_reason, p.opened_at, p.closed_at, "
-        "       a.payload_json "
+        "       a.payload_json, a.source_channel_id "
         "FROM positions p "
         "JOIN actions a ON a.id = p.action_id "
         "WHERE p.status='closed' "
@@ -227,6 +230,10 @@ def evaluated_trades(db_path: Path, days: int | None = 30) -> list[EvaluatedTrad
         evaluation = payload.get("evaluation")
         if not isinstance(evaluation, dict):
             evaluation = None
+        try:
+            sci = r["source_channel_id"]
+        except (IndexError, KeyError):
+            sci = None
         out.append(EvaluatedTrade(
             ticket=int(r["mt5_ticket"]),
             action_id=int(r["action_id"]),
@@ -241,6 +248,7 @@ def evaluated_trades(db_path: Path, days: int | None = 30) -> list[EvaluatedTrad
             closed_at=str(r["closed_at"] or ""),
             hold_minutes=_hold_minutes(r["opened_at"], r["closed_at"]),
             evaluation=evaluation,
+            source_channel_id=str(sci) if sci is not None else "",
         ))
     return out
 

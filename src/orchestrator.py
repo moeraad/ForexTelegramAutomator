@@ -18,6 +18,7 @@ from src.config import (
 )
 from src.fingerprint import signal_fingerprint
 from src.logging_setup import trades_log
+from src.profile_context import ProfileContext
 from src.state_summary import render_open_positions
 from src.validators import (
     Action,
@@ -36,13 +37,49 @@ trades = trades_log()
 RECENT_CHAT_WINDOW = 20
 
 
+def _tag_inserted_actions(
+    conn: sqlite3.Connection,
+    action_ids: list[int],
+    *,
+    source_channel_id: str = "",
+    route_id: str = "",
+) -> None:
+    """Stamp source_channel_id / route_id on a batch of just-inserted actions.
+
+    Wrapper that lets process_message thread the routing context onto
+    every action it creates without touching the seven-plus INSERT sites
+    inside _persist_actions and the ALERT/CANCEL inline paths. Uses
+    COALESCE so a previously-set value isn't overwritten when only one
+    of the two ids is provided.
+
+    No-op when no ids are supplied OR when both ids are blank.
+    """
+    if not action_ids:
+        return
+    if not source_channel_id and not route_id:
+        return
+    placeholders = ",".join("?" * len(action_ids))
+    conn.execute(
+        f"UPDATE actions SET "
+        f"  source_channel_id = COALESCE(?, source_channel_id), "
+        f"  route_id = COALESCE(?, route_id) "
+        f"WHERE id IN ({placeholders})",
+        (source_channel_id or None, route_id or None, *action_ids),
+    )
+
+
 def _insert_message(conn: sqlite3.Connection, tg_message_id: int, chat_id: int,
-                    sender: str, text: str, *, is_backfill: bool = False) -> int | None:
+                    sender: str, text: str, *, is_backfill: bool = False,
+                    source_channel_id: str = "",
+                    reply_to_tg_message_id: int | None = None) -> int | None:
     """Returns row id, or None if duplicate."""
     cur = conn.execute(
-        "INSERT OR IGNORE INTO messages(tg_message_id, chat_id, sender, text, is_backfill) "
-        "VALUES(?,?,?,?,?)",
-        (tg_message_id, chat_id, sender, text, 1 if is_backfill else 0),
+        "INSERT OR IGNORE INTO messages"
+        "(tg_message_id, chat_id, sender, text, is_backfill, "
+        " source_channel_id, reply_to_tg_message_id) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (tg_message_id, chat_id, sender, text, 1 if is_backfill else 0,
+         source_channel_id or None, reply_to_tg_message_id),
     )
     if cur.rowcount == 0:
         return None
@@ -158,32 +195,213 @@ def process_message(
     *,
     is_backfill: bool = False,
     triage: TriageClient | None = None,
+    profile: ProfileContext | None = None,
+    source_channel_id: str = "",
+    route_id: str = "",
+    halted: bool = False,
+    failover_from_destination_id: str = "",
+    reply_to_tg_message_id: int | None = None,
 ) -> list[int]:
-    """Insert message, call AI, validate + persist actions. Returns inserted action IDs."""
+    """Insert message, call AI, validate + persist actions. Returns inserted action IDs.
+
+    ``profile`` (Step 3 of multi-channel plan): when provided, the AI/triage
+    system prompts, target symbol, and prefilter rules all come from this
+    ProfileContext. When omitted, falls back to the module-level globals
+    that read config.CHANNEL_PROFILE — the v1 compatibility path used by
+    the current single-stack listener until Step 5 replaces it.
+
+    ``halted`` (Step 15 of multi-channel plan): when True, the message is
+    still inserted into ``messages`` for audit, but the AI pipeline and
+    action insertion are skipped. The caller resolves halt from the v2
+    config (Channel.halted or Route.halted) so orchestrator stays
+    decoupled from config_v2.
+    """
     msg_id = _insert_message(conn, tg_message_id, chat_id, sender, text,
-                             is_backfill=is_backfill)
+                             is_backfill=is_backfill,
+                             source_channel_id=source_channel_id,
+                             reply_to_tg_message_id=reply_to_tg_message_id)
     if msg_id is None:
         return []  # duplicate
+
+    # Step 18: tag every AI call log with source_channel_id + route_id so
+    # cost-per-channel / cost-per-route analytics work. The closure here
+    # avoids touching every existing log_call site — they just inherit
+    # the tags via the merge in _log_with_tags.
+    def _log_with_tags(record: dict) -> None:
+        record = dict(record)
+        if source_channel_id:
+            record.setdefault("source_channel_id", source_channel_id)
+        if route_id:
+            record.setdefault("route_id", route_id)
+        # Step 21: tag every log row from a failover request so the
+        # operator can grep the audit trail for failover events.
+        if failover_from_destination_id:
+            record.setdefault("failover_from", failover_from_destination_id)
+        log_call(ai_log_path, record)
+
+    def _record_pipeline_decision(
+        stage: str,
+        outcome: str,
+        meta: dict | None = None,
+    ) -> None:
+        """Persist the terminal stage decision onto the messages row so
+        the Pipeline view can render it without scanning ai_calls.jsonl.
+
+        `stage` is one of the 7 buckets the radial chart counts:
+        prefilter_drop, trigger_text, trigger_embedding, trigger_ignore,
+        triage_ignored, interpreted_signal, interpreted_ignore. `outcome`
+        is the short
+        badge label (e.g. symbol-mismatch, ad-shape, keep, ignore, or
+        comma-joined action types). `meta` is rendered in the detail
+        panel — kept as a JSON blob so adding new fields doesn't require
+        schema changes.
+
+        Errors are swallowed: the audit row is nice-to-have, never worth
+        breaking the live trade path. The JSONL log is still the source
+        of truth for forensic deep-dives.
+        """
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                "UPDATE messages SET decided_stage=?, decided_outcome=?, "
+                "decided_at=?, pipeline_meta_json=? WHERE id=?",
+                (
+                    stage,
+                    outcome,
+                    now_iso,
+                    json.dumps(meta) if meta else None,
+                    msg_id,
+                ),
+            )
+        except Exception:
+            log.exception(
+                "pipeline decision write failed msg_id=%s stage=%s",
+                msg_id, stage,
+            )
+
+    # Step 20: per-route rule filter. Returns a (possibly shorter) actions
+    # list with the disallowed ones dropped; each drop is logged so the
+    # operator can grep them. Returns the input unchanged when route_id
+    # is blank (legacy / single-stack) or rules can't be resolved.
+    def _apply_route_rules(actions: "list[Action]") -> "list[Action]":
+        if not route_id or not actions:
+            return actions
+        try:
+            from src import config_v2
+            from src.route_rules import evaluate_pre_persistence_rules
+            cfg_path = config_v2.config_path()
+            if not config_v2.is_v2(cfg_path):
+                return actions
+            cfg = config_v2.load_v2(cfg_path)
+            if cfg is None:
+                return actions
+            route = cfg.route(route_id)
+            if route is None:
+                return actions
+            kept: list[Action] = []
+            for a in actions:
+                at = _action_type(a)
+                allowed, reason = evaluate_pre_persistence_rules(
+                    route, action_type=at,
+                )
+                if allowed:
+                    kept.append(a)
+                else:
+                    _log_with_tags({
+                        "msg_id": msg_id, "stage": "route_rule",
+                        "decision": "drop", "reason": reason,
+                        "action_type": at,
+                    })
+                    log.info(
+                        "route_rule drop msg_id=%s route=%s action=%s reason=%s",
+                        msg_id, route_id, at, reason,
+                    )
+            return kept
+        except Exception:  # noqa: BLE001 — never break live path on rule eval
+            log.exception(
+                "route rule filter failed for msg_id=%s route=%s; "
+                "passing actions through", msg_id, route_id,
+            )
+            return actions
+
+    def _route_payload_extras() -> dict:
+        """Build the payload_extras dict for OPEN actions on this route.
+
+        Step 20: surfaces EA-honored per-route caps (``route_max_lots``,
+        ``route_min_account_balance``, ``route_skip_if_drawdown_pct``)
+        to the execution layer via the OPEN payload. Empty dict on any
+        config-resolution failure or when no rules are set — preserves
+        single-stack behavior.
+        """
+        if not route_id:
+            return {}
+        try:
+            from src import config_v2
+            cfg_path = config_v2.config_path()
+            if not config_v2.is_v2(cfg_path):
+                return {}
+            cfg = config_v2.load_v2(cfg_path)
+            if cfg is None:
+                return {}
+            route = cfg.route(route_id)
+            if route is None:
+                return {}
+            extras: dict = {}
+            if route.max_lots > 0:
+                extras["route_max_lots"] = float(route.max_lots)
+            if route.min_account_balance > 0:
+                extras["route_min_account_balance"] = float(route.min_account_balance)
+            if route.skip_if_drawdown_pct > 0:
+                extras["route_skip_if_drawdown_pct"] = float(route.skip_if_drawdown_pct)
+            # Step 21: stamp the OPEN payload when this action came in
+            # via the failover path so the operator can see "this trade
+            # landed on the fallback destination" in DMs / journal.
+            if failover_from_destination_id:
+                extras["failover_from"] = failover_from_destination_id
+            return extras
+        except Exception:  # noqa: BLE001
+            log.exception(
+                "route payload extras lookup failed for route=%s", route_id,
+            )
+            return {}
+
+    if halted:
+        # Step 15: per-channel / per-route halt — message recorded for
+        # audit, no actions emitted. Visible in ai_calls.jsonl so the
+        # operator can confirm halt is doing what they expect.
+        _log_with_tags({
+            "msg_id": msg_id, "stage": "halt",
+            "decision": "drop", "reason": "channel-or-route-halted",
+        })
+        log.info(
+            "halt drop msg_id=%s channel=%s route=%s",
+            msg_id, source_channel_id, route_id,
+        )
+        return []
 
     # Stage 0: universal pre-filter. Cheap, deterministic, no LLM call.
     # Driven entirely by profile.symbol_aliases / profile.other_instruments
     # — no hardcoded language tokens. With empty profile config this is a
     # no-op (safe default for first-run channels). Mirrors the same gate
     # the wizard runs on history, so live and offline behave consistently.
-    _profile = _load_channel_profile_for_prefilter()
+    # When ProfileContext is supplied, use its already-loaded data and skip
+    # the per-message disk read (the v1 fallback path).
+    _profile = profile.data if profile is not None else _load_channel_profile_for_prefilter()
     drop_sym, _sym_reason = prefilter.should_drop_by_symbol(text, _profile)
     if drop_sym:
-        log_call(ai_log_path, {
+        _log_with_tags({
             "msg_id": msg_id, "stage": "prefilter",
             "decision": "drop", "reason": "symbol-mismatch",
         })
+        _record_pipeline_decision("prefilter_drop", "symbol-mismatch")
         _cleanup_message_if_orphan(conn, msg_id)
         return []
     if prefilter.looks_like_ad(text):
-        log_call(ai_log_path, {
+        _log_with_tags({
             "msg_id": msg_id, "stage": "prefilter",
             "decision": "drop", "reason": "ad-shape",
         })
+        _record_pipeline_decision("prefilter_drop", "ad-shape")
         _cleanup_message_if_orphan(conn, msg_id)
         return []
 
@@ -206,29 +424,113 @@ def process_message(
     #
     # Errors inside the matcher must never break the live path —
     # wrapped + logged + falls through.
+    # Reply-context: when this message is a Telegram reply, look up the
+    # parent's text from the messages archive so the matcher can apply
+    # operator-defined "activate / ignore" reply-intent rules. None when
+    # the parent isn't in the archive (older than backfill).
+    parent_text: str | None = None
+    if reply_to_tg_message_id:
+        try:
+            parent_row = conn.execute(
+                "SELECT text FROM messages "
+                "WHERE chat_id=? AND tg_message_id=? LIMIT 1",
+                (chat_id, reply_to_tg_message_id),
+            ).fetchone()
+            if parent_row is not None:
+                parent_text = parent_row["text"]
+        except Exception:
+            log.exception(
+                "reply-parent lookup failed for msg_id=%s reply_to=%s",
+                msg_id, reply_to_tg_message_id,
+            )
+
     matched_actions: list[Action] | None = None
+    matcher_meta: dict = {}
     try:
-        matched_actions = trigger_matcher.match(text, conn)
+        matched_actions = trigger_matcher.match(
+            text, conn, parent_text=parent_text, meta_out=matcher_meta,
+        )
     except Exception as e:  # noqa: BLE001 — must not break live path
         log.warning("trigger_matcher raised for msg_id=%s: %s", msg_id, e)
-        log_call(ai_log_path, {
+        _log_with_tags({
             "msg_id": msg_id, "stage": "trigger_matcher", "error": str(e),
         })
+    # An empty list (matched but explicitly suppressed via reply-intent
+    # 'ignore') is distinct from None ('no match, try AI'). Suppressed
+    # messages skip the AI silently — operator's call.
+    if matched_actions == []:
+        # Two distinct suppressions both surface as an empty list; the
+        # matcher disambiguates via meta_out["layer"].
+        if matcher_meta.get("layer") == "deterministic_ignore":
+            # Whole-message equality with an operator-curated IGNORE
+            # sample — drop before triage + interpreter. Its own bucket so
+            # the operator can see (and un-curate) what was suppressed.
+            _log_with_tags({
+                "msg_id": msg_id,
+                "stage": "trigger_matcher",
+                "layer": "deterministic_ignore",
+                "result": "suppressed_noise",
+            })
+            _record_pipeline_decision(
+                "trigger_ignore", "curated-noise",
+                meta={
+                    "layer": "deterministic_ignore",
+                    "rule_phrase": matcher_meta.get("rule_phrase"),
+                },
+            )
+            trades.info(
+                "trigger_match msg_id=%s suppressed as curated noise",
+                msg_id,
+            )
+            _cleanup_message_if_orphan(conn, msg_id)
+            return []
+        _log_with_tags({
+            "msg_id": msg_id,
+            "stage": "trigger_matcher",
+            "reply_intent": "ignore",
+            "result": "suppressed",
+        })
+        # Reply-intent ignore is a deterministic-text match too — bucket
+        # it under trigger_text so the operator sees these in the same
+        # slice as the curated patterns they came from.
+        _record_pipeline_decision(
+            "trigger_text", "reply-intent-ignore",
+            meta={"layer": matcher_meta.get("layer", "reply_intent_ignore")},
+        )
+        trades.info(
+            "trigger_match msg_id=%s suppressed by reply_intent=ignore",
+            msg_id,
+        )
+        return []
     if matched_actions:
-        log_call(ai_log_path, {
+        _log_with_tags({
             "msg_id": msg_id,
             "stage": "trigger_matcher",
             "matched_actions": [a.type for a in matched_actions],
         })
+        action_types_csv = ",".join(a.type for a in matched_actions)
+        layer = matcher_meta.get("layer", "deterministic")
+        bucket = "trigger_embedding" if layer == "embedding" else "trigger_text"
+        _record_pipeline_decision(
+            bucket, action_types_csv,
+            meta={k: v for k, v in matcher_meta.items() if v is not None},
+        )
         trades.info(
             "trigger_match msg_id=%s types=[%s]",
             msg_id,
-            ",".join(a.type for a in matched_actions),
+            action_types_csv,
         )
-        return _persist_actions(
-            conn, msg_id, matched_actions, ai_log_path,
+        # Step 20: per-route rule filter (action-type / time-of-day).
+        # Drops are logged via _apply_route_rules → ai_calls.jsonl.
+        filtered = _apply_route_rules(matched_actions)
+        ids = _persist_actions(
+            conn, msg_id, filtered, ai_log_path,
             auto_execute_delay_sec, is_backfill=is_backfill,
+            payload_extras=_route_payload_extras(),
         )
+        _tag_inserted_actions(conn, ids, source_channel_id=source_channel_id,
+                              route_id=route_id)
+        return ids
 
     # Triage runs only on messages the matcher didn't catch — i.e.
     # genuinely novel content the operator hasn't curated a trigger
@@ -239,8 +541,12 @@ def process_message(
     # is unsure about.
     if triage is not None:
         try:
-            tri = triage.classify(text, _open_positions_count(conn))
-            log_call(ai_log_path, {
+            tri = triage.classify(
+                text,
+                _open_positions_count(conn),
+                system_prompt=(profile.triage_prompt if profile is not None else None),
+            )
+            _log_with_tags({
                 "msg_id": msg_id,
                 "stage": "triage",
                 "decision": tri.decision,
@@ -249,16 +555,29 @@ def process_message(
                 **tri.usage,
             })
             if tri.decision == "ignore":
+                _record_pipeline_decision(
+                    "triage_ignored", "ignore",
+                    meta={
+                        "raw_response": tri.raw_text,
+                        "latency_ms": tri.latency_ms,
+                        **tri.usage,
+                    },
+                )
                 _cleanup_message_if_orphan(conn, msg_id)
                 return []
         except Exception as e:
             # Never drop a message on triage failure — fall through to Sonnet.
             log.warning("triage failed for msg_id=%s: %s", msg_id, e)
-            log_call(ai_log_path, {
+            _log_with_tags({
                 "msg_id": msg_id, "stage": "triage", "error": str(e),
             })
 
-    open_positions_block = render_open_positions(conn)
+    open_positions_block = render_open_positions(
+        conn,
+        symbol=(profile.symbol if profile is not None else "XAUUSD"),
+        current_tg_message_id=tg_message_id,
+        current_chat_id=chat_id,
+    )
     if SIGNAL_MEMORY_ENABLED:
         entries = signal_memory.load_active(
             conn, chat_id, SIGNAL_MEMORY_MAX_ENTRIES, SIGNAL_MEMORY_MAX_AGE_HOURS
@@ -268,7 +587,12 @@ def process_message(
         context_block = _recent_chat_text(conn, chat_id, RECENT_CHAT_WINDOW)
 
     try:
-        result = ai.call(context_block, open_positions_block, f"{sender}: {text}")
+        result = ai.call(
+            context_block,
+            open_positions_block,
+            f"{sender}: {text}",
+            system_prompt=(profile.system_prompt if profile is not None else None),
+        )
     except Exception as e:
         # Persist as ALERT so user is informed. Terminal 'executed' so
         # notification_dispatcher DMs it (REVIEW.md P1).
@@ -280,17 +604,37 @@ def process_message(
             (msg_id, json.dumps({"level": "warning", "text": f"AI error: {e}"}),
              ai_err_now),
         )
-        log_call(ai_log_path, {"error": str(e), "msg_id": msg_id})
-        return [cur.lastrowid]
+        _log_with_tags({"error": str(e), "msg_id": msg_id})
+        ids = [cur.lastrowid]
+        _tag_inserted_actions(conn, ids, source_channel_id=source_channel_id,
+                              route_id=route_id)
+        return ids
 
-    log_call(ai_log_path, {
+    _log_with_tags({
         "msg_id": msg_id,
+        "stage": "interpret",
         "raw_response": result.raw_text,
         "latency_ms": result.latency_ms,
         **result.usage,
     })
 
     types_summary = ",".join(_action_type(a) for a in result.response.actions) or "-"
+    interp_meta = {
+        "category": result.response.category or "",
+        "latency_ms": result.latency_ms,
+        "raw_response": result.raw_text,
+        **result.usage,
+    }
+    if result.response.actions:
+        _record_pipeline_decision(
+            "interpreted_signal", types_summary, meta=interp_meta,
+        )
+    else:
+        _record_pipeline_decision(
+            "interpreted_ignore",
+            result.response.category or "ignore",
+            meta=interp_meta,
+        )
     trades.info(
         "ai_decision msg_id=%s category=%s latency_ms=%s types=[%s]",
         msg_id, result.response.category or "-", result.latency_ms, types_summary,
@@ -319,10 +663,17 @@ def process_message(
         except Exception as e:  # noqa: BLE001 — must not break live path
             log.warning("unmatched_store.record raised for msg_id=%s: %s", msg_id, e)
 
+    # Step 20: per-route rule filter (action-type / time-of-day).
+    # Applied AFTER the AI call so the operator can still see what the
+    # AI proposed (via raw_response logging) even when the rule rejects.
+    ai_actions = _apply_route_rules(list(result.response.actions))
     inserted = _persist_actions(
-        conn, msg_id, list(result.response.actions), ai_log_path,
+        conn, msg_id, ai_actions, ai_log_path,
         auto_execute_delay_sec, is_backfill=is_backfill,
+        payload_extras=_route_payload_extras(),
     )
+    _tag_inserted_actions(conn, inserted, source_channel_id=source_channel_id,
+                          route_id=route_id)
     # signal_memory clear runs only when an OPEN-shape action persisted.
     # The matcher path doesn't emit OPEN/ATTACH_SIGNAL so this stays
     # AI-path-specific. Re-derive open_persisted from the actions list
@@ -342,6 +693,7 @@ def _persist_actions(
     auto_execute_delay_sec: int,
     *,
     is_backfill: bool,
+    payload_extras: dict | None = None,
 ) -> list[int]:
     """Shared persistence loop used by both the AI path and the trigger
     matcher path. Iterates `actions`, validates each, inserts the
@@ -353,10 +705,20 @@ def _persist_actions(
     branch logic — and guarantees both paths obey the same fingerprint
     dedup, validator gates, CANCEL_PENDING server-side handling, ALERT
     terminal-row policy, and backfill-management guard.
+
+    Step 20: ``payload_extras`` (when given) is merged into the OPEN-action
+    payload only. Used to propagate per-route caps (``route_max_lots``)
+    from the route config to the EA at execution time without changing
+    the AI's action shape.
     """
     inserted: list[int] = []
     for i, action in enumerate(actions):
-        payload = json.dumps(_payload_for(action))
+        if payload_extras and isinstance(action, OpenAction):
+            base = _payload_for(action)
+            base.update(payload_extras)
+            payload = json.dumps(base)
+        else:
+            payload = json.dumps(_payload_for(action))
         fp: str | None = None
         if isinstance(action, OpenAction):
             fp = signal_fingerprint(action, band=FINGERPRINT_BAND_PRICE)
@@ -531,6 +893,14 @@ def kick_evaluator_for_open(action_id: int, signal_dict: dict) -> None:
     if not db_path or not Path(db_path).exists():
         # Fresh-install path or test path with no DB — skip silently.
         return
+    # Settings-driven on/off. Default "1" — keep the evaluator running
+    # unless the operator explicitly disables it via the Settings UI.
+    try:
+        from src import db_settings
+        if db_settings.get_str(Path(db_path), "ai_evaluator_enabled", "1") != "1":
+            return
+    except Exception:
+        log.exception("evaluator: failed to read ai_evaluator_enabled; defaulting to ON")
     t = threading.Thread(
         target=_evaluator_worker,
         args=(action_id, signal_dict, db_path),

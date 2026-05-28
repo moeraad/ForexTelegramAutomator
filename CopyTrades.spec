@@ -48,16 +48,22 @@ hiddenimports = [
     "src.gui.helpers.bootstrap_nssm_install",
     "src.gui.helpers.bootstrap_services_install",
     "src.gui.helpers.bootstrap_services_uninstall",
+    "src.gui.helpers.bootstrap_v2_install",
+    "src.gui.services.v2_service_spec",
+    "src.gui.windows._wizard_v2_persist",
+    "src.gui.services.account_credentials",
+    "src.gui.views._services_tab_v2",
     "src.ai_discovery",
     "src.profile_render",
     "src.secret_box",
     "src.db_settings",
     # Service entrypoints — gui_launcher.py routes to these when invoked
-    # with `--service api|bot|listener`. They're behind a runtime branch
-    # so PyInstaller's static analysis won't find them otherwise.
+    # with `--service api|bot|listener|shared-listener`. They're behind
+    # a runtime branch so PyInstaller's static analysis won't find them.
     "src.api",
     "src.bot",
     "src.listener",
+    "src.shared_listener",
     "src.orchestrator",
     "src.promoter",
     "src.cost_guard",
@@ -74,6 +80,30 @@ hiddenimports = [
     "src.logging_setup",
     "src.config",
     "src.db",
+    # v2 multi-channel scaffolding (Steps 1-10 of multi-channel-routing
+    # plan). Imported via runtime-resolved paths (config_v2 by gui at
+    # discover_stacks, notification_dispatcher by api at terminal status,
+    # profile_context by listener+api at startup, etc.).
+    "src.config_v2",
+    "src.migrations",
+    "src.migrations.config_v1_to_v2",
+    "src.notification_dispatcher",
+    "src.bot_outbox_tailer",
+    "src.profile_context",
+    "src.gui.views.v2_config_view",
+    # Day-1 cleanup split (modules extracted from bot.py + api.py).
+    # These are imported lazily inside post_init / build_app so static
+    # analysis still wouldn't catch them; list explicitly.
+    "src.api_models",
+    "src.api_helpers",
+    "src.bot_keyboards",
+    "src.bot_loops",
+    "src.bot_loops.notification",
+    "src.bot_loops.promoter_loops",
+    "src.bot_loops.cost_guard_loop",
+    "src.bot_loops.telegram_heartbeat",
+    "src.bot_loops.feeds",
+    "src.bot_loops.orphan_recovery",
 ]
 # Pull every submodule of the providers used by the service paths so
 # lazy imports inside the SDK don't cause MissingModule at runtime.

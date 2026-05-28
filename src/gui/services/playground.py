@@ -53,12 +53,31 @@ class PlaygroundResult:
     error: str | None
 
 
-def _refresh_prompts_for(stack: Stack) -> None:
+def _refresh_prompts_for(stack: Stack, profile_name: str | None = None) -> None:
+    """Reload SYSTEM_PROMPT + TRIAGE_SYSTEM_PROMPT for the playground.
+
+    Without ``profile_name``: legacy behavior — use the stack's default
+    profile (config.CHANNEL_PROFILE) loaded via ``ai._render_system_prompt()``.
+
+    With ``profile_name`` (post-v2 Prompts/Playground gap fix): load
+    THAT profile's JSON via profile_io and pass to the ``_from_data``
+    renderers. Operator editing an aggregate-routing setup can pick any
+    profile and the playground will use it.
+    """
     # Point config.DB_PATH at the stack's DB so _load_profile resolves
     # profile.json from the correct APPDATA directory rather than doing
     # a name-based lookup that breaks for APPDATA-resident profiles.
     config.DB_PATH = str(stack.db_path)
-    config.CHANNEL_PROFILE = stack.name
+    config.CHANNEL_PROFILE = profile_name or stack.name
+    if profile_name:
+        from src.gui.services import profile_io
+        data = profile_io.load_profile(profile_name)
+        if data:
+            ai.SYSTEM_PROMPT = ai._render_system_prompt_from_data(dict(data))  # noqa: SLF001
+            ai_triage.TRIAGE_SYSTEM_PROMPT = (
+                ai_triage._render_triage_prompt_from_data(dict(data))  # noqa: SLF001
+            )
+            return
     ai.SYSTEM_PROMPT = ai._render_system_prompt()  # noqa: SLF001
     ai_triage.TRIAGE_SYSTEM_PROMPT = ai_triage._render_triage_prompt()  # noqa: SLF001
 
@@ -93,17 +112,27 @@ def run_playground(
     message: str,
     provider_override: str | None = None,
     interpreter_model_override: str | None = None,
+    profile_name: str | None = None,
 ) -> PlaygroundResult:
+    """Run the active stack's AI pipeline against ``message``.
+
+    ``profile_name`` (post-v2 Prompts/Playground gap fix): when given,
+    the SYSTEM_PROMPT + TRIAGE_SYSTEM_PROMPT come from THAT profile's
+    JSON instead of the stack's default. ``None`` preserves legacy
+    behavior. Aggregate-routing setups (one destination, N channels with
+    different profiles) can pick any profile for playgrounding without
+    swapping stacks.
+    """
     overall_start = time.monotonic()
-    profile_name = stack.profile_path.stem
+    active_profile = profile_name or stack.profile_path.stem
     if provider_override:
         config.AI_PROVIDER = provider_override.lower()
 
     try:
-        _refresh_prompts_for(stack)
+        _refresh_prompts_for(stack, profile_name=profile_name)
     except Exception as e:
         return PlaygroundResult(
-            context=_minimal_context(profile_name, 0, "(could not load profile)", overall_start),
+            context=_minimal_context(active_profile, 0, "(could not load profile)", overall_start),
             triage=None,
             interpret=None,
             error=f"failed to render prompts: {type(e).__name__}: {e}",
@@ -113,7 +142,7 @@ def run_playground(
         open_positions_block, open_count = _state_for(stack)
     except sqlite3.Error as e:
         return PlaygroundResult(
-            context=_minimal_context(profile_name, 0, "(db error)", overall_start),
+            context=_minimal_context(active_profile, 0, "(db error)", overall_start),
             triage=None,
             interpret=None,
             error=f"failed to read state: {e}",
@@ -166,7 +195,7 @@ def run_playground(
     elapsed_total_ms = int((time.monotonic() - overall_start) * 1000)
     return PlaygroundResult(
         context=PlaygroundContext(
-            profile=profile_name,
+            profile=active_profile,
             provider=config.AI_PROVIDER,
             interpreter_model=interpreter_model_resolved,
             triage_model=triage_model,

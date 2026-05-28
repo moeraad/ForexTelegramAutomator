@@ -128,7 +128,15 @@ def _latest_open_payload(db_path: Path) -> dict:
 
 
 def _live_state_block(db_path: Path) -> str:
-    """Build a SYSTEM STATE block from the live DB, if reachable."""
+    """Build a SYSTEM STATE block from the live DB, if reachable.
+
+    When the most recent message in the archive is a Telegram reply,
+    seed the renderer with that message's tg_message_id + chat_id so
+    the REPLY CONTEXT block shows up in the preview — gives the
+    operator a concrete idea of what the AI sees when interpreting
+    "cancel that order"-style replies. Falls back silently when no
+    such message exists.
+    """
     if not db_path.exists():
         return ""
     try:
@@ -138,7 +146,16 @@ def _live_state_block(db_path: Path) -> str:
         from src import state_summary
         with sqlite3.connect(str(db_path)) as conn:
             conn.row_factory = sqlite3.Row
-            return state_summary.render_open_positions(conn)
+            recent_reply = conn.execute(
+                "SELECT tg_message_id, chat_id FROM messages "
+                "WHERE reply_to_tg_message_id IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            kwargs = {}
+            if recent_reply is not None:
+                kwargs["current_tg_message_id"] = recent_reply["tg_message_id"]
+                kwargs["current_chat_id"] = recent_reply["chat_id"]
+            return state_summary.render_open_positions(conn, **kwargs)
     except Exception as e:  # noqa: BLE001
         return f"(failed to render live state: {e})"
 
@@ -146,10 +163,12 @@ def _live_state_block(db_path: Path) -> str:
 # --- Individual prompt renderers -----------------------------------------
 
 
-def _render_interpreter(db_path: Path, mode: Mode) -> RenderedPrompt:
+def _render_interpreter(
+    db_path: Path, mode: Mode, profile_name: str | None = None,
+) -> RenderedPrompt:
     from src import ai
     try:
-        system = ai._render_system_prompt() or "(profile not configured yet)"
+        system = _render_system_for_profile(profile_name) or "(profile not configured yet)"
     except Exception as e:  # noqa: BLE001
         system = f"(failed to render: {type(e).__name__}: {e})"
 
@@ -196,10 +215,12 @@ def _render_interpreter(db_path: Path, mode: Mode) -> RenderedPrompt:
     )
 
 
-def _render_triage(db_path: Path, mode: Mode) -> RenderedPrompt:
+def _render_triage(
+    db_path: Path, mode: Mode, profile_name: str | None = None,
+) -> RenderedPrompt:
     from src import ai_triage
     try:
-        system = ai_triage._render_triage_prompt() or "(profile not configured yet)"
+        system = _render_triage_for_profile(profile_name) or "(profile not configured yet)"
     except Exception as e:  # noqa: BLE001
         system = f"(failed to render: {type(e).__name__}: {e})"
 
@@ -229,7 +250,9 @@ def _render_triage(db_path: Path, mode: Mode) -> RenderedPrompt:
     )
 
 
-def _render_evaluator(db_path: Path, mode: Mode) -> RenderedPrompt:
+def _render_evaluator(
+    db_path: Path, mode: Mode, profile_name: str | None = None,  # noqa: ARG001
+) -> RenderedPrompt:
     from src.ai_evaluator import EVALUATOR_SYSTEM_PROMPT
 
     if mode == "live":
@@ -264,7 +287,9 @@ def _render_evaluator(db_path: Path, mode: Mode) -> RenderedPrompt:
     )
 
 
-def _render_discovery(db_path: Path, mode: Mode) -> RenderedPrompt:
+def _render_discovery(
+    db_path: Path, mode: Mode, profile_name: str | None = None,  # noqa: ARG001
+) -> RenderedPrompt:
     from src.ai_discovery import _render_discovery_prompt
     msg = _DEMO_MESSAGE
     if mode == "live":
@@ -315,7 +340,18 @@ _RENDERERS = {
 }
 
 
-def render(prompt_id: str, db_path: Path, mode: Mode = "demo") -> RenderedPrompt:
+def render(
+    prompt_id: str, db_path: Path, mode: Mode = "demo",
+    profile_name: str | None = None,
+) -> RenderedPrompt:
+    """Dispatch to per-prompt renderer.
+
+    ``profile_name`` (added in the post-v2 Prompts/Playground gap fix):
+    when provided, the interpreter + triage renderers load THAT profile's
+    JSON and pass it through ``_render_system_prompt_from_data`` instead
+    of the module-level ``config.CHANNEL_PROFILE`` global. ``None``
+    preserves the legacy behavior for callers that haven't migrated.
+    """
     fn = _RENDERERS.get(prompt_id)
     if fn is None:
         return RenderedPrompt(
@@ -324,7 +360,42 @@ def render(prompt_id: str, db_path: Path, mode: Mode = "demo") -> RenderedPrompt
             user_content="",
             expected_output="",
         )
-    return fn(db_path, mode)
+    return fn(db_path, mode, profile_name)
+
+
+def _render_system_for_profile(profile_name: str | None) -> str:
+    """Render the interpreter SYSTEM_PROMPT for a specific profile name.
+
+    Falls back to the global ``ai._render_system_prompt()`` (which reads
+    ``config.CHANNEL_PROFILE``) when ``profile_name`` is None — preserves
+    behavior for non-Prompts-view callers.
+    """
+    from src import ai
+    if not profile_name:
+        return ai._render_system_prompt() or ""
+    # Load the picked profile's JSON via profile_io (handles APPDATA vs
+    # legacy channels/ paths). Pass the parsed dict to the from_data
+    # renderer — no globals touched.
+    from src.gui.services import profile_io
+    data = profile_io.load_profile(profile_name)
+    if not data:
+        return ""
+    return ai._render_system_prompt_from_data(dict(data))
+
+
+def _render_triage_for_profile(profile_name: str | None) -> str:
+    """Render the triage SYSTEM_PROMPT for a specific profile name.
+
+    Same shape as ``_render_system_for_profile`` but for the triage stage.
+    """
+    from src import ai_triage
+    if not profile_name:
+        return ai_triage._render_triage_prompt() or ""
+    from src.gui.services import profile_io
+    data = profile_io.load_profile(profile_name)
+    if not data:
+        return ""
+    return ai_triage._render_triage_prompt_from_data(dict(data))
 
 
 def estimate_tokens(text: str) -> int:

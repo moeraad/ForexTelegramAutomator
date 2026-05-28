@@ -123,6 +123,10 @@ class TelegramSessionService(QObject):
     dialogs_ready = Signal(list)
     error = Signal(str, str)
     disconnected = Signal()
+    # Step "Add Account with Telethon" — returns the in-memory StringSession
+    # blob to the caller so it can persist it wherever it wants (per-account
+    # file, destination DB, etc.) without coupling this service to v2 config.
+    session_snapshot = Signal(str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -175,9 +179,35 @@ class TelegramSessionService(QObject):
         loop = asyncio.get_event_loop()
         loop.stop()
 
-    def connect(self, api_id: int, api_hash: str, db_path: Path) -> None:
+    def connect(
+        self, api_id: int, api_hash: str,
+        db_path: Path | None = None, session_blob: str = "",
+    ) -> None:
+        """Connect / re-connect the Telethon client.
+
+        ``db_path`` is optional: when provided, ``_persist_session_blob``
+        writes the StringSession into that DB's ``settings.tg_session_blob``
+        after a successful sign-in (the stack-setup wizard's path). When
+        None, the Add-Account dialog flow uses ``snapshot_session`` instead
+        to grab the blob and save it wherever it wants.
+
+        ``session_blob`` is optional: when given, ``_connect`` instantiates
+        the Telethon client with this StringSession directly — used by
+        the Add Channel dialog's channel-picker flow to re-attach an
+        already-authed account without touching a DB.
+        """
         self._db_path = db_path
+        self._session_blob_override = session_blob
         self._submit(self._connect(api_id, api_hash))
+
+    def snapshot_session(self) -> None:
+        """Grab the current StringSession blob and emit ``session_snapshot``.
+
+        Used by the Add-Account dialog after sign-in. Emits an empty
+        string when not connected / not authorized so the caller's slot
+        can show a friendly error rather than fall into a None.
+        """
+        self._submit(self._snapshot_session())
 
     def send_code(self, phone: str) -> None:
         self._submit(self._send_code(phone))
@@ -211,8 +241,11 @@ class TelegramSessionService(QObject):
                 pass
         try:
             from src import db_settings
-            existing = ""
-            if self._db_path is not None and self._db_path.exists():
+            # Caller-supplied blob (Add Channel re-attach flow) wins;
+            # otherwise read from db_path (wizard flow); otherwise empty
+            # (Add Account flow, where sign-in produces the first blob).
+            existing = getattr(self, "_session_blob_override", "") or ""
+            if not existing and self._db_path is not None and self._db_path.exists():
                 existing = db_settings.get_str(self._db_path, "tg_session_blob", "")
             self._client = TelegramClient(StringSession(existing), api_id, api_hash)
             await self._client.connect()
@@ -317,6 +350,18 @@ class TelegramSessionService(QObject):
             self.error.emit("flood", f"Telegram is rate-limiting. Wait {e.seconds}s and try again.")
         except Exception as e:
             self.error.emit("dialogs_failed", f"{type(e).__name__}: {e}")
+
+    async def _snapshot_session(self) -> None:
+        """Worker-thread side: serialize the current StringSession + emit."""
+        if self._client is None:
+            self.session_snapshot.emit("")
+            return
+        try:
+            blob = self._client.session.save() or ""
+            self.session_snapshot.emit(blob)
+        except Exception as e:
+            self.error.emit("snapshot_failed", f"{type(e).__name__}: {e}")
+            self.session_snapshot.emit("")
 
     async def _sign_out(self) -> None:
         if self._client is None:

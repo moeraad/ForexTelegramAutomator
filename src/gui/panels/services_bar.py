@@ -78,20 +78,29 @@ class _HealthPoller(QThread):
         api_ok = ping_once(api_url, timeout=1.0)
         api_caption = f"port {stack.api_port}" if api_ok else "unreachable"
 
-        _api_svc, bot_svc, listener_svc = stack.service_names
+        # v2 cleanup Phase 1: service_names is now variable-length
+        # (1 API + N bots + N listeners). Use the primary_* headlines
+        # for the single-icon-per-role status row.
         bot_state, bot_caption = self._service_health(
-            stack, bot_svc, "bot_telegram_ok_at",
+            stack, stack.primary_bot_service, "bot_telegram_ok_at",
         )
         listener_state, listener_caption = self._service_health(
-            stack, listener_svc, "listener_telegram_ok_at",
+            stack, stack.primary_listener_service, "listener_telegram_ok_at",
         )
 
         ea_state, ea_caption = self._market_age_state(
             stack, "market_XAUUSD_at", warn_sec=30, bad_sec=60
         )
-        snap_state, snap_caption = self._market_age_state(
-            stack, "market_snapshot_XAUUSD_at", warn_sec=90, bad_sec=180
-        )
+        # Snapshot pill: check the disabled sentinel first so an operator
+        # who turned ``EnableMarketSnapshot`` off in the EA doesn't see a
+        # red pill 3 minutes later. The EA POSTs market_snapshot_XAUUSD_disabled=1
+        # at OnInit when the input is off.
+        if self._read_setting(stack, "market_snapshot_XAUUSD_disabled") == "1":
+            snap_state, snap_caption = "warn", "off"
+        else:
+            snap_state, snap_caption = self._market_age_state(
+                stack, "market_snapshot_XAUUSD_at", warn_sec=90, bad_sec=180
+            )
 
         return _Health(
             api_ok=api_ok,
@@ -132,6 +141,22 @@ class _HealthPoller(QThread):
         if hb_caption in ("no data", "no db", "db error", "bad ts"):
             return "warn", "starting…"
         return "bad", f"no telegram ({hb_caption})"
+
+    def _read_setting(self, stack: Stack, key: str) -> str | None:
+        """Read a single settings.value by key. Returns None on any
+        failure (DB missing, error, no row). Used by the snapshot pill
+        to detect the disabled-sentinel without throwing if the EA
+        hasn't published it yet (fresh install)."""
+        if not stack.db_path.exists():
+            return None
+        try:
+            with sqlite3.connect(str(stack.db_path)) as conn:
+                row = conn.execute(
+                    "SELECT value FROM settings WHERE key=?", (key,)
+                ).fetchone()
+        except sqlite3.Error:
+            return None
+        return row[0] if row and row[0] is not None else None
 
     def _market_age_state(
         self, stack: Stack, key: str, warn_sec: int, bad_sec: int
@@ -252,17 +277,10 @@ class ServicesBar(QWidget):
             pass
 
     def _apply_band_style(self) -> None:
-        """Paint the services bar on the muted `surface_alt` token so it
-        sits as a visually distinct stripe beneath the header band. A
-        1px top border using the strong border token reinforces the
-        seam against the header above."""
-        from src.gui.theme import current_palette
-        pal = current_palette()
-        self.setStyleSheet(
-            f"#ServicesBar {{ background: {pal.surface_alt}; "
-            f"border-top: 1px solid {pal.border}; "
-            f"border-bottom: 1px solid {pal.border_strong}; }}"
-        )
+        """Transparent band — services bar shows through to the parent
+        TopPanel's surface fill. The TopPanel's own border draws the
+        seam against the view area below, so no bottom border here."""
+        self.setStyleSheet("#ServicesBar { background: transparent; }")
 
     def _apply_action_styles(self) -> None:
         """Tint each button's icon with its semantic colour. Pure-icon

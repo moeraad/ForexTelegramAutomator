@@ -19,13 +19,14 @@ COL_AGE = 1
 COL_TYPE = 2
 COL_SIDE = 3
 COL_STATUS = 4
-COL_SCORE = 5
-COL_MULT = 6
-COL_PRICE = 7
-COL_PNL = 8
-COL_REASON = 9
+COL_CHANNEL = 5
+COL_SCORE = 6
+COL_MULT = 7
+COL_PRICE = 8
+COL_PNL = 9
+COL_REASON = 10
 HEADERS = (
-    "#", "Age", "Type", "Side", "Status",
+    "#", "Age", "Type", "Side", "Status", "Channel",
     "Score", "Mult", "Price", "PnL", "Reason",
 )
 
@@ -177,6 +178,10 @@ class ActionRow:
     realized_pnl: float | None
     close_reason: str
     ea_response: str
+    # Post-v2 dashboard fix: which v2 Channel produced this action.
+    # Empty string on legacy rows (pre-Step-11) or single-stack installs
+    # that never wrote source_channel_id. The model renders "—" then.
+    source_channel_id: str = ""
 
     @property
     def is_open(self) -> bool:
@@ -279,6 +284,9 @@ def _parse(row: sqlite3.Row) -> ActionRow:
         ea_response=str(row["ea_response"]) if (
             "ea_response" in keys and row["ea_response"] is not None
         ) else "",
+        source_channel_id=str(row["source_channel_id"]) if (
+            "source_channel_id" in keys and row["source_channel_id"] is not None
+        ) else "",
     )
 
 
@@ -322,6 +330,8 @@ def _sort_value(row: "ActionRow", col: int) -> object:
         return row.side or ""
     if col == COL_STATUS:
         return row.status or ""
+    if col == COL_CHANNEL:
+        return row.source_channel_id or ""
     if col == COL_SCORE:
         return row.quality_score if row.quality_score is not None else NEG_INF
     if col == COL_MULT:
@@ -338,6 +348,42 @@ def _sort_value(row: "ActionRow", col: int) -> object:
     if col == COL_REASON:
         return row.reason_display or ""
     return ""
+
+
+_CHANNEL_NAME_CACHE: dict[str, str] = {}
+
+
+def _channel_display_name(channel_id: str) -> str:
+    """v2 Channel.id → display name, cached per process.
+
+    Resolves via ``config_v2.load_v2()`` once per (id, cache miss).
+    Fall-through to the raw id keeps non-v2 / orphan-id rows readable.
+    The cache is process-global because v2 config changes infrequently
+    and a stale name is preferable to a per-row file read.
+    """
+    if not channel_id:
+        return ""
+    cached = _CHANNEL_NAME_CACHE.get(channel_id)
+    if cached is not None:
+        return cached
+    try:
+        from src import config_v2
+        cfg = config_v2.load_v2(config_v2.config_path())
+        if cfg is not None:
+            ch = cfg.channel(channel_id)
+            name = ch.name if ch is not None else channel_id
+        else:
+            name = channel_id
+    except Exception:
+        name = channel_id
+    _CHANNEL_NAME_CACHE[channel_id] = name
+    return name
+
+
+def clear_channel_name_cache() -> None:
+    """Reset the channel-name cache. Called when stacks_config.json changes
+    so renamed channels show their new names on the next paint."""
+    _CHANNEL_NAME_CACHE.clear()
 
 
 def _age_text(created_at: str) -> str:
@@ -441,6 +487,12 @@ class ActionsModel(QAbstractTableModel):
                     return f"  {row.status}"
                 glyph = _STATUS_DOT.get(row.status, "·")
                 return f"{glyph}  {row.status}"
+            if col == COL_CHANNEL:
+                # Resolve the v2 Channel.name from id when v2 cfg is
+                # loadable; fall back to the raw id, then "—" for legacy.
+                if not row.source_channel_id:
+                    return "—"
+                return _channel_display_name(row.source_channel_id)
             if col == COL_SCORE:
                 if row.is_open and row.quality_score is not None:
                     return f"{row.quality_score}"

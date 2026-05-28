@@ -3,14 +3,26 @@ import logging
 import sqlite3
 import time
 from datetime import datetime, timezone
-from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 
 from src import config
+# Pydantic request/response models live in src/api_models.py (Day-1 split).
+from src.api_models import (
+    AlertBody,
+    AttachSignalBody,
+    CloseBody,
+    IncomingMessageBody,
+    LegResult,
+    MarketPriceBody,
+    MarketSnapshotBody,
+    MarketSnapshotStateBody,
+    PositionUpdateBody,
+    ResultBody,
+    TimeframeOhlcBody,
+)
 from src.logging_setup import configure_logging, trades_log
 from src.position_signal import (
     find_last_replayable_closed,
@@ -18,123 +30,10 @@ from src.position_signal import (
     payload_has_signal_fields,
     resolve_signal_payload,
 )
+from src.profile_context import ProfileContext
 
 log = configure_logging("api")
 trades = trades_log()
-
-
-class LegResult(BaseModel):
-    mt5_ticket: int
-    snapshot: dict
-
-
-class ResultBody(BaseModel):
-    # Pydantic Literal rejects any other status string at parse time
-    # (returns 422). Without this, the schema's CHECK constraint was the
-    # last line of defense against an EA bug or attacker pushing the
-    # action into an unconstrained state.
-    #
-    # 'watching' is for the Phase-5 pending-limit flow: EA places a
-    # broker-side BuyLimit/SellLimit on an OPEN action with pending=true,
-    # then POSTs status='watching'. The action stays in that state until
-    # either the limit fires (EA POSTs 'executed' with a position
-    # snapshot) or a CANCEL_PENDING flips it to 'rejected' server-side.
-    status: Literal["executed", "failed", "rejected", "watching"]
-    mt5_ticket: int | None = None
-    error: str | None = None
-    snapshot: dict | None = None
-    legs: list[LegResult] | None = None
-
-
-class CloseBody(BaseModel):
-    reason: str = ""
-    # Realized-P&L extension (Step 3 of AI_EVALUATOR_ROADMAP). Both
-    # optional — older EA builds posting just `reason` keep working.
-    # exit_price = price of the closing deal; realized_pnl = total
-    # broker-reported profit on the position (sum across all exit deals).
-    exit_price: float | None = None
-    realized_pnl: float | None = None
-
-
-class PositionUpdateBody(BaseModel):
-    volume: float | None = None
-    sl: float | None = None
-    tp: float | None = None
-    # Used by the EA on partial closes: the broker-reported P&L of THIS
-    # deal alone, added to the position's running realized_pnl. None means
-    # "leave realized_pnl alone" — old EA builds keep working.
-    realized_pnl_delta: float | None = None
-
-
-class AttachSignalBody(BaseModel):
-    """EA-posted body for /positions/{ticket}/attach_signal.
-
-    Called after the EA successfully modifies the broker-side SL/TP on a
-    naked position. Clears is_naked, sets sl/tp on the row. Final-TP only —
-    the broker only holds one TP; the full tps[] ladder lives on the
-    ATTACH_SIGNAL action payload and is consumed by the EA's RegisterPlan
-    for the staged exit.
-    """
-    sl: float
-    tp: float
-
-
-class MarketPriceBody(BaseModel):
-    """Heartbeat from the EA so the AI prompt has a current price for
-    two-digit SL shorthand decoding (e.g. "ستوبك 56" -> 4856 only if we
-    know gold is around 4850).
-    """
-    symbol: str = "XAUUSD"
-    bid: float
-    ask: float
-
-
-class TimeframeOhlcBody(BaseModel):
-    """OHLC + ATR for one timeframe in the market snapshot.
-
-    sma50/sma200 are optional — only the D1 block populates them today
-    (the directional evaluator uses D1 trend filters). Older EA builds
-    that POST without these fields keep working.
-    """
-    open: float
-    high: float
-    low: float
-    close: float
-    atr14: float
-    sma50: float | None = None
-    sma200: float | None = None
-
-
-class MarketSnapshotBody(BaseModel):
-    """Multi-timeframe OHLC snapshot pushed by the EA roughly every minute.
-    Consumed by the directional-bias evaluator (see src/ai_evaluator.py).
-
-    The original m15/h1/h4 fields are required (older EA builds keep
-    working). The directional-rubric extensions (d1, d1_prev, adr20,
-    adx_h1, h1_recent_closes) are optional so an EA upgrade can roll out
-    independently from the API server. The evaluator falls back to
-    `data_quality=reduced` when the new fields are absent.
-    """
-    symbol: str = "XAUUSD"
-    m15: TimeframeOhlcBody
-    h1: TimeframeOhlcBody
-    h4: TimeframeOhlcBody
-    # Directional-rubric extensions (added 2026-05-09).
-    d1: TimeframeOhlcBody | None = None         # current day's OHLC + SMA50/200
-    d1_prev: TimeframeOhlcBody | None = None    # yesterday's OHLC (for gap/continuation context)
-    adr20: float | None = None                  # rolling avg of last 20 D1 ranges
-    adx_h1: float | None = None                 # ADX(14) on H1 — trend vs chop
-    h1_recent_closes: list[float] | None = None # last ~5 H1 closes (oldest first), for structure
-
-
-class AlertBody(BaseModel):
-    """Operator-visible alert posted by the EA when something needs human
-    attention (e.g. a staged partial-close gave up after PartialMaxRetries).
-    Inserted into actions as an ALERT row; the bot's notification_dispatcher
-    DMs the owner because it already handles ALERT rows.
-    """
-    level: str = "warning"  # "info" | "warning" | "critical"
-    text: str
 
 
 # Signal-resolution helpers live in `src.position_signal` so both this
@@ -200,8 +99,40 @@ def _maybe_kick_post_execution_evaluator(
     kick_evaluator_for_open(action_row["id"], signal_dict)
 
 
-def build_app(conn: sqlite3.Connection) -> FastAPI:
+# Module-level helpers live in src/api_helpers.py (Day-1 split).
+from src.api_helpers import (
+    DEFAULT_API_HOST,
+    DEFAULT_API_PORT,
+    _backfill_destination_channel_on_startup,
+    _enforce_auth_bind_policy,
+    _run_orchestrator_for_incoming,
+)
+
+
+
+def build_app(
+    conn: sqlite3.Connection,
+    *,
+    ai_client: object | None = None,
+    triage_client: object | None = None,
+    profile: ProfileContext | None = None,
+    ai_log_path: object | None = None,
+) -> FastAPI:
+    """Build the FastAPI app for this destination's API process.
+
+    The optional runtime context (``ai_client``, ``triage_client``,
+    ``profile``, ``ai_log_path``) is required only by ``POST /incoming_message``
+    — the EA-facing endpoints work without them. Tests that exercise the
+    EA contract can call ``build_app(conn)`` unchanged; the new endpoint
+    will reject requests with a clear 503 if it wasn't wired.
+    """
     app = FastAPI()
+    # Stash the runtime context on the app so the endpoint closure can
+    # read it without smuggling MagicMock-shaped state through globals.
+    app.state.ai_client = ai_client
+    app.state.triage_client = triage_client
+    app.state.profile_ctx = profile
+    app.state.ai_log_path = ai_log_path
 
     @app.middleware("http")
     async def auth_gate(request: Request, call_next):
@@ -212,15 +143,31 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
         # Read config.EA_SHARED_TOKEN per-request rather than capturing at
         # middleware-build time so test fixtures can flip it via
         # monkeypatch without rebuilding the app.
-        expected = config.EA_SHARED_TOKEN
-        if expected:
-            if request.headers.get("X-EA-Token") != expected:
+        #
+        # POST /incoming_message uses X-Listener-Token instead (separate
+        # secret so the listener and EA can be rotated independently).
+        # Falls back to EA_SHARED_TOKEN when listener_shared_token is unset
+        # — most single-stack operators won't bother with two tokens.
+        path = request.url.path
+        if path == "/incoming_message":
+            expected = config.LISTENER_SHARED_TOKEN or config.EA_SHARED_TOKEN
+            if expected and request.headers.get("X-Listener-Token") != expected:
                 client_host = request.client.host if request.client else "?"
-                log.warning("auth rejected from %s on %s %s",
-                            client_host, request.method, request.url.path)
+                log.warning("listener auth rejected from %s on %s",
+                            client_host, path)
                 return JSONResponse(
                     status_code=401,
-                    content={"error": "missing or invalid X-EA-Token"})
+                    content={"error": "missing or invalid X-Listener-Token"})
+        else:
+            expected = config.EA_SHARED_TOKEN
+            if expected:
+                if request.headers.get("X-EA-Token") != expected:
+                    client_host = request.client.host if request.client else "?"
+                    log.warning("auth rejected from %s on %s %s",
+                                client_host, request.method, path)
+                    return JSONResponse(
+                        status_code=401,
+                        content={"error": "missing or invalid X-EA-Token"})
         return await call_next(request)
 
     @app.middleware("http")
@@ -275,6 +222,58 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
     def health():
         return {"ok": True}
 
+    @app.post("/incoming_message", status_code=202)
+    def incoming_message(body: IncomingMessageBody, bg: BackgroundTasks):
+        """Listener-to-API ingestion endpoint (Step 4 of multi-channel plan).
+
+        The shared listener POSTs each Telegram message here instead of
+        writing the DB directly. The API:
+
+          1. Validates the token (handled by auth_gate middleware)
+          2. Verifies the runtime context is wired (returns 503 otherwise)
+          3. Queues orchestrator.process_message as a background task
+          4. Returns 202 immediately so the listener isn't blocked on AI calls
+
+        ``channel_id`` is recorded in the inserted message + downstream
+        actions via ``source_channel_id``. In single-stack mode the API
+        uses its process-level ProfileContext regardless of channel_id
+        (every message routes to the same destination). Multi-channel
+        destinations (Step 12 deferred) will look up the ProfileContext
+        per channel_id.
+        """
+        ai = app.state.ai_client
+        triage = app.state.triage_client
+        profile = app.state.profile_ctx
+        log_path = app.state.ai_log_path
+        if ai is None or log_path is None:
+            log.error("incoming_message rejected: API was built without ai_client/ai_log_path")
+            raise HTTPException(
+                status_code=503,
+                detail="API runtime context not configured (ai_client/ai_log_path required)",
+            )
+
+        # Resolve the auto-execute delay from settings just like the
+        # listener used to do inline. Per-request read so live changes via
+        # /settings take effect immediately.
+        from src.db import get_setting
+        delay_str = get_setting(conn, "auto_execute_delay_sec")
+        try:
+            delay = int(delay_str) if delay_str else config.DEFAULT_AUTO_EXECUTE_DELAY_SEC
+        except (TypeError, ValueError):
+            delay = config.DEFAULT_AUTO_EXECUTE_DELAY_SEC
+
+        bg.add_task(
+            _run_orchestrator_for_incoming,
+            conn=conn,
+            ai=ai,
+            triage=triage,
+            profile=profile,
+            body=body,
+            ai_log_path=log_path,
+            auto_execute_delay_sec=delay,
+        )
+        return {"queued": True, "tg_message_id": body.tg_message_id}
+
     @app.get("/actions")
     def get_actions(status: str = "sent", limit: int = 50):
         rows = conn.execute(
@@ -301,6 +300,98 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
         if row is None:
             raise HTTPException(404)
         return {"key": key, "value": row["value"]}
+
+    # ---- Pipeline view -------------------------------------------------
+    # Powers src/gui/views/pipeline_view.py: per-message stage decision
+    # readout + a per-bucket histogram. Both queries are time-windowed by
+    # received_at and indexed via idx_messages_decided_stage. NULL stages
+    # are surfaced as the "unknown" bucket (pre-migration history + any
+    # in-flight rows the orchestrator hasn't decided on yet).
+    _PIPELINE_BUCKETS = (
+        "prefilter_drop", "trigger_text", "trigger_embedding",
+        "trigger_ignore", "triage_ignored", "interpreted_signal",
+        "interpreted_ignore",
+    )
+
+    def _pipeline_since_clause(since_hours: int | None) -> tuple[str, tuple]:
+        if since_hours is None or since_hours <= 0:
+            return "", ()
+        return (
+            "WHERE received_at >= datetime('now', ?)",
+            (f"-{int(since_hours)} hours",),
+        )
+
+    @app.get("/pipeline/stats")
+    def pipeline_stats(since_hours: int | None = 24):
+        where_sql, params = _pipeline_since_clause(since_hours)
+        rows = conn.execute(
+            f"SELECT COALESCE(decided_stage, 'unknown') AS bucket, "
+            f"COUNT(*) AS n FROM messages {where_sql} "
+            f"GROUP BY bucket",
+            params,
+        ).fetchall()
+        counts = {b: 0 for b in _PIPELINE_BUCKETS}
+        counts["unknown"] = 0
+        for r in rows:
+            counts[r["bucket"]] = r["n"]
+        return {"since_hours": since_hours, "counts": counts}
+
+    @app.get("/pipeline/messages")
+    def pipeline_messages(
+        since_hours: int | None = 24,
+        stage: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ):
+        clauses: list[str] = []
+        params: list = []
+        if since_hours is not None and since_hours > 0:
+            clauses.append("received_at >= datetime('now', ?)")
+            params.append(f"-{int(since_hours)} hours")
+        if stage:
+            if stage == "unknown":
+                clauses.append("decided_stage IS NULL")
+            else:
+                clauses.append("decided_stage = ?")
+                params.append(stage)
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        # Cap limit defensively — the GUI paginates anyway.
+        limit = max(1, min(int(limit), 1000))
+        offset = max(0, int(offset))
+        rows = conn.execute(
+            f"SELECT m.id, m.received_at, m.sender, m.text, "
+            f"m.source_channel_id, m.decided_stage, m.decided_outcome, "
+            f"m.decided_at, m.pipeline_meta_json, "
+            f"(SELECT GROUP_CONCAT(a.id) FROM actions a "
+            f" WHERE a.source_msg_id = m.id) AS action_ids "
+            f"FROM messages m {where_sql} "
+            f"ORDER BY m.received_at DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        ).fetchall()
+        return {
+            "since_hours": since_hours,
+            "stage": stage,
+            "limit": limit,
+            "offset": offset,
+            "messages": [
+                {
+                    "id": r["id"],
+                    "received_at": r["received_at"],
+                    "sender": r["sender"],
+                    "text": r["text"],
+                    "source_channel_id": r["source_channel_id"],
+                    "decided_stage": r["decided_stage"],
+                    "decided_outcome": r["decided_outcome"],
+                    "decided_at": r["decided_at"],
+                    "pipeline_meta_json": r["pipeline_meta_json"],
+                    "action_ids": (
+                        [int(x) for x in r["action_ids"].split(",")]
+                        if r["action_ids"] else []
+                    ),
+                }
+                for r in rows
+            ],
+        }
 
     @app.post("/actions/{action_id}/claim")
     def claim_action(action_id: int):
@@ -384,6 +475,30 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
         except Exception:
             conn.execute("ROLLBACK")
             raise
+
+        # Step 7: per-bot notification fan-out. Writes outbox rows for
+        # every bot whose binding covers this destination. No-op when v2
+        # bindings absent — legacy bot.py::notification_dispatcher
+        # handles those via its existing actions.notified_at poll. Look
+        # up the action's source_channel + route from the row so future
+        # scope-aware bindings (Step 14) can match correctly.
+        if not claim_expired:
+            try:
+                from src.notification_dispatcher import dispatch_notification
+                meta = conn.execute(
+                    "SELECT source_channel_id, route_id FROM actions WHERE id=?",
+                    (action_id,),
+                ).fetchone()
+                dispatch_notification(
+                    conn,
+                    event_type="action_terminal",
+                    action_id=action_id,
+                    source_channel_id=meta["source_channel_id"] if meta else None,
+                    route_id=meta["route_id"] if meta else None,
+                )
+            except Exception:
+                log.exception("dispatch_notification(action_terminal) failed; "
+                              "legacy notification_dispatcher will still cover")
 
         if claim_expired:
             # The claim was released by release_stale_claims (or the row was
@@ -657,6 +772,40 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
                 body.exit_price if body.exit_price is not None else "-",
                 body.realized_pnl if body.realized_pnl is not None else "-",
             )
+            # Day-3 cleanup: position-close DMs now flow through the v2
+            # per-bot dispatcher just like terminal-action and alert
+            # events. Closes the Step-7 gap that left position closes on
+            # the legacy polling path. No-op when v2 binding absent —
+            # legacy position_close_notifier in bot.py still covers that
+            # case (mutex enforced at post_init).
+            try:
+                pos = conn.execute(
+                    "SELECT id, action_id FROM positions WHERE mt5_ticket=?",
+                    (ticket,),
+                ).fetchone()
+                if pos is not None:
+                    meta = None
+                    if pos["action_id"] is not None:
+                        meta = conn.execute(
+                            "SELECT source_channel_id, route_id "
+                            "FROM actions WHERE id=?",
+                            (pos["action_id"],),
+                        ).fetchone()
+                    from src.notification_dispatcher import dispatch_notification
+                    dispatch_notification(
+                        conn,
+                        event_type="position_closed",
+                        action_id=pos["action_id"],
+                        source_channel_id=meta["source_channel_id"] if meta else None,
+                        route_id=meta["route_id"] if meta else None,
+                        extra_payload={"position_id": pos["id"]},
+                    )
+            except Exception:
+                log.exception(
+                    "dispatch_notification(position_closed) failed for "
+                    "ticket=%s; legacy position_close_notifier will still "
+                    "cover (when active).", ticket,
+                )
         return {"ok": True, "updated": cur.rowcount}
 
     @app.get("/positions/last_closed")
@@ -886,6 +1035,19 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             (payload, now),
         )
         trades.info("alert_posted id=%s level=%s", cur.lastrowid, body.level)
+        # Step 7: enqueue outbox row for the alert. Payload includes
+        # level + text so the tailer can render without a fresh fetch.
+        try:
+            from src.notification_dispatcher import dispatch_notification
+            dispatch_notification(
+                conn,
+                event_type="alert",
+                action_id=cur.lastrowid,
+                extra_payload={"level": body.level, "text": body.text},
+            )
+        except Exception:
+            log.exception("dispatch_notification(alert) failed; "
+                          "legacy notification_dispatcher will still cover")
         return {"ok": True, "id": cur.lastrowid}
 
     @app.post("/market/snapshot")
@@ -933,6 +1095,29 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
             conn.execute("ROLLBACK")
             raise
         return {"ok": True, "recorded_at": now}
+
+    @app.post("/market/snapshot/state")
+    def post_market_snapshot_state(body: MarketSnapshotStateBody):
+        """Sentinel for the GUI services-bar: tells the dashboard that
+        snapshot publishing is intentionally off vs just stale. EA posts
+        this at OnInit (and on input flip) so the Snapshot pill renders
+        muted/"off" instead of going red after 3 minutes when the
+        operator disables ``EnableMarketSnapshot``.
+
+        Idempotent: stores ``market_snapshot_{sym}_disabled`` = "1"/"0"
+        in settings.
+        """
+        if body.symbol.upper() not in config.SUPPORTED_SYMBOLS:
+            raise HTTPException(400, f"unsupported symbol: {body.symbol}")
+        sym = body.symbol.upper()
+        val = "0" if body.enabled else "1"
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (f"market_snapshot_{sym}_disabled", val),
+        )
+        conn.commit()
+        return {"ok": True, "enabled": body.enabled}
 
     @app.post("/market/price")
     def post_market_price(body: MarketPriceBody):
@@ -996,38 +1181,19 @@ def build_app(conn: sqlite3.Connection) -> FastAPI:
     return app
 
 
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"})
-
-DEFAULT_API_HOST = "127.0.0.1"
-DEFAULT_API_PORT = 8765
-
-
-def _enforce_auth_bind_policy(host: str, token: str) -> None:
-    """Refuse to start when the API would be unauthenticated AND bound to
-    a non-loopback interface. Any process on the network could otherwise
-    POST /actions/{id}/result and forge broker fills (REVIEW.md P2).
-
-    An empty/unset host is treated as the safe loopback default (see
-    DEFAULT_API_HOST). Anything explicitly non-loopback requires a
-    non-empty EA_SHARED_TOKEN.
-    """
-    if (token or "").strip():
-        return
-    h = (host or "").strip().lower()
-    if not h or h in _LOOPBACK_HOSTS:
-        return
-    raise SystemExit(
-        f"API refuses to start: EA_SHARED_TOKEN is empty and API_HOST="
-        f"{host!r} is not loopback. Set EA_SHARED_TOKEN in .env, or bind "
-        f"to 127.0.0.1 if this is a single-host install."
-    )
 
 
 def run() -> None:
     import uvicorn
+    from pathlib import Path
     from src import config
+    from src.ai import AIClient
+    from src.ai_triage import TriageClient
+    from src.config import AI_TRIAGE_ENABLED, LOGS_DIR
     from src.db import connect, init_schema
+    from src.llm_provider import default_interpreter_model, default_triage_model
     from src.notify import notify_owner
+    from src.profile_context import get_profile_context
     # Fall back to safe defaults when the operator hasn't populated
     # api_host / api_port in the stack DB yet (fresh install path):
     # this lets the service start with 127.0.0.1:8765 instead of
@@ -1038,9 +1204,81 @@ def run() -> None:
     _enforce_auth_bind_policy(host, config.EA_SHARED_TOKEN)
     conn = connect(config.DB_PATH)
     init_schema(conn)
-    app = build_app(conn)
+
+    # Step 4 of multi-channel plan: the API process now runs the
+    # orchestrator for POST /incoming_message. It needs the same runtime
+    # context the listener used to own (ProfileContext, AIClient,
+    # TriageClient, ai_log_path). Failure to load any of these is
+    # tolerated — POST /incoming_message will return 503 with a clear
+    # error, but EA endpoints (the bulk of API traffic) still work.
+    profile_ctx = None
+    try:
+        from src.ai import _resolve_profile_path
+        profile_path = _resolve_profile_path()
+        if profile_path.exists():
+            profile_ctx = get_profile_context(
+                profile_path,
+                name=config.CHANNEL_PROFILE or profile_path.stem,
+            )
+            log.info(
+                "api profile context loaded: name=%s symbol=%s",
+                profile_ctx.name, profile_ctx.symbol,
+            )
+    except (RuntimeError, FileNotFoundError, OSError) as e:
+        log.warning("api profile context unavailable: %s", e)
+
+    ai_client = None
+    triage_client = None
+    try:
+        interp_model = default_interpreter_model()
+        ai_client = AIClient(
+            model=interp_model,
+            system_prompt=(profile_ctx.system_prompt if profile_ctx else None),
+        )
+        if AI_TRIAGE_ENABLED:
+            triage_model = default_triage_model()
+            triage_client = TriageClient(
+                model=triage_model,
+                system_prompt=(profile_ctx.triage_prompt if profile_ctx else None),
+            )
+        log.info("api ai context: provider=%s interpreter=%s triage=%s",
+                 config.AI_PROVIDER, interp_model,
+                 triage_model if AI_TRIAGE_ENABLED else "disabled")
+    except Exception as e:
+        # AI provider misconfigured (e.g. missing API key on a fresh install).
+        # EA endpoints continue to work; /incoming_message will 503.
+        log.warning("api ai context unavailable: %s", e)
+
+    ai_log_path = Path(LOGS_DIR) / "ai_calls.jsonl"
+
+    # Step 4 backfill: tag any pre-v2 rows (NULL source_channel_id) with
+    # the channel that routes to this destination. Single-stack today =
+    # exactly one route per destination, so the channel is unambiguous.
+    # Multi-channel destinations (Step 12 deferred) will skip this — they
+    # can't pick "the" channel automatically. No-op when v2 config or
+    # matching route can't be found.
+    try:
+        _backfill_destination_channel_on_startup(conn, config.DB_PATH)
+    except Exception as e:
+        log.warning("startup channel-id backfill skipped: %s", e)
+
+    app = build_app(
+        conn,
+        ai_client=ai_client,
+        triage_client=triage_client,
+        profile=profile_ctx,
+        ai_log_path=ai_log_path,
+    )
     notify_owner(f"🌐 API started on http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port)
+    # timeout_keep_alive=0 disables HTTP keep-alive entirely. MT5's
+    # WebRequest doesn't handle keep-alive well — after POSTing, MT5
+    # tears down the TCP connection before reading the full response,
+    # which uvicorn surfaces as
+    #   "WinError 10054 — connection forcibly closed by remote host"
+    # in nssm-api.err.log, and the EA logs the partial response as
+    # a bogus "HTTP 1003". Forcing Connection: close per request makes
+    # MT5's tear-down sequence the EXPECTED flow rather than a race.
+    uvicorn.run(app, host=host, port=port, timeout_keep_alive=0)
 
 
 if __name__ == "__main__":

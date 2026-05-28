@@ -97,14 +97,30 @@ Output the JSON object on a single line. Nothing else.
 """)
 
 
-def _render_triage_prompt(profile_name: str | None = None) -> str:
-    p = _load_profile(profile_name)
+def _render_triage_prompt_from_data(p: dict) -> str:
+    """Render the triage system prompt from a parsed profile dict.
+
+    Step-3 entry point (mirrors ai._render_system_prompt_from_data).
+    Used by ProfileContext to pre-render once per channel; the legacy
+    ``_render_triage_prompt(name)`` is now a wrapper that loads from disk.
+    """
     return _TEMPLATE.substitute(
         symbol=p.get("symbol", "XAUUSD"),
         promo_indicators=p.get("promo_indicators", ""),
         noise_patterns=p.get("noise_patterns", ""),
         triage_keep_triggers=p.get("triage_keep_triggers", ""),
     )
+
+
+def _render_triage_prompt(profile_name: str | None = None) -> str:
+    """Legacy entrypoint: loads profile from disk via global config, renders prompt.
+
+    Preserved for callers that haven't migrated to ProfileContext yet
+    (the playground, the profile generator wizard, the module-level
+    TRIAGE_SYSTEM_PROMPT initialiser).
+    """
+    p = _load_profile(profile_name)
+    return _render_triage_prompt_from_data(p)
 
 
 def render_bootstrap_triage_prompt(symbol: str = "XAUUSD") -> str:
@@ -186,12 +202,19 @@ class TriageClient:
         # the live listener.
         self._system_prompt = system_prompt
 
-    def classify(self, text: str, open_count: int) -> TriageResult:
+    def classify(
+        self,
+        text: str,
+        open_count: int,
+        *,
+        system_prompt: str | None = None,
+    ) -> TriageResult:
         user_content = (
             f"OPEN_POSITIONS: {open_count}\n"
             f"MESSAGE:\n{text}"
         )
-        system_prompt = self._system_prompt or TRIAGE_SYSTEM_PROMPT
+        # Prompt resolution (most specific wins): per-call > per-instance > module global.
+        system_prompt = system_prompt or self._system_prompt or TRIAGE_SYSTEM_PROMPT
         last_err: Exception | None = None
         for attempt in range(self._max_retries):
             try:

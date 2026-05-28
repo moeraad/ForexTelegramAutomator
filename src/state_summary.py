@@ -163,12 +163,24 @@ def _render_executed_positions(
 def _render_pending_open_signals(conn: sqlite3.Connection) -> list[str]:
     """List OPEN actions still in the pipeline (not yet filled in MT5).
 
-    Why: AI needs to know about pending limit orders it already produced, so
-    it doesn't re-emit them when the channel quotes or repeats the signal.
+    Why: AI needs to know about pending limit orders it already produced
+    so it doesn't re-emit them when the channel quotes/repeats the
+    signal — AND so CANCEL_PENDING isn't suppressed as "no pending order"
+    when there really is a broker-side pending limit awaiting fill.
+
+    Statuses included:
+      - pending/sent/claimed: still in the dispatch pipeline.
+      - watching: the EA has placed a BuyLimit/SellLimit at the broker
+        and is waiting for the fill (or for CANCEL_PENDING to kill it).
+        OMITTING this status caused the 2026-05-26 incident where the
+        channel said "cancel the order" but the AI emitted ZERO actions
+        with context="cancel requested but no pending XAUUSD order
+        exists" — even though a real broker-side limit was live.
     """
     rows = conn.execute(
         "SELECT id, payload_json, status FROM actions "
-        "WHERE action_type='OPEN' AND status IN ('pending','sent','claimed') "
+        "WHERE action_type='OPEN' "
+        "AND status IN ('pending','sent','claimed','watching') "
         "ORDER BY id"
     ).fetchall()
 
@@ -278,19 +290,92 @@ def _render_market_price(
     ]
 
 
-def render_open_positions(conn: sqlite3.Connection) -> str:
+def _render_reply_context(
+    conn: sqlite3.Connection, *, tg_message_id: int, chat_id: int,
+) -> list[str]:
+    """When the current message replies to a prior message, prepend the
+    parent's text so the AI can resolve pronouns like "cancel that
+    order" / "use BE on this" against a concrete antecedent.
+
+    Returns an empty list when the current message has no
+    reply_to_tg_message_id, when the parent message isn't in the local
+    messages table (cross-chat reply, pre-migration row), or when the
+    lookup fails. The caller appends a blank-line separator only when
+    the returned list is non-empty.
+    """
+    if not tg_message_id or not chat_id:
+        return []
+    cur = conn.execute(
+        "SELECT reply_to_tg_message_id FROM messages "
+        "WHERE chat_id=? AND tg_message_id=?",
+        (chat_id, tg_message_id),
+    ).fetchone()
+    if cur is None:
+        return []
+    parent_id = cur["reply_to_tg_message_id"]
+    if not parent_id:
+        return []
+    parent = conn.execute(
+        "SELECT text, sender, received_at FROM messages "
+        "WHERE chat_id=? AND tg_message_id=?",
+        (chat_id, parent_id),
+    ).fetchone()
+    if parent is None:
+        return [
+            f"REPLY CONTEXT: this message replies to tg_msg_id={parent_id}, "
+            "but the parent message is not in the local archive (may be "
+            "older than backfill, or from before reply-capture landed)."
+        ]
+    parent_text = (parent["text"] or "").strip()
+    # Trim very long parents so the prompt budget stays sane. Channels
+    # rarely reply to anything that wouldn't fit comfortably here.
+    if len(parent_text) > 600:
+        parent_text = parent_text[:600] + "... [truncated]"
+    age = _age_seconds(parent["received_at"])
+    age_str = f" ({age // 60} min ago)" if age is not None else ""
+    return [
+        f"REPLY CONTEXT (this message is a reply to tg_msg_id={parent_id}"
+        f"{age_str}):",
+        f'  parent: "{parent_text}"',
+    ]
+
+
+def render_open_positions(
+    conn: sqlite3.Connection,
+    *, symbol: str = "XAUUSD",
+    current_tg_message_id: int | None = None,
+    current_chat_id: int | None = None,
+) -> str:
     """AI prompt context: open positions + pending OPENs + last-closed + market price.
 
-    Name kept for caller compatibility (orchestrator.py); now renders four blocks.
+    ``symbol`` defaults to XAUUSD for backward compatibility; Step 3 of the
+    multi-channel plan threads ``profile.symbol`` here so destinations serving
+    different symbols (deferred capability) produce a correctly-scoped block.
+
+    ``current_tg_message_id`` + ``current_chat_id`` (added 2026-05-26):
+    when both are provided, prepends a REPLY CONTEXT block with the parent
+    message's text whenever the current message is a Telegram reply. The
+    AI uses this to resolve pronouns. Both default None for callers that
+    don't have message context (e.g. the GUI's prompt inspector).
+
+    Name kept for caller compatibility (orchestrator.py).
     """
-    mid = _get_market_mid(conn)
-    parts = (
-        _render_executed_positions(conn, mid=mid)
-        + [""]
-        + _render_pending_open_signals(conn)
-        + [""]
-        + _render_last_closed_position(conn)
-        + [""]
-        + _render_market_price(conn)
-    )
+    mid = _get_market_mid(conn, symbol=symbol)
+    parts: list[str] = []
+    if current_tg_message_id is not None and current_chat_id is not None:
+        reply_block = _render_reply_context(
+            conn,
+            tg_message_id=current_tg_message_id,
+            chat_id=current_chat_id,
+        )
+        if reply_block:
+            parts.extend(reply_block)
+            parts.append("")
+    parts.extend(_render_executed_positions(conn, mid=mid))
+    parts.append("")
+    parts.extend(_render_pending_open_signals(conn))
+    parts.append("")
+    parts.extend(_render_last_closed_position(conn, symbol=symbol))
+    parts.append("")
+    parts.extend(_render_market_price(conn, symbol=symbol))
     return "\n".join(parts)

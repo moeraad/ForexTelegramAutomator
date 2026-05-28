@@ -8,6 +8,10 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, ContextTypes,
 )
 from src import config
+from src.bot_keyboards import _kb_for_action, _kb_for_relaunch
+from src.bot_loops.orphan_recovery import (
+    recover_orphan_pending_actions,  # re-exported for back-compat with tests
+)
 from src.db import connect, init_schema, get_setting, set_setting
 from src.logging_setup import configure_logging
 from src.telegram_format import render_action_notification
@@ -18,27 +22,6 @@ log = configure_logging("bot")
 
 def _owner_only(user_id: int) -> bool:
     return user_id == config.TG_BOT_OWNER_USER_ID
-
-
-def _kb_for_action(action_id: int, action_type: str) -> InlineKeyboardMarkup | None:
-    if action_type == "ALERT":
-        return None
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("Cancel", callback_data=f"cancel:{action_id}"),
-        InlineKeyboardButton("Execute now", callback_data=f"execute:{action_id}"),
-    ]])
-
-
-def _kb_for_relaunch(action_id: int) -> InlineKeyboardMarkup:
-    """Keyboard offered for actions found in non-terminal state when the
-    bot starts up — i.e. the previous session crashed before promoting /
-    executing them. Operator decides whether to fire the action now or
-    skip it (REVIEW.md P1 / Q2).
-    """
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("Execute", callback_data=f"relexec:{action_id}"),
-        InlineKeyboardButton("Ignore", callback_data=f"relskip:{action_id}"),
-    ]])
 
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -243,506 +226,77 @@ async def _do_relaunch_skip(conn, aid, reply):
         "(operator_skipped_after_relaunch)."
     )
 
+# Long-running loops + orphan-recovery routine moved to src.bot_loops
+# (Day-1 cleanup: April-May 2026 multi-channel refactor). The imports
+# live inside post_init / main rather than at module top to keep bot.py
+# importable from tests that don't need to load every feed library.
 
-async def notification_dispatcher(app: Application):
-    """Polls for actions that just reached a terminal state and DMs the owner.
+def _resolve_tailer_conns_for_bot(
+    bot_id: str, local_conn,
+):
+    """Return the list of sqlite3 conns the OutboxTailer needs.
 
-    Per project policy (fully automated, no human approval gate): the bot
-    only DMs about actions that have ACTUALLY HAPPENED — executed, failed,
-    or rejected. The pre-execution approval prompt is gone; the promoter
-    auto-promotes pending → sent without operator interaction.
+    Step 14: a multi-scope bot may have to tail bot_outbox across N
+    destination DBs (``scope=global``, or ``scope=channel`` for a
+    channel that mirrors). This helper:
+
+      1. Reads v2 config for the bot's bindings.
+      2. Resolves the set of Destinations the bot serves.
+      3. Returns ``[local_conn, *new_conns]`` — local always first so
+        single-destination bots see the unchanged single-conn path
+        (back-compat for callers that introspect ``_conn``).
+
+    Fail-open: any v2 lookup error returns ``[local_conn]`` so a config
+    glitch can't break notifications entirely.
     """
-    from src.telegram_format import render_action_terminal
-    conn: sqlite3.Connection = app.bot_data["conn"]
-
-    # First-run guard: any terminal action sitting in the DB at startup
-    # was completed before this dispatcher existed (or before the new
-    # behavior shipped). Treat them as already-seen so we don't flood
-    # the operator with backlog DMs every time the bot restarts.
-    conn.execute(
-        "UPDATE actions SET notified_at = CURRENT_TIMESTAMP "
-        "WHERE notified_at IS NULL "
-        "  AND status IN ('executed','failed','rejected')"
-    )
-
-    while True:
-        try:
-            # Parked rows: status='pending' with execute_after=NULL come from
-            # the backfill-management guard in orchestrator (REVIEW.md P1 /
-            # Q5). DM them with the relaunch keyboard so the operator can
-            # Execute (re-arm) or Ignore (reject).
-            parked = conn.execute(
-                "SELECT id, action_type, payload_json, source_msg_id, "
-                "       created_at, ea_response "
-                "FROM actions "
-                "WHERE status='pending' AND execute_after IS NULL "
-                "  AND notified_at IS NULL "
-                "  AND COALESCE(ea_response,'') = 'backfill_management_review_required' "
-                "ORDER BY id ASC LIMIT 20"
-            ).fetchall()
-            for r in parked:
-                try:
-                    payload = json.loads(r["payload_json"]) if r["payload_json"] else {}
-                except (TypeError, ValueError):
-                    payload = {}
-                from src.telegram_format import _payload_summary
-                summary = _payload_summary(r["action_type"], payload) or "(no payload)"
-                src_text = ""
-                if r["source_msg_id"]:
-                    mrow = conn.execute(
-                        "SELECT text, received_at FROM messages WHERE id=?",
-                        (r["source_msg_id"],),
-                    ).fetchone()
-                    if mrow is not None:
-                        snippet = (mrow["text"] or "").strip().replace("\n", " ")
-                        if len(snippet) > 240:
-                            snippet = snippet[:240] + "..."
-                        src_text = (
-                            f"\nSignal at {mrow['received_at']}:\n  \"{snippet}\""
-                        )
-                text = (
-                    f"♻️ Backfill review - action #{r['id']}\n"
-                    f"Type: {r['action_type']}\n"
-                    f"Created: {r['created_at']}\n"
-                    f"Payload: {summary}"
-                    f"{src_text}\n\n"
-                    f"This management action arrived via backfill replay "
-                    f"(listener was offline when the original signal posted). "
-                    f"Auto-execution was suppressed to avoid re-firing a "
-                    f"stale instruction. Execute now or ignore?"
+    from pathlib import Path as _Path
+    try:
+        from src import config_v2
+        cfg_path = config_v2.config_path()
+        if not config_v2.is_v2(cfg_path):
+            return [local_conn]
+        cfg = config_v2.load_v2(cfg_path)
+        if cfg is None:
+            return [local_conn]
+        dests = cfg.destinations_for_bot(bot_id)
+        if len(dests) <= 1:
+            return [local_conn]
+        # Multi-destination — open the extras that aren't the local DB.
+        local_path = _Path(config.DB_PATH).resolve()
+        extras: list = []
+        for dest in dests:
+            if not dest.db_path:
+                continue
+            dpath = _Path(dest.db_path).resolve()
+            if dpath == local_path:
+                continue
+            if not dpath.exists():
+                log.warning(
+                    "bot=%s: destination %s db missing at %s; skipping extra conn",
+                    bot_id, dest.id, dpath,
                 )
-                try:
-                    await app.bot.send_message(
-                        chat_id=config.TG_BOT_OWNER_USER_ID,
-                        text=text,
-                        reply_markup=_kb_for_relaunch(r["id"]),
-                    )
-                    conn.execute(
-                        "UPDATE actions SET notified_at=CURRENT_TIMESTAMP "
-                        "WHERE id=?",
-                        (r["id"],),
-                    )
-                except Exception as e:
-                    log.warning("backfill-review DM failed for #%s: %s", r["id"], e)
-            rows = conn.execute(
-                "SELECT id, action_type, payload_json, status, ea_response, source_msg_id "
-                "FROM actions WHERE notified_at IS NULL "
-                "AND status IN ('executed','failed','rejected') "
-                "ORDER BY id ASC LIMIT 20"
-            ).fetchall()
-            for r in rows:
-                # EA-side no-op markers: when EnableAiPartialAndBe is off the
-                # EA writes status=executed with this ea_response so the
-                # rejected counter doesn't bump. The operator explicitly
-                # asked for these to be invisible — ack and move on.
-                if (r["ea_response"] or "").startswith("noop_"):
-                    conn.execute(
-                        "UPDATE actions SET notified_at=CURRENT_TIMESTAMP "
-                        "WHERE id=?",
-                        (r["id"],),
-                    )
-                    continue
-                try:
-                    payload = json.loads(r["payload_json"])
-                except (TypeError, ValueError):
-                    payload = {}
-                # For executed OPEN actions, look up the broker fill price
-                # AND the filled lot size from the resulting position row
-                # so the DM shows both the channel signal's entry zone /
-                # the actual entry / the filled lots. Prefer original_volume
-                # so a fast TP1-partial doesn't shrink the reported lot
-                # size on the OPEN notification.
-                actual_entry: float | None = None
-                actual_volume: float | None = None
-                if r["action_type"] == "OPEN" and r["status"] == "executed":
-                    pos_row = conn.execute(
-                        "SELECT entry_price, "
-                        "       COALESCE(original_volume, volume) AS vol "
-                        "FROM positions "
-                        "WHERE action_id = ? "
-                        "ORDER BY id DESC LIMIT 1",
-                        (r["id"],),
-                    ).fetchone()
-                    if pos_row is not None:
-                        if pos_row["entry_price"] is not None:
-                            actual_entry = float(pos_row["entry_price"])
-                        if pos_row["vol"] is not None:
-                            actual_volume = float(pos_row["vol"])
-                text = render_action_terminal(
-                    r["id"], r["action_type"], r["status"],
-                    payload, r["ea_response"] or "",
-                    actual_entry=actual_entry,
-                    actual_volume=actual_volume,
+                continue
+            try:
+                extra = connect(str(dpath))
+                init_schema(extra)
+                extras.append(extra)
+            except Exception:
+                log.exception(
+                    "bot=%s: failed to open extra dest db %s; skipping",
+                    bot_id, dpath,
                 )
-                await app.bot.send_message(
-                    chat_id=config.TG_BOT_OWNER_USER_ID,
-                    text=text,
-                )
-                conn.execute(
-                    "UPDATE actions SET notified_at=CURRENT_TIMESTAMP WHERE id=?",
-                    (r["id"],),
-                )
-        except Exception as e:
-            log.exception("notification_dispatcher error: %s", e)
-        await asyncio.sleep(1.0)
-
-
-async def position_close_notifier(app: Application):
-    """Polls for newly-closed positions and DMs the owner.
-
-    Tracks progress via settings.position_close_last_notified_at (ISO-8601
-    UTC string). On each tick, any positions with closed_at > that
-    watermark get a one-line DM and the watermark advances to the most
-    recent closed_at.
-    """
-    from src.telegram_format import render_position_closed
-    conn: sqlite3.Connection = app.bot_data["conn"]
-
-    # Watermark by positions.id, not closed_at. Two closes in the same
-    # second produce identical closed_at strings; with `closed_at > cursor`
-    # the second one was being silently skipped on the next tick. Using
-    # the monotonic primary key removes the tie-break ambiguity entirely.
-    # First-run guard seeds the cursor past the existing backlog so the
-    # operator doesn't get flooded with historical close DMs on first
-    # launch.
-    if get_setting(conn, "position_close_last_notified_id") is None:
-        row = conn.execute(
-            "SELECT COALESCE(MAX(id), 0) AS m FROM positions "
-            "WHERE status='closed'"
-        ).fetchone()
-        set_setting(conn, "position_close_last_notified_id", str(row["m"]))
-
-    while True:
-        try:
-            cursor = int(
-                get_setting(conn, "position_close_last_notified_id") or "0"
+        if extras:
+            log.info(
+                "bot=%s: multi-destination tailer (local + %d extra dbs)",
+                bot_id, len(extras),
             )
-            rows = conn.execute(
-                "SELECT id, mt5_ticket, side, symbol, volume, original_volume, "
-                "       entry_price, sl, tp, closed_at, close_reason "
-                "FROM positions WHERE status='closed' "
-                "  AND closed_at IS NOT NULL AND id > ? "
-                "ORDER BY id ASC LIMIT 20",
-                (cursor,),
-            ).fetchall()
-            for r in rows:
-                text = render_position_closed(
-                    ticket=r["mt5_ticket"], side=r["side"], symbol=r["symbol"],
-                    volume=r["volume"], original_volume=r["original_volume"],
-                    entry=r["entry_price"], sl=r["sl"], tp=r["tp"],
-                    closed_at=r["closed_at"], reason=r["close_reason"] or "",
-                )
-                await app.bot.send_message(
-                    chat_id=config.TG_BOT_OWNER_USER_ID,
-                    text=text,
-                )
-                set_setting(conn, "position_close_last_notified_id", str(r["id"]))
-        except Exception as e:
-            log.exception("position_close_notifier error: %s", e)
-        await asyncio.sleep(1.0)
-
-
-async def promotion_loop(app: Application):
-    conn: sqlite3.Connection = app.bot_data["conn"]
-    while True:
-        try:
-            n = promote_due_actions(conn)
-            if n:
-                log.info("promoted %s actions", n)
-        except Exception as e:
-            log.exception("promotion_loop error: %s", e)
-        await asyncio.sleep(1.0)
-
-
-async def claim_sweeper_loop(app: Application):
-    """Periodically release claimed actions a crashed EA never confirmed."""
-    conn: sqlite3.Connection = app.bot_data["conn"]
-    while True:
-        try:
-            n = release_stale_claims(conn)  # default 300s
-            if n:
-                log.warning("released %s stale claim(s)", n)
-        except Exception as e:
-            log.exception("claim_sweeper_loop error: %s", e)
-        await asyncio.sleep(15.0)
-
-
-async def cost_guard_loop(app: Application):
-    """Once a minute, compare today's AI spend against the configured
-    daily cap. If breached, force kill_switch=on and DM the operator.
-    The watchdog is silent on every clean tick so it doesn't spam the
-    log when the budget is healthy.
-    """
-    from datetime import datetime, timezone
-    from src.cost_guard import check_and_enforce
-    from src.logging_setup import LOGS_DIR
-    conn: sqlite3.Connection = app.bot_data["conn"]
-    ai_calls_log = LOGS_DIR / "ai_calls.jsonl"
-    while True:
-        try:
-            event, reason = check_and_enforce(conn, ai_calls_log)
-            if event == "halted":
-                from src.notify import notify_owner
-                notify_owner(
-                    "⚠ Cost cap hit — auto-halted\n\n"
-                    f"{reason}\n\n"
-                    f"At UTC {datetime.now(timezone.utc).isoformat(timespec='seconds')}. "
-                    "Investigate REJECTED/COST views, raise the budget if "
-                    "warranted, then click RESUME."
-                )
-            elif event == "resumed":
-                # REVIEW.md Q7 — UTC midnight (or a budget raise) brings
-                # today's spend back under cap. cost_guard cleared its
-                # own halt; tell the operator so they know trading is live.
-                from src.notify import notify_owner
-                notify_owner(
-                    "▶ Cost cap cleared — auto-resumed\n\n"
-                    f"{reason}\n\n"
-                    f"At UTC {datetime.now(timezone.utc).isoformat(timespec='seconds')}."
-                )
-        except Exception as e:  # noqa: BLE001
-            log.exception("cost_guard_loop error: %s", e)
-        await asyncio.sleep(60.0)
-
-
-async def telegram_heartbeat_loop(app: Application):
-    """Probes Telegram every 30s via bot.get_me() and writes
-    settings.bot_telegram_ok_at on success. The GUI's service-bar reads
-    this timestamp to colour the Bot pill — green = recent success,
-    amber = stale, red = failing or missing.
-
-    Failure modes (all surface to the pill, none crash the bot):
-      - DNS broken -> NetworkError -> heartbeat not updated -> pill goes amber/red
-      - Telegram backend slow -> same
-      - Bot token revoked -> Unauthorized -> heartbeat not updated -> red
-    """
-    from datetime import datetime, timezone
-    from src.db import set_setting
-    conn: sqlite3.Connection = app.bot_data["conn"]
-    while True:
-        try:
-            await app.bot.get_me()
-            set_setting(
-                conn, "bot_telegram_ok_at",
-                datetime.now(timezone.utc).isoformat(),
-            )
-        except Exception as e:  # noqa: BLE001
-            # Don't update the timestamp — staleness IS the signal.
-            log.debug("telegram_heartbeat: %s: %s", type(e).__name__, e)
-        await asyncio.sleep(30.0)
-
-
-async def macro_feed_loop(app: Application):
-    """Periodically fetch the macro snapshot (DXY/10Y/VIX/JPY/oil) and
-    persist it under settings.macro_snapshot for the directional-bias
-    evaluator (src/ai_evaluator.py::_get_macro_snapshot).
-
-    Cadence: 60s. yfinance is rate-tolerant at this rate (5 small
-    daily-bar downloads / minute), and the evaluator's stale threshold
-    is 300s — so a single failed cycle is invisible to consumers.
-
-    Failure modes (all silent at this layer; logged at WARNING):
-      - yfinance not installed -> fetch_macro_snapshot returns None
-      - Yahoo Finance down -> fetch_macro_snapshot returns None
-      - Partial outage (some tickers fail) -> partial dict is still
-        persisted; evaluator renders the present fields.
-    """
-    from src.macro import fetch_macro_snapshot
-    from src.db import set_setting
-    from src import feature_store
-    conn: sqlite3.Connection = app.bot_data["conn"]
-    while True:
-        try:
-            snap = await fetch_macro_snapshot()
-            if snap is not None:
-                # Legacy blob: kept for back-compat with the current
-                # ai_evaluator (which reads macro_snapshot wholesale).
-                set_setting(conn, "macro_snapshot", json.dumps(snap))
-                set_setting(conn, "macro_snapshot_at", snap["fetched_at"])
-                # Per-feature rows: the trading-style-aware evaluator
-                # reads these by name. Mirror only the keys that map
-                # 1:1 to trading_style.required_features so we don't
-                # litter the table with unused names. Both value and
-                # chg_pct are stored — the evaluator wants the % move
-                # for direction-vs-regime calls.
-                features: dict[str, dict] = {}
-                for name in (
-                    "dxy", "tnx", "vix", "silver", "copper", "usdjpy",
-                    "sp500_futures", "real_yield", "tnx2",
-                    "breakevens_5y5y",
-                ):
-                    if name in snap:
-                        features[name] = {
-                            "value": snap[name],
-                            "chg_pct": snap.get(f"{name}_chg_pct"),
-                        }
-                # Also expose a name the trading_style spec uses literally:
-                # required_features lists `real_yield_10y`. Keep both for
-                # back-compat during the rollout.
-                if "real_yield" in snap:
-                    features["real_yield_10y"] = features["real_yield"]
-                if features:
-                    feature_store.put_many(conn, features)
-                log.info(
-                    "macro_feed: dxy=%s vix=%s tnx=%s real_yield=%s "
-                    "(%d/%d tickers, %d features)",
-                    snap.get("dxy"), snap.get("vix"), snap.get("tnx"),
-                    snap.get("real_yield"),
-                    sum(1 for k in ("dxy", "tnx", "vix", "jpy", "oil",
-                                    "silver", "copper", "sp500_futures",
-                                    "real_yield", "tnx2", "breakevens_5y5y")
-                        if k in snap),
-                    11,
-                    len(features),
-                )
-            else:
-                log.warning("macro_feed: no tickers fetched this cycle")
-        except Exception as e:
-            log.exception("macro_feed_loop error: %s", e)
-        await asyncio.sleep(60.0)
-
-
-async def cot_feed_loop(app: Application):
-    """Pull CFTC Commitments of Traders for COMEX gold every 6 hours.
-
-    Why 6h cadence: COT is released once a week (Friday afternoon ET).
-    Polling weekly is fine in principle but the precise release time
-    drifts; 6h means we never miss the new report by more than 6h.
-    Off-cycle fetches are cheap (single JSON, ~50 rows) and produce no
-    feature change when the report hasn't moved — feature_store updates
-    the timestamp, which is fine.
-    """
-    from src import feature_store
-    from src.feeds.cot import fetch_cot
-    conn: sqlite3.Connection = app.bot_data["conn"]
-    while True:
-        try:
-            snap = await fetch_cot()
-            if snap is not None:
-                feature_store.put_many(conn, snap)
-                log.info(
-                    "cot_feed: net=%s percentile=%s report_date=%s",
-                    snap.get("cot_managed_money"),
-                    snap.get("cot_extremes_percentile"),
-                    snap.get("cot_report_date"),
-                )
-            else:
-                log.warning("cot_feed: no data this cycle")
-        except Exception as e:
-            log.exception("cot_feed_loop error: %s", e)
-        await asyncio.sleep(6 * 3600)
-
-
-async def etf_flows_feed_loop(app: Application):
-    """Pull GLD daily history and recompute signed-volume flow proxies
-    every hour.
-
-    Why 1h cadence: GLD's intraday volume only matters at the daily-close
-    granularity for the signed-flow proxy. Polling more often than that
-    is wasteful; less often risks missing the close-of-day update. 1h
-    is the conservative middle.
-    """
-    from src import feature_store
-    from src.feeds.etf_flows import fetch_etf_flows
-    conn: sqlite3.Connection = app.bot_data["conn"]
-    while True:
-        try:
-            snap = await fetch_etf_flows()
-            if snap is not None:
-                feature_store.put_many(conn, snap)
-                log.info(
-                    "etf_flows: latest=%s trend_30d=%s window_days=%s",
-                    snap.get("etf_flows_gld"),
-                    snap.get("etf_flows_30d_trend"),
-                    snap.get("etf_flows_window_days"),
-                )
-            else:
-                log.warning("etf_flows_feed: no data this cycle")
-        except Exception as e:
-            log.exception("etf_flows_feed_loop error: %s", e)
-        await asyncio.sleep(3600.0)
-
-
-async def calendar_feed_loop(app: Application):
-    """Refresh the economic calendar (ForexFactory) every 6 hours.
-
-    Why 6h: ForexFactory publishes a 1-week-rolling XML and refreshes
-    forecast / actual columns intraday as numbers come in. 6h is
-    enough to catch corrections without polling more than necessary.
-
-    Output goes to `<db_dir>/economic_calendar.json` so
-    `news_calendar._resolve_default_path()` picks it up in preference
-    to the bundled seed. First fetch on startup so a freshly-installed
-    stack gets a live calendar within seconds rather than 6 hours.
-    """
-    import json as _json
-    from pathlib import Path
-    from src import config
-    from src.feeds.calendar_fetch import fetch_economic_calendar
-    while True:
-        try:
-            snap = await fetch_economic_calendar()
-            if snap is None:
-                log.warning("calendar_feed: no data this cycle")
-            else:
-                events = snap.get("events") or []
-                db_path = getattr(config, "DB_PATH", None)
-                if db_path:
-                    out = Path(db_path).parent / "economic_calendar.json"
-                    try:
-                        out.write_text(
-                            _json.dumps({"events": events}, ensure_ascii=False),
-                            encoding="utf-8",
-                        )
-                        log.info(
-                            "calendar_feed: wrote %d events to %s",
-                            len(events), out,
-                        )
-                        # Invalidate the news_calendar mtime cache so
-                        # the next evaluator call sees the fresh file
-                        # without waiting for stat() to land at a
-                        # different mtime second.
-                        try:
-                            from src import news_calendar
-                            news_calendar._cache.clear()
-                        except Exception:
-                            pass
-                    except OSError as e:
-                        log.warning("calendar_feed: write failed: %s", e)
-                else:
-                    log.warning("calendar_feed: DB_PATH unset; skipping write")
-        except Exception as e:
-            log.exception("calendar_feed_loop error: %s", e)
-        await asyncio.sleep(6 * 3600)
-
-
-async def news_scan_feed_loop(app: Application):
-    """Refresh GDELT geopolitical risk index every 15 minutes.
-
-    Why 15min cadence: GDELT's underlying dataset refreshes every 15
-    minutes, so polling faster is wasted work. 15 minutes is also the
-    smallest window where a sudden news burst is detectable but not
-    rate-thrashing the public endpoint.
-    """
-    from src import feature_store
-    from src.feeds.news_scan import fetch_geopolitical_index
-    conn: sqlite3.Connection = app.bot_data["conn"]
-    while True:
-        try:
-            snap = await fetch_geopolitical_index()
-            if snap is not None:
-                feature_store.put_many(conn, snap)
-                log.info(
-                    "news_scan: index=%s articles=%s avg_tone=%s",
-                    snap.get("geopolitical_index"),
-                    snap.get("geopolitical_article_count"),
-                    snap.get("geopolitical_avg_tone"),
-                )
-            else:
-                log.warning("news_scan_feed: no data this cycle")
-        except Exception as e:
-            log.exception("news_scan_feed_loop error: %s", e)
-        await asyncio.sleep(15 * 60)
+        return [local_conn, *extras]
+    except Exception:
+        log.exception(
+            "bot=%s: _resolve_tailer_conns_for_bot failed; using local conn only",
+            bot_id,
+        )
+        return [local_conn]
 
 
 def _supervise(task: asyncio.Task, name: str) -> None:
@@ -772,92 +326,25 @@ def _supervise(task: asyncio.Task, name: str) -> None:
     task.add_done_callback(_cb)
 
 
-async def recover_orphan_pending_actions(app: Application) -> int:
-    """At bot startup, find pending actions left over from a prior session
-    (listener / bot crashed before they could be promoted) and ask the
-    operator whether to execute or ignore each one.
-
-    REVIEW.md P1 (Q2 / Q5):
-      - Q2: "When listener crashes it should check the last non-executed
-            actions from the prior session and ask me execute/ignore with
-            full context."
-      - Q5: "An old REINFORCE reminder arriving on listener relaunch must
-            NOT re-close-and-reopen automatically."
-
-    Strategy:
-      1. Parks every pending action by NULLing execute_after — the promoter
-         filter (`execute_after IS NOT NULL`) ignores parked rows, so they
-         cannot auto-fire while the operator decides.
-      2. DMs the operator one message per orphan, with an inline keyboard
-         (Execute / Ignore). The callbacks (`relexec:` / `relskip:`) flip
-         the action back to a promotable state or mark it
-         operator_skipped_after_relaunch.
-
-    Returns the number of orphan actions parked + DMed.
-    """
-    from src.telegram_format import _payload_summary
-    conn: sqlite3.Connection = app.bot_data["conn"]
-    rows = conn.execute(
-        "SELECT id, action_type, payload_json, source_msg_id, "
-        "       created_at, execute_after "
-        "FROM actions "
-        "WHERE status='pending' AND execute_after IS NOT NULL "
-        "ORDER BY id ASC"
-    ).fetchall()
-    if not rows:
-        return 0
-    # Park each row so the promoter cannot pick them up between now and
-    # the operator's button press.
-    ids = [r["id"] for r in rows]
-    conn.executemany(
-        "UPDATE actions SET execute_after=NULL WHERE id=? AND status='pending'",
-        [(i,) for i in ids],
-    )
-    sent = 0
-    for r in rows:
-        try:
-            payload = json.loads(r["payload_json"]) if r["payload_json"] else {}
-        except (TypeError, ValueError):
-            payload = {}
-        summary = _payload_summary(r["action_type"], payload) or "(no payload)"
-        # Original message text for context, if we have it.
-        src_text = ""
-        if r["source_msg_id"]:
-            mrow = conn.execute(
-                "SELECT text, received_at FROM messages WHERE id=?",
-                (r["source_msg_id"],),
-            ).fetchone()
-            if mrow is not None:
-                snippet = (mrow["text"] or "").strip().replace("\n", " ")
-                if len(snippet) > 240:
-                    snippet = snippet[:240] + "…"
-                src_text = (
-                    f"\nSignal at {mrow['received_at']}:\n  \"{snippet}\""
-                )
-        text = (
-            f"♻️ Recovery — orphan action #{r['id']}\n"
-            f"Type: {r['action_type']}\n"
-            f"Created: {r['created_at']}\n"
-            f"Was due: {r['execute_after']}\n"
-            f"Payload: {summary}"
-            f"{src_text}\n\n"
-            f"This action did not run in the previous session. "
-            f"Execute it now or ignore?"
-        )
-        try:
-            await app.bot.send_message(
-                chat_id=config.TG_BOT_OWNER_USER_ID,
-                text=text,
-                reply_markup=_kb_for_relaunch(r["id"]),
-            )
-            sent += 1
-        except Exception as e:
-            log.warning("recovery DM failed for action #%s: %s", r["id"], e)
-    log.info("recover_orphan_pending_actions parked=%s dmed=%s", len(ids), sent)
-    return sent
-
-
 async def post_init(app: Application):
+    # All long-running loops + recovery live in src.bot_loops now.
+    # Importing lazily here so bot.py stays cheap to import from tests
+    # that only touch command handlers.
+    from src.bot_loops import (
+        calendar_feed_loop,
+        claim_sweeper_loop,
+        cost_guard_loop,
+        cot_feed_loop,
+        etf_flows_feed_loop,
+        macro_feed_loop,
+        news_scan_feed_loop,
+        notification_dispatcher,
+        position_close_notifier,
+        promotion_loop,
+        recover_orphan_pending_actions,
+        telegram_heartbeat_loop,
+    )
+
     # Startup ping — operator wants to know the system is up. Best-effort:
     # if the owner hasn't /start-ed yet, send_message raises Forbidden which
     # we log and swallow.
@@ -876,8 +363,58 @@ async def post_init(app: Application):
         await recover_orphan_pending_actions(app)
     except Exception as e:
         log.exception("recover_orphan_pending_actions failed: %s", e)
-    _supervise(asyncio.create_task(notification_dispatcher(app)), "notification_dispatcher")
-    _supervise(asyncio.create_task(position_close_notifier(app)), "position_close_notifier")
+    # Step 7 of multi-channel plan: prefer the v2 per-bot outbox tailer
+    # when a binding exists for this destination; otherwise fall back to
+    # the legacy notification_dispatcher polling. Mutex enforced here
+    # (never both) — the legacy path uses actions.notified_at while the
+    # tailer uses bot_outbox.delivered_at, and dispatch_notification in
+    # api.py is a no-op when no v2 binding exists, so the two paths
+    # cleanly partition the work between v1 (legacy) and v2 (tailer)
+    # deployments.
+    from src.notification_dispatcher import resolve_bot_id_for_destination
+    bot_id = resolve_bot_id_for_destination(config.DB_PATH)
+    if bot_id:
+        from src.bot_outbox_tailer import OutboxTailer
+        async def _send(chat_id, text, *, reply_markup=None):
+            await app.bot.send_message(
+                chat_id=chat_id, text=text, reply_markup=reply_markup,
+            )
+        # Step 14: cross-destination tailing. If the bot's bindings span
+        # destinations beyond config.DB_PATH (scope=global, or a
+        # scope=channel binding for a channel that mirrors), open one
+        # extra read+write connection per other destination DB and pass
+        # the whole list to OutboxTailer. The local conn stays first
+        # so single-destination bots are an unchanged path.
+        tailer_conns = _resolve_tailer_conns_for_bot(bot_id, app.bot_data["conn"])
+        tailer = OutboxTailer(
+            bot_id=bot_id,
+            conns=tailer_conns,
+            owner_chat_id=config.TG_BOT_OWNER_USER_ID,
+            send_message_fn=_send,
+        )
+        suppressed = tailer.mark_existing_delivered()
+        if suppressed:
+            log.info(
+                "OutboxTailer startup: suppressed %d backlog row(s) for bot_id=%s",
+                suppressed, bot_id,
+            )
+        log.info("notification path: v2 OutboxTailer (bot_id=%s)", bot_id)
+        _supervise(asyncio.create_task(tailer.run_forever()),
+                   "bot_outbox_tailer")
+        # Day-3 cleanup: position-close DMs now flow through the tailer
+        # too (api.close_position dispatches event_type='position_closed').
+        # No need for the legacy polling notifier here — would just
+        # produce duplicate DMs.
+    else:
+        log.info("notification path: legacy notification_dispatcher "
+                 "(no v2 binding found for this destination)")
+        _supervise(asyncio.create_task(notification_dispatcher(app)),
+                   "notification_dispatcher")
+        # No v2 binding → no dispatch_notification fires. Legacy
+        # position_close_notifier is the only path that DMs the
+        # operator on close.
+        _supervise(asyncio.create_task(position_close_notifier(app)),
+                   "position_close_notifier")
     _supervise(asyncio.create_task(promotion_loop(app)), "promotion_loop")
     _supervise(asyncio.create_task(claim_sweeper_loop(app)), "claim_sweeper_loop")
     _supervise(asyncio.create_task(macro_feed_loop(app)), "macro_feed_loop")

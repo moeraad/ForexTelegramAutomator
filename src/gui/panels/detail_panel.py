@@ -178,6 +178,44 @@ class DetailPanel(QWidget):
 
         msg = self._lookup_source_message(action)
         if msg:
+            # If the source message is a Telegram reply to a prior
+            # message, render the parent ABOVE the current text with a
+            # "↳ in reply to" tag so the operator sees the same
+            # antecedent the AI used to interpret pronouns.
+            reply_to_tg_id = msg.get("reply_to_tg_message_id")
+            if reply_to_tg_id:
+                parent = self._lookup_reply_parent(
+                    msg.get("chat_id"), reply_to_tg_id,
+                )
+                self._add(_section_title(
+                    f"↳ IN REPLY TO #{reply_to_tg_id}"
+                ))
+                if parent:
+                    parent_sender = parent.get("sender") or "unknown"
+                    self._add_kv(
+                        "parent from",
+                        f"{parent_sender}  ·  {parent.get('received_at', '')}",
+                    )
+                    parent_body = _body(
+                        parent.get("text") or "(empty)",
+                        "background: rgba(120,123,134,0.10); padding: 8px; "
+                        "border-left: 3px solid #787b86;",
+                    )
+                    parent_body.setLayoutDirection(
+                        Qt.LayoutDirection.RightToLeft,
+                    )
+                    parent_body.setAlignment(
+                        Qt.AlignmentFlag.AlignRight
+                        | Qt.AlignmentFlag.AlignTop,
+                    )
+                    self._add(parent_body)
+                else:
+                    self._add(_body(
+                        f"(parent message #{reply_to_tg_id} not in local "
+                        "archive — may be older than backfill)",
+                        "color: #787b86; font-style: italic;",
+                    ))
+
             self._add(_section_title("SOURCE MESSAGE"))
             sender = msg.get("sender") or "unknown"
             self._add_kv("from", f"{sender}  ·  {msg.get('received_at', '')}")
@@ -283,7 +321,8 @@ class DetailPanel(QWidget):
         with sqlite3.connect(str(self._db_path)) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
-                "SELECT a.source_msg_id, m.text, m.sender, m.received_at "
+                "SELECT a.source_msg_id, m.text, m.sender, m.received_at, "
+                "m.chat_id, m.tg_message_id, m.reply_to_tg_message_id "
                 "FROM actions a LEFT JOIN messages m ON m.id = a.source_msg_id "
                 "WHERE a.id=?",
                 (action.id,),
@@ -291,6 +330,22 @@ class DetailPanel(QWidget):
         if row is None or row["text"] is None:
             return None
         return dict(row)
+
+    def _lookup_reply_parent(self, chat_id: int, parent_tg_id: int) -> dict | None:
+        """Return the parent message {text, sender, received_at,
+        tg_message_id} when the action's source message is a Telegram
+        reply. None when the parent isn't in the local archive (e.g.
+        older than backfill) so the caller can render a stub."""
+        if not self._db_path.exists():
+            return None
+        with sqlite3.connect(str(self._db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT text, sender, received_at, tg_message_id "
+                "FROM messages WHERE chat_id=? AND tg_message_id=?",
+                (chat_id, parent_tg_id),
+            ).fetchone()
+        return dict(row) if row else None
 
     def _render_synth_state(self) -> None:
         self._clear()

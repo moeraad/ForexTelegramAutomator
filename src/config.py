@@ -47,6 +47,11 @@ _LAZY: dict[str, tuple[str, str]] = {
     "API_HOST": ("api_host", "str"),
     "API_PORT": ("api_port", "int"),
     "EA_SHARED_TOKEN": ("ea_shared_token", "str"),
+    # v2 multi-channel: the listener authenticates POST /incoming_message
+    # with X-Listener-Token. Falls back to EA_SHARED_TOKEN at request-
+    # validation time if unset, so single-stack setups work without an
+    # extra configuration step. See docs/plans/2026-05-23-multi-channel-routing.md.
+    "LISTENER_SHARED_TOKEN": ("listener_shared_token", "str"),
     "ANTHROPIC_API_KEY": ("anthropic_api_key", "str"),
     "ANTHROPIC_MODEL": ("anthropic_model", "str"),
     "OPENAI_API_KEY": ("openai_api_key", "str"),

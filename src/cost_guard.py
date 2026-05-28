@@ -56,6 +56,106 @@ def todays_cost_usd(ai_calls_log: Path) -> float:
     return total
 
 
+def todays_cost_per_route_usd(ai_calls_log: Path) -> dict[str, float]:
+    """Sum today's ``cost`` field grouped by ``route_id``.
+
+    Step 18: backs the per-route budget alerts. Uses the same scan as
+    ``todays_cost_usd`` (one pass over the jsonl file). Rows without a
+    ``route_id`` bucket under the literal key ``"(unattributed)"`` so the
+    operator sees cost that isn't being attributed (legacy rows or
+    pre-Step-18 entries).
+
+    Cost extraction: prefers a literal ``cost`` field (kept for
+    forward-compat — orchestrator doesn't write it today); falls back to
+    estimating from tokens using the same reference rates as
+    ``ai_costs.DEFAULT_*``. This duplicates the rate constants on
+    purpose: ``cost_guard`` runs in the bot process while ``ai_costs``
+    is GUI-only — circular import would otherwise force a refactor.
+    """
+    if not ai_calls_log.exists():
+        return {}
+    today = _today_iso()
+    # Reference rates (mirror src/gui/services/ai_costs.py DEFAULT_*).
+    input_per_m, output_per_m, cache_read_per_m = 3.0, 15.0, 0.30
+    totals: dict[str, float] = {}
+    try:
+        with ai_calls_log.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = str(row.get("ts", ""))
+                if not ts.startswith(today):
+                    continue
+                # Prefer literal cost; fall back to token-derived estimate.
+                cost = row.get("cost") or row.get("estimated_cost")
+                if cost is None:
+                    try:
+                        cost = (
+                            (int(row.get("input_tokens") or 0) * input_per_m)
+                            + (int(row.get("output_tokens") or 0) * output_per_m)
+                            + (int(row.get("cache_read_tokens") or 0) * cache_read_per_m)
+                        ) / 1_000_000.0
+                    except (TypeError, ValueError):
+                        continue
+                try:
+                    c = float(cost)
+                except (TypeError, ValueError):
+                    continue
+                key = str(row.get("route_id") or "(unattributed)") or "(unattributed)"
+                totals[key] = totals.get(key, 0.0) + c
+    except OSError:
+        return {}
+    return totals
+
+
+def check_per_route_alerts(
+    conn: sqlite3.Connection,
+    ai_calls_log: Path,
+) -> list[tuple[str, float, float]]:
+    """Return ``(route_id, today_spend, budget)`` tuples for breached routes.
+
+    Step 18: per-route budgets live in a single settings row keyed
+    ``cost_route_budgets_json``, holding ``{"route_id": budget_usd, ...}``.
+    The caller (cost_guard_loop) DMs the operator once per breach event.
+
+    Unlike the global cost guard, route breaches DO NOT flip the
+    ``kill_switch`` — too disruptive. Operators wanting per-route auto-
+    halt can layer ``Route.halted`` (Step 15) on top via a future
+    automation; this step delivers visibility only.
+    """
+    cur = conn.execute(
+        "SELECT value FROM settings WHERE key = 'cost_route_budgets_json'"
+    ).fetchone()
+    if cur is None or not cur[0]:
+        return []
+    try:
+        budgets = json.loads(cur[0])
+        if not isinstance(budgets, dict):
+            return []
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not budgets:
+        return []
+    per_route = todays_cost_per_route_usd(ai_calls_log)
+    breached: list[tuple[str, float, float]] = []
+    for route_id, budget_raw in budgets.items():
+        try:
+            budget = float(budget_raw)
+        except (TypeError, ValueError):
+            continue
+        if budget <= 0:
+            continue
+        spent = float(per_route.get(route_id, 0.0))
+        if spent > budget:
+            breached.append((route_id, spent, budget))
+    return breached
+
+
 def check_and_enforce(
     conn: sqlite3.Connection,
     ai_calls_log: Path,

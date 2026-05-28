@@ -28,8 +28,15 @@ QToolTip {
        label.setProperty("role", "dim")       // text_dim token (even lower)
    After setProperty, call label.style().polish(label) once (or just
    apply before the widget is first shown) so the selector picks up. */
-QLabel[role="muted"] { color: ${text_muted}; }
-QLabel[role="dim"]   { color: ${text_dim}; }
+/* Labels default to transparent backgrounds so they inherit the
+   parent widget's colour. Without this, the global QWidget rule above
+   cascades and paints every QLabel with the page bg — which looks
+   wrong inside any panel that has its own surface (Ribbon, TopPanel,
+   cards). Call sites that genuinely need a tinted label can set
+   `background-color: ...` in their own setStyleSheet. */
+QLabel { background: transparent; }
+QLabel[role="muted"] { color: ${text_muted}; background: transparent; }
+QLabel[role="dim"]   { color: ${text_dim};   background: transparent; }
 
 QPushButton {
     background-color: ${button_bg};
@@ -53,20 +60,67 @@ QPushButton:disabled {
     border-color: ${border};
 }
 
-/* Primary/CTA variant — call ``setProperty("variant", "primary")`` on a button. */
+/* Action-tinted variants — call setProperty("variant", "<name>") on a
+   button. Each pulls from the active palette so light/dark both look
+   right. The dark palette is neon cyberpunk: cyan/lime/magenta/amber. */
 QPushButton[variant="primary"] {
     background-color: ${accent};
     border: 1px solid ${accent};
-    color: white;
+    color: black;
     font-weight: 600;
 }
 QPushButton[variant="primary"]:hover {
     background-color: ${accent_hover};
     border-color: ${accent_hover};
-    color: white;
+    color: black;
 }
 QPushButton[variant="primary"]:pressed {
     background-color: ${accent};
+}
+
+QPushButton[variant="success"] {
+    background-color: ${success};
+    border: 1px solid ${success};
+    color: black;
+    font-weight: 600;
+}
+QPushButton[variant="success"]:hover {
+    background-color: ${success};
+    border-color: ${success};
+    color: black;
+}
+QPushButton[variant="success"]:pressed {
+    background-color: ${success};
+}
+
+QPushButton[variant="danger"] {
+    background-color: ${danger};
+    border: 1px solid ${danger};
+    color: white;
+    font-weight: 600;
+}
+QPushButton[variant="danger"]:hover {
+    background-color: ${danger};
+    border-color: ${danger};
+    color: white;
+}
+QPushButton[variant="danger"]:pressed {
+    background-color: ${danger};
+}
+
+QPushButton[variant="warning"] {
+    background-color: ${warning};
+    border: 1px solid ${warning};
+    color: black;
+    font-weight: 600;
+}
+QPushButton[variant="warning"]:hover {
+    background-color: ${warning};
+    border-color: ${warning};
+    color: black;
+}
+QPushButton[variant="warning"]:pressed {
+    background-color: ${warning};
 }
 
 QLineEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {

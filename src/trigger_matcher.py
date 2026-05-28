@@ -97,6 +97,20 @@ _ALLOWED_ACTION_TYPES: frozenset[str] = frozenset({
     "REINFORCE",
     "TIGHTEN_SL",
     "CANCEL_PENDING",
+    # Reply-intent meta-types. Not real action types — the matcher
+    # uses them as dispatch signals when the current message is a
+    # Telegram reply. TRIGGER_PARENT fires → matcher re-runs against
+    # the parent's text. IGNORE_PARENT fires → matcher returns [] so
+    # the orchestrator skips the AI fallback too. Both are stripped
+    # from `_build_actions`'s output; they never become DB rows.
+    "TRIGGER_PARENT",
+    "IGNORE_PARENT",
+})
+
+# Reply-intent meta-types: dispatch signals, never persisted as actions.
+_REPLY_INTENT_TYPES: frozenset[str] = frozenset({
+    "TRIGGER_PARENT",
+    "IGNORE_PARENT",
 })
 
 
@@ -175,6 +189,11 @@ class _ProfileCache:
     (`{"symbol": "..."}`) — used when building CANCEL_PENDING actions
     so the matcher stays channel-agnostic instead of assuming
     project-wide constants.
+
+    Reply-intent meta-rules (action_type=TRIGGER_PARENT / IGNORE_PARENT)
+    live INSIDE ``rules`` like any other trigger; the matcher just
+    treats hits on those action_types as dispatch signals instead of
+    emit candidates.
     """
     path: Path
     mtime: float
@@ -193,7 +212,13 @@ _cache_lock = threading.Lock()
 # ---- Public entry point --------------------------------------------------
 
 
-def match(text: str, conn: sqlite3.Connection) -> list[Action] | None:
+def match(
+    text: str,
+    conn: sqlite3.Connection,
+    *,
+    parent_text: str | None = None,
+    meta_out: dict | None = None,
+) -> list[Action] | None:
     """Try Layer 1 (deterministic) then Layer 2 (embedding) against the
     current profile's triggers. Return matched Actions or None to fall
     through to Sonnet.
@@ -203,6 +228,25 @@ def match(text: str, conn: sqlite3.Connection) -> list[Action] | None:
     because it would conflate "matched but produced no actions" with
     "no match", and the persistence loop would silently drop the
     message.
+
+    Reply handling (added 2026-05-26): when ``parent_text`` is supplied
+    (the current message is a Telegram reply), the matcher first
+    checks the operator-curated reply-intent phrase lists:
+      - Activate phrase matched → re-run the matcher against the
+        PARENT's text and return that result. The parent's trigger is
+        what gets fired.
+      - Ignore phrase matched → return [] (matched, no action).
+        Suppresses both the parent's would-be-trigger AND the AI
+        fallback. Use for "skip this", "cancel that order".
+      - Neither matched → fall through to the existing current-text
+        matching, then to AI if still no hit.
+
+    Deterministic IGNORE (added 2026-05-29): if the whole normalised
+    message EQUALS an operator-curated IGNORE sample, return ``[]`` with
+    ``meta_out["layer"]="deterministic_ignore"``. The orchestrator buckets
+    it as ``trigger_ignore`` and skips triage + the interpreter. Equality
+    (not substring) guarantees a real signal that merely quotes a noise
+    phrase is never suppressed.
     """
     if not text or not text.strip():
         return None
@@ -214,6 +258,28 @@ def match(text: str, conn: sqlite3.Connection) -> list[Action] | None:
     if not norm_msg:
         return None
 
+    # Reply-context dispatch: if the current message is a reply AND
+    # any rule with action_type TRIGGER_PARENT / IGNORE_PARENT matches
+    # the current text, treat the hit as a dispatch signal instead of
+    # an emit candidate. TRIGGER_PARENT wins ties so operator typos
+    # never silently drop a real signal.
+    if parent_text and parent_text.strip():
+        intent = _classify_reply_intent(norm_msg, cache.rules)
+        if intent == "TRIGGER_PARENT":
+            log.info(
+                "trigger_match reply_intent=TRIGGER_PARENT — "
+                "recursing on parent"
+            )
+            return match(parent_text, conn, parent_text=None, meta_out=meta_out)
+        if intent == "IGNORE_PARENT":
+            log.info(
+                "trigger_match reply_intent=IGNORE_PARENT — "
+                "suppressing parent + AI"
+            )
+            if meta_out is not None:
+                meta_out["layer"] = "reply_intent_ignore"
+            return []
+
     # Layer 1 — deterministic.
     hits = _layer1_deterministic(norm_msg, cache.rules, ctx)
     if hits:
@@ -224,7 +290,27 @@ def match(text: str, conn: sqlite3.Connection) -> list[Action] | None:
                 len(hits),
                 ",".join(h.action_type for h in hits),
             )
+            if meta_out is not None:
+                meta_out["layer"] = "deterministic"
             return actions
+
+    # Deterministic IGNORE — the operator curated this exact message as
+    # noise. Runs AFTER the emittable Layer 1 (an actionable trigger always
+    # wins over a noise tag) and BEFORE the fuzzy embedding layer (explicit
+    # operator curation beats a similarity guess, and we skip the embedding
+    # API call on known noise). Whole-message EQUALITY, never substring:
+    # a genuine signal can quote a noise phrase as a fragment, so substring
+    # matching here would silently suppress trades.
+    ignore_hit = _layer1_ignore_match(norm_msg, cache.rules)
+    if ignore_hit is not None:
+        log.info(
+            "trigger_match layer=det_ignore phrase=%r — suppressed as "
+            "curated noise", ignore_hit.phrase,
+        )
+        if meta_out is not None:
+            meta_out["layer"] = "deterministic_ignore"
+            meta_out["rule_phrase"] = ignore_hit.phrase
+        return []
 
     # Layer 2 — embedding similarity.
     hit = _layer2_embedding(text, cache, ctx)
@@ -237,8 +323,48 @@ def match(text: str, conn: sqlite3.Connection) -> list[Action] | None:
                 score,
                 rule.action_type,
             )
+            if meta_out is not None:
+                meta_out["layer"] = "embedding"
+                meta_out["embedding_score"] = score
+                meta_out["rule_action_type"] = rule.action_type
             return actions
 
+    return None
+
+
+def _classify_reply_intent(
+    norm_msg: str, rules: list[TriggerRule],
+) -> str | None:
+    """Return 'TRIGGER_PARENT' / 'IGNORE_PARENT' / None for a normalised
+    current message by substring-matching against meta-rule phrases.
+
+    A reply-intent rule fires when its normalised match_text (or
+    phrase) is a substring of ``norm_msg`` AND all its context tokens
+    are present. State preconditions are NOT consulted — these meta
+    types don't gate on open/closed state; they delegate to the
+    parent which has its own.
+
+    Both meta-types may have multiple rules (operator can curate
+    distinct phrases per intent); first hit wins per type. When both
+    types have hits on the same message, TRIGGER_PARENT wins so a
+    real signal isn't silently dropped.
+    """
+    found: dict[str, bool] = {}
+    for rule in rules:
+        if rule.action_type not in _REPLY_INTENT_TYPES:
+            continue
+        active = rule.norm_match_text or rule.norm_phrase
+        if not active or active not in norm_msg:
+            continue
+        if rule.norm_context_tokens and not all(
+            tok in norm_msg for tok in rule.norm_context_tokens
+        ):
+            continue
+        found[rule.action_type] = True
+    if found.get("TRIGGER_PARENT"):
+        return "TRIGGER_PARENT"
+    if found.get("IGNORE_PARENT"):
+        return "IGNORE_PARENT"
     return None
 
 
@@ -339,6 +465,61 @@ def _layer1_deterministic(
         if cur is None or r_len > cur_len:
             best[r.action_type] = r
     return list(best.values())
+
+
+# ---- Deterministic IGNORE -----------------------------------------------
+
+
+def _ignore_sample_eligible(norm_sample: str) -> bool:
+    """True when an IGNORE sample carries real content to suppress on.
+
+    Language-agnostic — no character-count threshold and no script
+    assumptions (a 4-char floor would wave through one-word English noise
+    yet reject a full CJK sentence). The ONLY hard rejection is a sample
+    that is nothing but digit placeholders: `normalize` collapses every
+    digit run to a standalone "n" token, so a bare-number message ("4696")
+    normalises to "n". Equality on that would suppress every other
+    bare-number message — and a lone number can be a price / SL shorthand,
+    not noise. Any sample carrying at least one non-number token is
+    eligible; whole-message equality keeps even short, single-word samples
+    safe in every language.
+    """
+    return any(tok != "n" for tok in norm_sample.split())
+
+
+def _layer1_ignore_match(
+    norm_msg: str, rules: list[TriggerRule],
+) -> TriggerRule | None:
+    """Return an IGNORE-typed rule whose normalised sample EQUALS the whole
+    normalised message, else None.
+
+    Equality (not substring) is the safety contract: an operator-curated
+    noise sample appearing as a *fragment* of a longer message must never
+    suppress it, because a genuine signal can quote a noise phrase. Only a
+    verbatim repeat (modulo emoji / digit / diacritic normalisation) of a
+    sample the operator explicitly tagged IGNORE is dropped here. Degenerate
+    ultra-short samples are screened by `_ignore_sample_eligible`.
+    """
+    if not norm_msg:
+        return None
+    for rule in rules:
+        if rule.action_type != "IGNORE":
+            continue
+        nmt = rule.norm_match_text
+        if not nmt or not _ignore_sample_eligible(nmt):
+            continue
+        if nmt != norm_msg:
+            continue
+        # Honour optional context tokens with the same AND-check as the
+        # emittable path, so an operator who narrows an IGNORE rule isn't
+        # silently overridden. (With whole-message equality these are
+        # usually redundant, but parity beats a surprising divergence.)
+        if rule.norm_context_tokens and not all(
+            tok in norm_msg for tok in rule.norm_context_tokens
+        ):
+            continue
+        return rule
+    return None
 
 
 # ---- Layer 2: embedding similarity --------------------------------------
@@ -559,7 +740,16 @@ def _precondition_ok(action_type: str, ctx: MatchContext) -> bool:
     These mirror the live interpreter's idempotency rules — promoted
     to code so the matcher can't fire a CLOSE_FULL with no open
     position (which would just be rejected by the EA, wasting a row).
+
+    Reply-intent meta-types (TRIGGER_PARENT / IGNORE_PARENT) shouldn't
+    reach Layer 1's normal candidate path — they're handled separately
+    in `_classify_reply_intent`. Returning False here ensures that
+    if they do leak through (e.g. an embedding-similarity hit), they
+    can't accidentally be passed to `_build_actions` and emit a real
+    action row.
     """
+    if action_type in _REPLY_INTENT_TYPES:
+        return False
     if action_type in (
         "CLOSE_FULL", "MOVE_SL_BE", "CLOSE_PARTIAL",
         "MOVE_SL", "TIGHTEN_SL", "MODIFY_TPS",
@@ -599,6 +789,11 @@ def _build_actions(
     """
     out: list[Action] = []
     for r in rules:
+        # Defensive: reply-intent meta-rules are dispatch signals, not
+        # real actions. `_precondition_ok` already rejects them, but
+        # belt-and-braces in case a future code path bypasses that.
+        if r.action_type in _REPLY_INTENT_TYPES:
+            continue
         action = _build_one(r, ctx, symbol)
         if action is not None:
             out.append(action)
@@ -696,10 +891,11 @@ def _read_profile(path: Path) -> tuple[list[TriggerRule], str]:
     """Parse the profile's `triggers` array + `symbol` field.
 
     Returns (rules, symbol). Tolerant: malformed entries are skipped
-    with a warning rather than breaking the whole listener. Unknown
-    keys (`samples`, `note`, `approved_bucket`) are ignored. `symbol`
-    is the empty string when missing — callers using it (CANCEL_PENDING
-    construction) skip with a warning rather than fabricating one.
+    with a warning. Unknown keys are ignored.
+
+    Reply-intent rules live INSIDE the triggers array with the special
+    action_types TRIGGER_PARENT and IGNORE_PARENT. The matcher
+    recognises them when handling a Telegram reply.
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -831,6 +1027,10 @@ class TestMatchResult:
     layer2: list[EmbeddingDiagnostic]  # sorted desc by score
     layer2_note: str                   # e.g. "OPENAI_API_KEY not set"
     actions: list[Action]              # what match() would emit for this msg
+    # The IGNORE rule that would suppress this message (whole-message
+    # equality), or None. Set only when no emittable action fires — mirrors
+    # production precedence (emittable Layer 1 → IGNORE → Layer 2).
+    suppressed_by: TriggerRule | None = None
 
 
 def test_match(
@@ -929,10 +1129,16 @@ def test_match(
                 ))
             layer2_diag.sort(key=lambda d: -d.score)
 
-    # Determine what the production match() would emit. Layer 1 wins
-    # outright; only when Layer 1 has no matches do we consider Layer 2.
+    # Determine what the production match() would do, in the same order:
+    # emittable Layer 1 → deterministic IGNORE → Layer 2 embedding. IGNORE
+    # rules never emit, so they're excluded from the action candidates and
+    # surfaced separately as `suppressed_by`.
     actions: list[Action] = []
-    layer1_matched_rules = [d.rule for d in layer1_diag if d.matched]
+    suppressed_by: TriggerRule | None = None
+    layer1_matched_rules = [
+        d.rule for d in layer1_diag
+        if d.matched and d.rule.action_type != "IGNORE"
+    ]
     if layer1_matched_rules:
         best: dict[str, TriggerRule] = {}
         for r in layer1_matched_rules:
@@ -940,11 +1146,13 @@ def test_match(
             if cur is None or len(r.norm_phrase) > len(cur.norm_phrase):
                 best[r.action_type] = r
         actions = _build_actions(list(best.values()), ctx, symbol)
-    elif layer2_diag:
-        firing = [d for d in layer2_diag if d.would_fire]
-        if firing:
-            # layer2_diag is sorted by score desc; firing[0] is the winner.
-            actions = _build_actions([firing[0].rule], ctx, symbol)
+    else:
+        suppressed_by = _layer1_ignore_match(norm_msg, rules)
+        if suppressed_by is None and layer2_diag:
+            firing = [d for d in layer2_diag if d.would_fire]
+            if firing:
+                # layer2_diag is sorted by score desc; firing[0] wins.
+                actions = _build_actions([firing[0].rule], ctx, symbol)
 
     return TestMatchResult(
         layer1=layer1_diag,
@@ -952,6 +1160,7 @@ def test_match(
         layer2=layer2_diag,
         layer2_note=layer2_note,
         actions=actions,
+        suppressed_by=suppressed_by,
     )
 
 
@@ -1008,6 +1217,38 @@ def _diagnose_rule(
     """Explain why a rule did or didn't match. Order of checks mirrors
     _layer1_deterministic so the diagnostic accurately reflects the
     production decision path."""
+    if rule.action_type == "IGNORE":
+        # IGNORE rules don't emit — they suppress on whole-message equality.
+        if not rule.norm_match_text:
+            return RuleDiagnostic(
+                rule, False,
+                "no sample stored — add the original message as a sample to "
+                "enable this IGNORE rule",
+            )
+        if not _ignore_sample_eligible(rule.norm_match_text):
+            return RuleDiagnostic(
+                rule, False,
+                "sample is only digits — too generic to suppress on",
+            )
+        if rule.norm_match_text != norm_msg:
+            return RuleDiagnostic(
+                rule, False,
+                "whole-message equality required — message differs from "
+                "the IGNORE sample",
+            )
+        if rule.norm_context_tokens:
+            missing = [
+                t for t in rule.norm_context_tokens if t not in norm_msg
+            ]
+            if missing:
+                return RuleDiagnostic(
+                    rule, False,
+                    "missing context token(s): "
+                    + ", ".join(repr(t) for t in missing),
+                )
+        return RuleDiagnostic(
+            rule, True, "would suppress as curated noise (whole-message match)",
+        )
     if rule.action_type not in _ALLOWED_ACTION_TYPES:
         return RuleDiagnostic(
             rule, False,

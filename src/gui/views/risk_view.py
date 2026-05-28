@@ -74,6 +74,23 @@ class RiskView(QWidget):
         top.addStretch()
         layout.addLayout(top)
 
+        # Ribbon — moved here from the bottom of the view per the operator's
+        # request. Single "Settings" group with Save (commit) + Revert
+        # (discard pending edits).
+        from src.gui.panels.ribbon_bar import RibbonAction, RibbonBar, RibbonGroup
+        ribbon = RibbonBar([
+            RibbonGroup("Settings", [
+                RibbonAction("SAVE", "Save",
+                             "Commit risk-budget changes",
+                             variant="success", callback=self._save),
+                RibbonAction("CANCEL", "Revert",
+                             "Discard pending edits and re-read current config",
+                             variant="warning",
+                             callback=lambda: self._populate_from_config(self._monitor.config)),
+            ]),
+        ])
+        layout.addWidget(ribbon)
+
         self._banner = QLabel()
         self._banner.setStyleSheet(
             "QLabel { background: #ef5350; color: white; padding: 10px 14px; "
@@ -149,19 +166,7 @@ class RiskView(QWidget):
 
         layout.addLayout(form)
 
-        actions = QHBoxLayout()
-        try:
-            from qfluentwidgets import PrimaryPushButton
-            self._save_btn = PrimaryPushButton("Save")
-        except Exception:
-            self._save_btn = QPushButton("Save")
-        self._save_btn.clicked.connect(self._save)
-        actions.addWidget(self._save_btn)
-        revert_btn = QPushButton("Revert")
-        revert_btn.clicked.connect(lambda: self._populate_from_config(self._monitor.config))
-        actions.addWidget(revert_btn)
-        actions.addStretch()
-        layout.addLayout(actions)
+        # Save / Revert moved to the top ribbon above. Nothing here.
         layout.addStretch()
 
     def _populate_from_config(self, cfg: RiskConfig) -> None:

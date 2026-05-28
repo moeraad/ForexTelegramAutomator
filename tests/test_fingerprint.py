@@ -36,14 +36,19 @@ def test_different_symbol_differs():
 
 
 def test_different_side_differs():
-    a = _mk(side="BUY")
-    b = _mk(side="SELL")
+    """Same zone with opposite directions must fingerprint differently.
+    Each side gets its own geometrically-valid SL/TP (post-2026-05-25
+    validator rejects SL on the wrong side of entry)."""
+    a = _mk(side="BUY",  tps=(4880.0,), sl=4855.0)  # BUY: SL below entry
+    b = _mk(side="SELL", tps=(4850.0,), sl=4880.0)  # SELL: SL above entry
     assert signal_fingerprint(a) != signal_fingerprint(b)
 
 
 def test_far_entry_differs():
-    a = _mk(low=4864.0, high=4866.0)
-    b = _mk(low=4900.0, high=4902.0)
+    # Shift the whole geometry (entry + TP + SL) for the "far" case so
+    # the moved entry doesn't put TP below the BUY entry zone.
+    a = _mk(low=4864.0, high=4866.0, tps=(4880.0,), sl=4855.0)
+    b = _mk(low=4900.0, high=4902.0, tps=(4920.0,), sl=4890.0)
     assert signal_fingerprint(a) != signal_fingerprint(b)
 
 

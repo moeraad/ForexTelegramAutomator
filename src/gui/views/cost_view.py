@@ -33,6 +33,8 @@ from src.gui.services.ai_costs import (
     expensive_calls,
     load_records,
     summarize,
+    summarize_by_channel,
+    summarize_by_route,
 )
 from src.gui.services.stack_registry import Stack
 
@@ -69,6 +71,65 @@ def _fmt_tokens(n: int) -> str:
     if n >= 1_000:
         return f"{n / 1_000:.1f} k"
     return str(n)
+
+
+class _BreakdownModel(QAbstractTableModel):
+    """Two-column model: key (channel id / route id) + per-key CostSummary.
+
+    Used by both the by-channel and by-route panels in cost_view (Step 18).
+    Sorted by estimated_cost_usd descending so the chattiest channels /
+    routes float to the top.
+    """
+
+    HEADERS = ("Key", "Calls", "In tok", "Out tok", "Cost (est)")
+
+    def __init__(self, key_label: str) -> None:
+        super().__init__()
+        self.HEADERS = (key_label, "Calls", "In tok", "Out tok", "Cost (est)")
+        self._rows: list[tuple[str, CostSummary]] = []
+
+    def set_rows(self, summaries: dict[str, CostSummary]) -> None:
+        self.beginResetModel()
+        self._rows = sorted(
+            summaries.items(),
+            key=lambda kv: kv[1].estimated_cost_usd,
+            reverse=True,
+        )
+        self.endResetModel()
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self._rows)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return len(self.HEADERS)
+
+    def headerData(
+        self, section: int, orientation: Qt.Orientation,
+        role: int = Qt.ItemDataRole.DisplayRole,
+    ) -> Any:
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+        return self.HEADERS[section] if orientation == Qt.Orientation.Horizontal else section + 1
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if not index.isValid():
+            return None
+        key, summary = self._rows[index.row()]
+        col = index.column()
+        if role == Qt.ItemDataRole.DisplayRole:
+            if col == 0:
+                return key
+            if col == 1:
+                return str(summary.calls)
+            if col == 2:
+                return _fmt_tokens(summary.input_tokens)
+            if col == 3:
+                return _fmt_tokens(summary.output_tokens)
+            if col == 4:
+                return f"${summary.estimated_cost_usd:.4f}"
+        if role == Qt.ItemDataRole.TextAlignmentRole and col >= 1:
+            return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        return None
 
 
 class _TopCallsModel(QAbstractTableModel):
@@ -129,6 +190,8 @@ class CostView(QWidget):
         self._stat_row_layout: QHBoxLayout | None = None
         self._stat_boxes: dict[str, QWidget] = {}
         self._top_model = _TopCallsModel()
+        self._channel_model = _BreakdownModel("Channel")
+        self._route_model = _BreakdownModel("Route")
         self._build_ui()
         self.refresh()
         from src.gui.theme import bus as theme_bus
@@ -144,11 +207,19 @@ class CostView(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
-        log_path = self._stack.project_path / "logs" / "ai_calls.jsonl"
+        # Listener/bot write logs to Path(DB_PATH).parent / "logs" (see
+        # src/config.py:LOGS_DIR). Reading from project_path/logs misses the
+        # actual file when project_path is the PyInstaller _internal dir.
+        log_path = self._stack.db_path.parent / "logs" / "ai_calls.jsonl"
         records = load_records(log_path, days=self._days)
         s = summarize(records)
         self._update_stats(s, len(records))
         self._top_model.set_rows(expensive_calls(records, top=10))
+        # Step 18: per-channel and per-route breakdowns. summarize_by_*
+        # buckets falsy keys under "(unattributed)" so pre-Step-18 rows
+        # remain visible (not silently dropped from totals).
+        self._channel_model.set_rows(summarize_by_channel(records))
+        self._route_model.set_rows(summarize_by_route(records))
         self._update_chart(s)
         self._meta_label.setText(f"file: {log_path}  ·  {len(records)} call(s) in range")
         self._refresh_budget(s)
@@ -271,7 +342,8 @@ class CostView(QWidget):
         self._range_combo.currentIndexChanged.connect(self._on_range_changed)
         top.addWidget(self._range_combo)
         top.addStretch()
-        refresh = QPushButton("Refresh")
+        from src.gui._button_helpers import make_refresh_button
+        refresh = make_refresh_button("Reload cost data")
         refresh.clicked.connect(self.refresh)
         top.addWidget(refresh)
         layout.addLayout(top)
@@ -392,6 +464,65 @@ class CostView(QWidget):
         body_split.setStretchFactor(0, 2)
         body_split.setStretchFactor(1, 1)
         layout.addWidget(body_split, 1)
+
+        # Step 18: per-channel + per-route breakdown tables side-by-side.
+        # Useful once mirror (Step 11) or aggregate (Step 12) routing is
+        # in play and the single "total per destination" number stops
+        # telling the operator which channel / route is the cost driver.
+        breakdown_split = QSplitter(Qt.Orientation.Horizontal)
+        breakdown_split.setChildrenCollapsible(False)
+
+        ch_panel = QWidget()
+        ch_layout = QVBoxLayout(ch_panel)
+        ch_layout.setContentsMargins(0, 0, 0, 0)
+        ch_label = QLabel("Cost by channel  ·  source_channel_id")
+        ch_label.setStyleSheet("color: #787b86; padding-top: 4px;")
+        ch_layout.addWidget(ch_label)
+        self._channel_table = QTableView()
+        self._channel_table.setModel(self._channel_model)
+        self._channel_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows,
+        )
+        self._channel_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers,
+        )
+        self._channel_table.verticalHeader().setVisible(False)
+        self._channel_table.setAlternatingRowColors(True)
+        self._channel_table.setShowGrid(False)
+        apply_full_width_headers(
+            self._channel_table,
+            content_columns=tuple(range(self._channel_model.columnCount() - 1)),
+        )
+        ch_layout.addWidget(self._channel_table, 1)
+        breakdown_split.addWidget(ch_panel)
+
+        rt_panel = QWidget()
+        rt_layout = QVBoxLayout(rt_panel)
+        rt_layout.setContentsMargins(0, 0, 0, 0)
+        rt_label = QLabel("Cost by route  ·  route_id")
+        rt_label.setStyleSheet("color: #787b86; padding-top: 4px;")
+        rt_layout.addWidget(rt_label)
+        self._route_table = QTableView()
+        self._route_table.setModel(self._route_model)
+        self._route_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows,
+        )
+        self._route_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers,
+        )
+        self._route_table.verticalHeader().setVisible(False)
+        self._route_table.setAlternatingRowColors(True)
+        self._route_table.setShowGrid(False)
+        apply_full_width_headers(
+            self._route_table,
+            content_columns=tuple(range(self._route_model.columnCount() - 1)),
+        )
+        rt_layout.addWidget(self._route_table, 1)
+        breakdown_split.addWidget(rt_panel)
+
+        breakdown_split.setStretchFactor(0, 1)
+        breakdown_split.setStretchFactor(1, 1)
+        layout.addWidget(breakdown_split, 1)
 
     def _on_range_changed(self, _idx: int) -> None:
         self._days = self._range_combo.currentData()

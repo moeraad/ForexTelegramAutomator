@@ -58,55 +58,62 @@ class Palette:
 
 DARK = Palette(
     name="dark",
-    bg="#131722",
-    surface="#1e222d",
-    surface_alt="#1a1e28",
-    surface_hover="#2a2e39",
-    surface_pressed="#363a45",
-    nav_bg="#0c0e15",
-    text="#d1d4dc",
-    text_muted="#787b86",
-    text_dim="#5d6068",
-    accent="#448aff",                # brighter electric blue
-    accent_hover="#82b1ff",          # sky-blue glow on hover
-    success="#00e676",               # neon green
-    danger="#ff5252",                # hot coral
-    warning="#ffd740",               # electric amber
-    info="#40c4ff",                  # cyan
-    border="#2a3144",                # slightly blue-tinted border
-    border_strong="#4c525e",
-    grid="#1e222d",
-    button_bg="#1e222d",
-    button_hover_bg="rgba(68, 138, 255, 0.18)",   # translucent blue glow
-    button_hover_border="#448aff",
-    button_pressed_bg="rgba(68, 138, 255, 0.30)",
+    # Tokyo Night — deep navy-purple base with soft azure / mint / rose
+    # accents. Saturated enough to feel premium without going full neon.
+    # Tested for long-session readability on trader / dev workflows.
+    bg="#1a1b26",                    # deep navy-purple
+    surface="#24283b",               # raised navy band
+    surface_alt="#1f2233",
+    surface_hover="#2f3550",
+    surface_pressed="#3a4060",
+    nav_bg="#0f1115",                # deepest indigo, rail/nav contrast
+    text="#c0caf5",                  # soft periwinkle-white body text
+    text_muted="#565f89",            # muted indigo for secondary labels
+    text_dim="#3b4366",
+    accent="#7aa2f7",                # azure blue — brand + CTAs
+    accent_hover="#9cb7fb",          # lighter azure on hover
+    success="#9ece6a",               # fresh mint-green
+    danger="#f7768e",                # soft rose-red
+    warning="#e0af68",               # warm honey
+    info="#7dcfff",                  # bright cyan — informational
+    border="#2c3147",                # navy rim
+    border_strong="#4a527a",
+    grid="#24283b",
+    button_bg="#24283b",
+    button_hover_bg="rgba(122, 162, 247, 0.18)",   # translucent azure glow
+    button_hover_border="#7aa2f7",
+    button_pressed_bg="rgba(122, 162, 247, 0.30)",
 )
 
 
 LIGHT = Palette(
     name="light",
-    bg="#f5f7fa",
-    surface="#ffffff",
-    surface_alt="#f0f2f5",
-    surface_hover="#e8ecef",
-    surface_pressed="#d4d7de",
-    nav_bg="#1e222d",                # dark rail even in light mode — more usable
-    text="#1e222d",
-    text_muted="#5d6068",
-    text_dim="#90939a",
-    accent="#1976d2",                # deeper, calmer blue
-    accent_hover="#1565c0",
-    success="#00897b",               # teal — readable on white
-    danger="#d32f2f",
-    warning="#f57c00",
-    info="#0277bd",
-    border="#d4d7de",
-    border_strong="#a8acb5",
-    grid="#e8ecef",
-    button_bg="#ffffff",
-    button_hover_bg="#e3f2fd",       # pale blue
-    button_hover_border="#1976d2",
-    button_pressed_bg="#bbdefb",
+    # Tokyo Day — light counterpart to the Tokyo Night dark palette.
+    # Pale slate-cream base with deeper azure / forest / rose accents
+    # (darker than the night variants so contrast stays AA on white).
+    # Same hue family as DARK so toggling between modes feels coherent.
+    bg="#e1e2e7",                    # pale slate-cream
+    surface="#f0f1f4",               # raised paper
+    surface_alt="#e8e9ee",
+    surface_hover="#d8d9e0",
+    surface_pressed="#c4c6d0",
+    nav_bg="#1a1b26",                # navy rail (matches Tokyo Night)
+    text="#3760bf",                  # deep azure body text
+    text_muted="#6172b0",            # muted indigo
+    text_dim="#8c96cc",              # faded indigo
+    accent="#2e7de9",                # azure blue — brand + CTAs
+    accent_hover="#5b7fd8",          # softer hover
+    success="#587539",               # forest mint (darker for readability)
+    danger="#c64343",                # rose red (deeper than dark variant)
+    warning="#8c6c3e",               # honey brown
+    info="#007197",                  # deep cyan
+    border="#cacbd1",                # cool slate rim
+    border_strong="#9999a5",
+    grid="#e8e9ee",
+    button_bg="#f0f1f4",
+    button_hover_bg="rgba(46, 125, 233, 0.12)",   # translucent azure wash
+    button_hover_border="#2e7de9",
+    button_pressed_bg="rgba(46, 125, 233, 0.22)",
 )
 
 

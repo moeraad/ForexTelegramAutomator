@@ -100,7 +100,9 @@ class SplashWindow(QWidget):
 
         buttons = QHBoxLayout()
         skip_btn = QPushButton("Skip")
+        skip_btn.setProperty("variant", "warning")
         abort_btn = QPushButton("Abort")
+        abort_btn.setProperty("variant", "danger")
         skip_btn.clicked.connect(self.skip_requested.emit)
         abort_btn.clicked.connect(self.abort_requested.emit)
         buttons.addStretch()

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -59,7 +59,7 @@ def _write_service_crashlog(target: str, exc: BaseException) -> None:
     try:
         with out.open("a", encoding="utf-8") as f:
             f.write("=" * 72 + "\n")
-            f.write(f"timestamp:   {datetime.utcnow().isoformat()}Z\n")
+            f.write(f"timestamp:   {datetime.now(timezone.utc).isoformat()}\n")
             f.write(f"target:      {target}\n")
             f.write(f"executable:  {sys.executable}\n")
             f.write(f"frozen:      {getattr(sys, 'frozen', False)!r}\n")
@@ -90,8 +90,15 @@ def _wire_safe_stdio() -> None:
 
 
 def _dispatch_service(target: str) -> int:
-    """Run one of the three background services in-process. Returns an
+    """Run one of the background services in-process. Returns an
     exit code; callers should propagate it via sys.exit().
+
+    Targets:
+      - api / bot: per-destination services (one each per stack).
+      - listener: legacy per-stack listener. Kept for back-compat with
+        old NSSM installs that pre-date Step 8 of the multi-channel plan.
+      - shared-listener: v2 per-account listener. Started by the Step 8
+        install helper for new and migrated stacks.
     """
     if target == "api":
         from src.api import run as api_run
@@ -106,8 +113,14 @@ def _dispatch_service(target: str) -> int:
         from src.listener import main as listener_main
         asyncio.run(listener_main())
         return 0
+    if target == "shared-listener":
+        import asyncio
+        from src.shared_listener import main as shared_listener_main
+        asyncio.run(shared_listener_main())
+        return 0
     print(
-        f"--service expects one of: api, bot, listener (got: {target!r})",
+        f"--service expects one of: api, bot, listener, shared-listener "
+        f"(got: {target!r})",
         file=sys.stderr,
     )
     return 2

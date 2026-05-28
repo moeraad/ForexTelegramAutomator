@@ -51,6 +51,61 @@ class OpenAction(BaseModel):
             object.__setattr__(self, "pending_type", "limit")
         return self
 
+    @model_validator(mode="after")
+    def _sl_geometry_sane(self):
+        # Three failure modes the validator rejects:
+        #
+        #  (a) SL on the wrong side of entry — broker either accepts as
+        #      an instant stop-out or refuses; either way the signal is
+        #      structurally broken.
+        #        BUY  → SL must be < entry_low  (price drop = loss).
+        #        SELL → SL must be > entry_high (price rise = loss).
+        #
+        #  (b) All TPs on the wrong side of entry — profit direction is
+        #      inverted. Pure parser/transcription error.
+        #
+        #  (c) SL distance > 2% of entry price — almost certainly a typo.
+        #      Real gold channels publish tight scalp stops (5-30pt =
+        #      0.1-0.7%) up to wide swing stops (60-80pt = 1.3-1.8%).
+        #      2% (~90pt at $4500) is the empirical upper bound. The
+        #      2026-05-25 SMC signal "sell now 4569.78 sl4674.62" had a
+        #      105pt SL = 2.3% — flagged. Channel almost certainly meant
+        #      "sl 4574.62" (4.84pt). Without this guard the EA fires a
+        #      ~20× wider stop than the channel intended.
+        if self.side == "BUY":
+            if self.sl >= self.entry_low:
+                raise ValueError(
+                    f"BUY SL ({self.sl}) must be below entry_low "
+                    f"({self.entry_low}); SL is on the wrong side."
+                )
+            entry_ref = self.entry_high
+            sl_dist = entry_ref - self.sl
+            max_tp_dist = max(tp - entry_ref for tp in self.tps)
+        else:  # SELL
+            if self.sl <= self.entry_high:
+                raise ValueError(
+                    f"SELL SL ({self.sl}) must be above entry_high "
+                    f"({self.entry_high}); SL is on the wrong side."
+                )
+            entry_ref = self.entry_low
+            sl_dist = self.sl - entry_ref
+            max_tp_dist = max(entry_ref - tp for tp in self.tps)
+
+        if max_tp_dist <= 0:
+            raise ValueError(
+                f"{self.side} TP(s) {self.tps} are on the wrong side of "
+                f"entry ({entry_ref}); profit direction inverted."
+            )
+        # SL-distance-as-fraction-of-price typo guard.
+        if entry_ref > 0 and (sl_dist / entry_ref) > 0.02:
+            pct = (sl_dist / entry_ref) * 100.0
+            raise ValueError(
+                f"{self.side} SL distance ({sl_dist:.2f}) is "
+                f"{pct:.2f}% of entry price ({entry_ref}); >2% suggests "
+                "a typo in the SL value."
+            )
+        return self
+
 
 class ModifyAction(BaseModel):
     type: Literal["MODIFY"] = "MODIFY"
@@ -98,9 +153,9 @@ class MoveSlAction(BaseModel):
 
 
 class ClosePartialAction(BaseModel):
-    """Close a fraction of the position's ORIGINAL volume (default 50%)."""
+    """Close a fraction of the position's ORIGINAL volume (default 25%)."""
     type: Literal["CLOSE_PARTIAL"] = "CLOSE_PARTIAL"
-    fraction: float = Field(default=0.5, gt=0.0, lt=1.0)
+    fraction: float = Field(default=0.25, gt=0.0, lt=1.0)
 
 
 class CloseFullAction(BaseModel):

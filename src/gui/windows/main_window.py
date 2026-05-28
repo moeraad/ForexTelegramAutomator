@@ -27,17 +27,22 @@ from src.gui.views.cost_view import CostView
 from src.gui.views.evaluation_view import EvaluationView
 from src.gui.views.journal_view import JournalView
 from src.gui.views.live_view import LiveView
+from src.gui.views.pipeline_view import PipelineView
 from src.gui.views.profile_view import ProfileView
 from src.gui.views.prompts_view import PromptsView
-from src.gui.views.rejected_view import RejectedView
 from src.gui.views.replay_view import ReplayView
 from src.gui.views.risk_view import RiskView
 from src.gui.views.settings_view import SettingsView
+from src.gui.views.audit_view import AuditView
+from src.gui.views.bot_bindings_view import BotBindingsView
+from src.gui.views.routes_matrix_view import RoutesMatrixView
+from src.gui.views.v2_config_view import V2ConfigView
 
 
 _VIEW_KEYS = (
-    "live", "journal", "evaluation", "rejected", "cost", "risk",
-    "replay", "profile", "prompts", "settings",
+    "live", "journal", "pipeline", "evaluation", "cost", "risk",
+    "replay", "profile", "prompts", "v2_config", "routes", "audit",
+    "bindings", "settings",
 )
 
 
@@ -83,35 +88,24 @@ class MainWindow(QMainWindow):
     def _refresh_nav_badges(self) -> None:
         """Poll the stack DB and update nav-item badges:
           - Live      : count of actions in non-terminal status
-          - Rejected  : count of today's rejected actions
           - Cost      : '!' when today's spend > 80% of budget, '×' if over cap
         """
         import sqlite3
-        from datetime import datetime, timezone
-        from pathlib import Path
         try:
             with sqlite3.connect(str(self._stack.db_path)) as conn:
-                today = datetime.now(timezone.utc).date().isoformat()
                 live = conn.execute(
                     "SELECT COUNT(*) FROM actions "
                     "WHERE status IN ('pending', 'sent', 'claimed', 'watching')"
                 ).fetchone()[0]
-                rejected_today = conn.execute(
-                    "SELECT COUNT(*) FROM actions "
-                    "WHERE status='rejected' AND created_at >= ?",
-                    (today,),
-                ).fetchone()[0]
         except sqlite3.OperationalError:
             live = 0
-            rejected_today = 0
         self._nav.set_badge("live", live or None)
-        self._nav.set_badge("rejected", rejected_today or None)
 
         # Cost badge: read ai_calls.jsonl + budget.
         try:
             from src import db_settings
             from src.cost_guard import todays_cost_usd
-            log = self._stack.project_path / "logs" / "ai_calls.jsonl"
+            log = self._stack.db_path.parent / "logs" / "ai_calls.jsonl"
             today_cost = todays_cost_usd(log)
             budget = db_settings.get_float(self._stack.db_path, "cost_daily_budget_usd", 0.0)
             badge: str | None = None
@@ -204,28 +198,21 @@ class MainWindow(QMainWindow):
         self._services_bar = ServicesBar(self._stack)
 
         settings_view = SettingsView(self._stack)
-        settings_view.new_stack_requested.connect(self._open_new_stack_wizard)
-        rejected_view = RejectedView(self._stack)
         replay_view = ReplayView(self._stack)
-        # Cross-view: clicking Replay on a rejected row jumps to the
-        # Replay view with that specific message pre-loaded (REVIEW.md
-        # §4.3). Keeps the operator's flow tight when triaging spikes.
-        rejected_view.replay_message_requested.connect(
-            lambda mid: (
-                replay_view.preload_message(mid),
-                self._switch_view("replay"),
-            )
-        )
         self._views: dict[str, QWidget] = {
             "live": LiveView(self._stack),
             "journal": JournalView(self._stack),
+            "pipeline": PipelineView(self._stack),
             "evaluation": EvaluationView(self._stack),
-            "rejected": rejected_view,
             "cost": CostView(self._stack),
             "risk": RiskView(self._stack, self._risk_monitor),
             "replay": replay_view,
             "profile": ProfileView(self._stack),
             "prompts": PromptsView(self._stack),
+            "v2_config": V2ConfigView(self._stack),
+            "routes": RoutesMatrixView(self._stack),
+            "audit": AuditView(self._stack),
+            "bindings": BotBindingsView(self._stack),
             "settings": settings_view,
         }
         self._stack_widget = QStackedWidget()
@@ -234,10 +221,12 @@ class MainWindow(QMainWindow):
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 0, 0)
+        # 8 px outer margins so the panel's rounded border doesn't get
+        # clipped against the window edges.
+        right_layout.setContentsMargins(8, 8, 8, 0)
         right_layout.setSpacing(0)
-        right_layout.addWidget(self._header)
-        right_layout.addWidget(self._services_bar)
+        self._top_panel = self._build_top_panel(self._header, self._services_bar)
+        right_layout.addWidget(self._top_panel)
 
         from src.gui.panels.crash_banner import CrashBanner
         self._crash_banner = CrashBanner()
@@ -255,6 +244,49 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(central)
         self.statusBar().showMessage(self._status_text())
+
+    def _build_top_panel(self, *children: QWidget) -> QWidget:
+        """Wrap HeaderBar + ServicesBar in a single rounded card so the
+        top stripe reads as a discrete control panel. Mirrors the
+        ribbon's visual language (surface bg, border_strong rim, 6 px
+        radius). Works because we made the HeaderBar/ServicesBar
+        backgrounds transparent — they now show through to the panel's
+        own surface fill instead of clipping its corners with their own
+        opaque bands. Theme-aware: re-applies on dark/light toggle.
+        """
+        from PySide6.QtCore import Qt as _Qt
+        panel = QWidget()
+        panel.setObjectName("TopPanel")
+        # WA_StyledBackground enables QSS-driven bg/border painting on
+        # a bare QWidget — without it, the rules silently no-op.
+        panel.setAttribute(_Qt.WidgetAttribute.WA_StyledBackground, True)
+        v = QVBoxLayout(panel)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+        for c in children:
+            v.addWidget(c)
+
+        def _apply() -> None:
+            try:
+                from src.gui.theme import current_palette
+                pal = current_palette()
+                panel.setStyleSheet(
+                    f"QWidget#TopPanel {{"
+                    f"  background-color: {pal.surface};"
+                    f"  border: 1px solid {pal.border_strong};"
+                    f"  border-radius: 6px;"
+                    f"}}"
+                )
+            except Exception:
+                pass
+
+        _apply()
+        try:
+            from src.gui.theme import bus as theme_bus
+            theme_bus.theme_changed.connect(lambda _pal: _apply())
+        except Exception:
+            pass
+        return panel
 
     def _switch_view(self, key: str) -> None:
         if key not in self._views:

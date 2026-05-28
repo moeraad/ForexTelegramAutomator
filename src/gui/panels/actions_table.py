@@ -223,7 +223,7 @@ class ActionsTable(QWidget):
         `self._limit` so 'Load more' just bumps it and re-subscribes."""
         return (
             "SELECT a.id, a.action_type, a.status, a.created_at, "
-            "       a.payload_json, a.ea_response, "
+            "       a.payload_json, a.ea_response, a.source_channel_id, "
             "       p.entry_price, p.exit_price, p.realized_pnl, "
             "       p.close_reason "
             "FROM actions a "
@@ -255,26 +255,38 @@ class ActionsTable(QWidget):
         self._search.textChanged.connect(lambda _t: self._persist_filters())
         toolbar.addWidget(self._search, 1)
 
-        self._promote_btn = QPushButton("Promote now")
-        self._promote_btn.setToolTip(
+        from src.gui._button_helpers import make_icon_button
+        # Promote now → green check (semantically: approve the pending
+        # action, push it through to the EA).
+        self._promote_btn = make_icon_button(
+            "ACCEPT",
             "Force-trigger the selected pending action (skips the auto-execute "
-            "delay; EA picks it up on the next poll)."
+            "delay; EA picks it up on the next poll).",
+            variant="success", fallback_text="Promote",
         )
         self._promote_btn.setEnabled(False)
         self._promote_btn.clicked.connect(self._on_promote_clicked)
         toolbar.addWidget(self._promote_btn)
 
-        self._cancel_btn = QPushButton("Cancel")
-        self._cancel_btn.setToolTip(
-            "Cancel the selected pending action before it auto-promotes."
+        # Cancel → BROOM (clear/sweep). Replaces the previous CLOSE (×)
+        # so the verb visually reads as "wipe this pending action" rather
+        # than the dismiss-a-window connotation of an X.
+        self._cancel_btn = make_icon_button(
+            "BROOM",
+            "Cancel the selected pending action before it auto-promotes.",
+            variant="danger", fallback_text="Cancel",
         )
         self._cancel_btn.setEnabled(False)
         self._cancel_btn.clicked.connect(self._on_cancel_clicked)
         toolbar.addWidget(self._cancel_btn)
 
-        self._export_btn = QPushButton("Export CSV")
-        self._export_btn.setToolTip(
-            "Export the currently-visible rows (after filters + search) to CSV."
+        # Export CSV → SHARE icon (matches the export affordance in
+        # Journal + Diagnostics — same glyph used app-wide for "send
+        # this data out").
+        self._export_btn = make_icon_button(
+            "SHARE",
+            "Export the currently-visible rows (after filters + search) to CSV.",
+            variant="primary", fallback_text="Export CSV",
         )
         self._export_btn.clicked.connect(self._on_export_clicked)
         toolbar.addWidget(self._export_btn)

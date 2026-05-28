@@ -36,6 +36,14 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_seed_settings_defaults(conn)
     _migrate_env_to_settings(conn)
     _migrate_create_unmatched_messages(conn)
+    # v2 multi-channel scaffolding (see docs/plans/2026-05-23-multi-channel-routing.md
+    # Step 2). Columns are nullable; rows from before v2 keep NULL until
+    # backfilled by the API process via backfill_source_channel_id().
+    _migrate_messages_add_source_channel(conn)
+    _migrate_actions_add_source_channel_route(conn)
+    _migrate_create_bot_outbox(conn)
+    _migrate_messages_add_reply_to(conn)
+    _migrate_messages_add_pipeline_columns(conn)
 
 
 def _migrate_actions_add_phase2_types(conn: sqlite3.Connection) -> None:
@@ -721,3 +729,176 @@ def _migrate_env_to_settings(conn: sqlite3.Connection) -> None:
     # NOTE: .env is left in place after migration. It's now a stale reference
     # only — config.py no longer reads it at runtime. Subsequent runs detect
     # already-migrated state via the missing-critical-keys check above and skip.
+
+
+# ---------------------------------------------------------------------------
+# v2 multi-channel scaffolding (see docs/plans/2026-05-23-multi-channel-routing.md)
+#
+# These columns and table support routing one DB to N channels (Step 12,
+# deferred) and per-bot notification outboxes (Step 7). For the current
+# scope (1:1 channel→destination) the columns hold one value per row;
+# they're additive so introducing them now doesn't change any behavior.
+# ---------------------------------------------------------------------------
+
+
+def _migrate_messages_add_source_channel(conn: sqlite3.Connection) -> None:
+    """Add `source_channel_id` to messages so each row carries the v2 Channel.id
+    it came from. Nullable: rows inserted before v2 stay NULL until backfilled
+    via backfill_source_channel_id().
+
+    Idempotent: ALTER is gated on PRAGMA table_info; CREATE INDEX uses IF NOT EXISTS.
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    if "source_channel_id" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN source_channel_id TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_source_channel "
+        "ON messages(source_channel_id) WHERE source_channel_id IS NOT NULL"
+    )
+
+
+def _migrate_actions_add_source_channel_route(conn: sqlite3.Connection) -> None:
+    """Add `source_channel_id` and `route_id` to actions.
+
+    These let the notification dispatcher (Step 7) and cost tracker (Step 18,
+    deferred) attribute each action to the originating Channel and Route. Both
+    nullable: pre-v2 rows stay NULL until backfill, and rows from a 1:1
+    destination always carry the same pair.
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(actions)").fetchall()}
+    if "source_channel_id" not in cols:
+        conn.execute("ALTER TABLE actions ADD COLUMN source_channel_id TEXT")
+    if "route_id" not in cols:
+        conn.execute("ALTER TABLE actions ADD COLUMN route_id TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_actions_source_channel "
+        "ON actions(source_channel_id) WHERE source_channel_id IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_actions_route "
+        "ON actions(route_id) WHERE route_id IS NOT NULL"
+    )
+
+
+def _migrate_create_bot_outbox(conn: sqlite3.Connection) -> None:
+    """Per-bot notification queue. Step 7 (notification dispatcher) writes into
+    it; Step 7's bot_outbox_tailer in each Bot process polls and DMs the operator.
+
+    `delivered_at IS NULL` partial index keeps the hot-path scan (undelivered
+    events for one bot) tiny even as the table grows. `event_payload` is JSON;
+    keeping it opaque here means new event types don't need schema migrations.
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS bot_outbox ("
+        "  id                INTEGER PRIMARY KEY,"
+        "  bot_id            TEXT NOT NULL,"
+        "  event_type        TEXT NOT NULL,"
+        "  event_payload     TEXT NOT NULL,"
+        "  source_channel_id TEXT,"
+        "  route_id          TEXT,"
+        "  action_id         INTEGER REFERENCES actions(id),"
+        "  created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,"
+        "  delivered_at      DATETIME"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bot_outbox_undelivered "
+        "ON bot_outbox(bot_id, created_at) WHERE delivered_at IS NULL"
+    )
+
+
+def backfill_source_channel_id(conn: sqlite3.Connection, channel_id: str) -> tuple[int, int]:
+    """Set messages.source_channel_id and actions.source_channel_id on rows
+    where it's currently NULL.
+
+    Intended for callers that know the v2 Channel mapping — typically the API
+    process at startup, which looks at the v2 config, finds the single Route
+    pointing at this destination, and passes its channel_id here. With 1:1
+    routing (current scope) the mapping is unambiguous.
+
+    Returns (messages_updated, actions_updated) so the caller can log a
+    one-line summary at startup.
+
+    Note: route_id backfill is intentionally NOT done here. Once Routes exist
+    as logical entities, a separate `backfill_route_id` call (with the
+    route_id parameter resolved by the caller) handles that. Keeping the two
+    backfills separate means we don't conflate "which channel sent this" with
+    "which route picked it up" — they CAN differ in future scopes (mirror /
+    aggregate) where one route is one of many for a channel.
+    """
+    msg_result = conn.execute(
+        "UPDATE messages SET source_channel_id=? WHERE source_channel_id IS NULL",
+        (channel_id,),
+    )
+    act_result = conn.execute(
+        "UPDATE actions SET source_channel_id=? WHERE source_channel_id IS NULL",
+        (channel_id,),
+    )
+    return (msg_result.rowcount or 0, act_result.rowcount or 0)
+
+
+def backfill_route_id(conn: sqlite3.Connection, route_id: str) -> int:
+    """Set actions.route_id on rows where it's currently NULL.
+
+    Same caller pattern as backfill_source_channel_id; separate function
+    because the channel and route are independent dimensions (see that
+    function's docstring).
+
+    Returns the number of action rows updated.
+    """
+    result = conn.execute(
+        "UPDATE actions SET route_id=? WHERE route_id IS NULL",
+        (route_id,),
+    )
+    return result.rowcount or 0
+
+
+def _migrate_messages_add_pipeline_columns(conn: sqlite3.Connection) -> None:
+    """Add per-message pipeline-decision tracking columns.
+
+    The Pipeline view (src/gui/views/pipeline_view.py) needs to render
+    "this message exited the pipeline at stage X with outcome Y" plus a
+    radial histogram of per-bucket counts. Reading logs/ai_calls.jsonl
+    on every refresh doesn't scale past a few thousand messages (rotated
+    files, no index, full scan), so the orchestrator now writes the
+    terminal stage decision directly onto the messages row.
+
+    Columns are all nullable: pre-migration rows stay NULL and render as
+    "unknown" in the GUI. The index on (decided_stage, received_at DESC)
+    powers both the per-bucket COUNT and the time-windowed listing.
+    Idempotent: ALTERs are gated on PRAGMA table_info, index uses IF NOT
+    EXISTS.
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    if "decided_stage" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN decided_stage TEXT")
+    if "decided_outcome" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN decided_outcome TEXT")
+    if "decided_at" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN decided_at TIMESTAMP")
+    if "pipeline_meta_json" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN pipeline_meta_json TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_decided_stage "
+        "ON messages(decided_stage, received_at DESC)"
+    )
+
+
+def _migrate_messages_add_reply_to(conn: sqlite3.Connection) -> None:
+    """Add `reply_to_tg_message_id` to messages.
+
+    Telegram replies carry a pointer to the parent message they answer
+    (Telethon: ``event.message.reply_to_msg_id``). The listener writes
+    that here so state_summary can prepend the parent's text to the
+    SYSTEM STATE block when the AI evaluates a reply — without it the
+    AI sees "cancel that order" with no antecedent and falls back to
+    ALERT/context.
+
+    Nullable: pre-2026-05-26 rows + non-reply messages stay NULL.
+    Idempotent: ALTER is gated on PRAGMA table_info.
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    if "reply_to_tg_message_id" not in cols:
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN reply_to_tg_message_id INTEGER"
+        )

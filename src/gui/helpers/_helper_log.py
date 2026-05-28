@@ -34,6 +34,23 @@ def info(msg: str) -> None:
         pass
 
 
+def _popup_suppressed() -> bool:
+    """Skip the MessageBox when running under pytest or any other non-
+    interactive context. Tests that exercise the helper's error paths
+    would otherwise pop a UAC-style dialog on the developer's screen.
+
+    Two signals:
+      - PYTEST_CURRENT_TEST is set by pytest while collecting + running
+        each test (auto-cleared between tests).
+      - CT_HELPER_NO_POPUP=1 lets CI / scripts opt out explicitly.
+    """
+    if os.environ.get("CT_HELPER_NO_POPUP") == "1":
+        return True
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    return False
+
+
 def error(title: str, msg: str, popup: bool = True) -> None:
     _to_file(f"ERROR  {title}: {msg}")
     try:
@@ -41,7 +58,7 @@ def error(title: str, msg: str, popup: bool = True) -> None:
             sys.stderr.write(f"{title}: {msg}\n")
     except Exception:
         pass
-    if popup:
+    if popup and not _popup_suppressed():
         try:
             ctypes.windll.user32.MessageBoxW(None, msg, title, _MB_ICONERROR)
         except Exception:

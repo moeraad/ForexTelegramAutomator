@@ -128,6 +128,7 @@ class _CrashContent(QWidget):
         self._toggle.clicked.connect(self._on_toggle)
         row.addWidget(self._toggle)
         self._restart = PushButton("Restart service")
+        self._restart.setProperty("variant", "warning")
         self._restart.clicked.connect(self.restart_clicked)
         row.addWidget(self._restart)
         row.addStretch()

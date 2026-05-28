@@ -112,6 +112,22 @@ def test_sent_and_claimed_opens_also_listed(tmp_path):
     assert "[claimed]" in out
 
 
+def test_watching_open_listed_in_pending_section(tmp_path):
+    """OPEN actions sitting in 'watching' (broker-side pending limit
+    placed by the EA) must appear in PENDING OPEN SIGNALS. Without this
+    the AI sees no pending order and suppresses CANCEL_PENDING with a
+    context message — the 2026-05-26 incident."""
+    conn = _setup(tmp_path)
+    payload = ('{"symbol":"XAUUSD","side":"SELL","entry_low":4575.84,'
+               '"entry_high":4575.84,"tps":[4547.63],"sl":4582.02}')
+    conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'watching')", (payload,))
+    out = render_open_positions(conn)
+    assert "[watching]" in out
+    assert "SELL XAUUSD" in out
+
+
 def test_executed_open_not_in_pending_section(tmp_path):
     """Once executed, the signal belongs under OPEN POSITIONS, not pending."""
     conn = _setup(tmp_path)
@@ -334,6 +350,83 @@ def test_market_price_renders_no_recent_quote_when_unset(tmp_path):
     out = render_open_positions(conn)
     assert "MARKET (XAUUSD)" in out
     assert "no recent quote" in out
+
+
+def test_reply_context_renders_parent_text(tmp_path):
+    """When the current message is a Telegram reply, the renderer
+    prepends the parent's text so the AI has an antecedent for pronouns
+    like 'cancel that order'."""
+    conn = _setup(tmp_path)
+    # Parent message in the same chat.
+    conn.execute(
+        "INSERT INTO messages(tg_message_id, chat_id, sender, text) "
+        "VALUES(?,?,?,?)",
+        (100, -1001234, "analyst", "Xauusd sell limit 4575.84\nSL 4582\nTP 4547"),
+    )
+    # Current reply.
+    conn.execute(
+        "INSERT INTO messages(tg_message_id, chat_id, sender, text, "
+        "reply_to_tg_message_id) "
+        "VALUES(?,?,?,?,?)",
+        (101, -1001234, "analyst", "cancel that order", 100),
+    )
+    out = render_open_positions(
+        conn,
+        current_tg_message_id=101,
+        current_chat_id=-1001234,
+    )
+    assert "REPLY CONTEXT" in out
+    assert "tg_msg_id=100" in out
+    assert "sell limit 4575.84" in out
+
+
+def test_reply_context_skipped_when_not_a_reply(tmp_path):
+    """Non-reply messages produce no REPLY CONTEXT block."""
+    conn = _setup(tmp_path)
+    conn.execute(
+        "INSERT INTO messages(tg_message_id, chat_id, sender, text) "
+        "VALUES(?,?,?,?)",
+        (200, -1001234, "analyst", "sell now 4500"),
+    )
+    out = render_open_positions(
+        conn,
+        current_tg_message_id=200,
+        current_chat_id=-1001234,
+    )
+    assert "REPLY CONTEXT" not in out
+
+
+def test_reply_context_handles_missing_parent_gracefully(tmp_path):
+    """Parent not in archive (e.g. older than backfill) — show a stub."""
+    conn = _setup(tmp_path)
+    conn.execute(
+        "INSERT INTO messages(tg_message_id, chat_id, sender, text, "
+        "reply_to_tg_message_id) "
+        "VALUES(?,?,?,?,?)",
+        (300, -1001234, "analyst", "use BE", 999),  # parent 999 not present
+    )
+    out = render_open_positions(
+        conn,
+        current_tg_message_id=300,
+        current_chat_id=-1001234,
+    )
+    assert "REPLY CONTEXT" in out
+    assert "999" in out
+    assert "not in the local archive" in out
+
+
+def test_reply_context_skipped_when_no_message_context(tmp_path):
+    """Callers that don't pass tg_message_id / chat_id (GUI prompt
+    inspector, tests) get the normal blocks without REPLY CONTEXT."""
+    conn = _setup(tmp_path)
+    conn.execute(
+        "INSERT INTO messages(tg_message_id, chat_id, sender, text, "
+        "reply_to_tg_message_id) "
+        "VALUES(?,?,?,?,?)",
+        (400, -1001234, "analyst", "use BE", 999),
+    )
+    out = render_open_positions(conn)
+    assert "REPLY CONTEXT" not in out
 
 
 def test_market_price_renders_stale_marker(tmp_path):

@@ -56,6 +56,14 @@ ACTION_TYPES = (
     "ALERT",
     "IGNORE",
     "UNKNOWN",
+    # Reply-intent dispatch types — fire on the CURRENT (reply) message
+    # to control what happens with the parent's trigger.
+    #   TRIGGER_PARENT → re-run the matcher against the parent's text
+    #                    and emit whatever the parent's trigger would.
+    #   IGNORE_PARENT  → suppress both the parent's trigger AND the
+    #                    AI fallback for this reply.
+    "TRIGGER_PARENT",
+    "IGNORE_PARENT",
 )
 
 
@@ -160,9 +168,21 @@ class _BulkClassifyWorker(QThread):
 
 
 class TriggersView(QWidget):
-    def __init__(self, stack: Stack) -> None:
+    """Per-profile triggers editor.
+
+    Post-v2 fix: ``get_profile_name`` callback ties this view to the
+    ProfileView's picker so the operator's edits land in the profile
+    they're actually editing (not the stack's default — which for
+    aggregate routing might be a DIFFERENT profile entirely).
+
+    Backward compat: when ``get_profile_name`` is None, falls back to
+    ``stack.name`` — the v1 / single-channel behavior.
+    """
+
+    def __init__(self, stack: Stack, get_profile_name=None) -> None:
         super().__init__()
         self._stack = stack
+        self._get_profile_name = get_profile_name
         self._triggers: list[dict] = []
         self._dirty = False
         self._bulk_worker: _BulkClassifyWorker | None = None
@@ -173,83 +193,130 @@ class TriggersView(QWidget):
         self._stack = stack
         self._load_from_disk()
 
+    def _active_profile_name(self) -> str:
+        """Profile to operate on: picker > stack default (v1 back-compat)."""
+        if self._get_profile_name is not None:
+            picked = self._get_profile_name()
+            if picked:
+                return picked
+        return self._stack.name
+
+    def reload(self) -> None:
+        """Public re-read trigger — called by ProfileView when the operator
+        switches the profile picker so this sub-tab follows along."""
+        self._load_from_disk()
+
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        toolbar = QHBoxLayout()
+        # Dirty marker — kept as a small inline label so the operator
+        # sees pending-edits status at a glance. Lives just above the
+        # ribbon so it's always visible when there are unsaved edits.
         self._dirty_label = QLabel("")
-        self._dirty_label.setStyleSheet("color: #ff9800;")
-        toolbar.addWidget(self._dirty_label)
-        toolbar.addStretch()
-        try:
-            from qfluentwidgets import PrimaryPushButton
-            self._save_btn = PrimaryPushButton("Save")
-        except Exception:
-            self._save_btn = QPushButton("Save")
-        self._save_btn.clicked.connect(self._save)
-        toolbar.addWidget(self._save_btn)
-        self._revert_btn = QPushButton("Revert")
-        self._revert_btn.clicked.connect(self._load_from_disk)
-        toolbar.addWidget(self._revert_btn)
-        self._bulk_btn = QPushButton("Bulk import…")
-        self._bulk_btn.clicked.connect(self._on_bulk_import)
-        toolbar.addWidget(self._bulk_btn)
-        layout.addLayout(toolbar)
+        self._dirty_label.setStyleSheet("color: #ff9800; padding-left: 4px;")
+        layout.addWidget(self._dirty_label)
+
+        # Triggers-tab ribbon. Save / Revert are intentionally NOT here
+        # — they live in the profile-wide ribbon at the top of the
+        # parent ProfileView and apply to every profile tab. This
+        # ribbon focuses on trigger-row operations:
+        #   Triggers  — Add / Delete / Move / Copy
+        #   Bulk      — Bulk import
+        # Keep button references so dirty-state / selection wiring
+        # elsewhere in the class still works.
+        from src.gui.panels.ribbon_bar import RibbonAction, RibbonBar, RibbonGroup
+        # Stub-out the previously-public button attrs to None so legacy
+        # accessors (e.g. self._save_btn.setEnabled) elsewhere noop
+        # gracefully instead of AttributeError-ing.
+        self._save_btn = None
+        self._revert_btn = None
+        self._bulk_btn = None
+        self._add_btn = None
+        self._delete_btn = None
+        self._move_btn = None
+        self._copy_btn = None
+        ribbon = RibbonBar([
+            RibbonGroup("Triggers", [
+                RibbonAction("ADD", "Add",
+                             "Add a new trigger",
+                             variant="success", callback=self._on_add),
+                RibbonAction("DELETE", "Delete",
+                             "Delete the selected trigger",
+                             variant="danger", callback=self._on_delete),
+                RibbonAction("RIGHT_ARROW", "Move",
+                             "Move the selected trigger to another category",
+                             callback=self._on_move),
+                RibbonAction("COPY", "Copy",
+                             "Copy the selected trigger to another category",
+                             callback=self._on_copy),
+            ]),
+            RibbonGroup("Bulk", [
+                RibbonAction("DOWNLOAD", "Import",
+                             "Bulk import triggers from a JSON / CSV file",
+                             callback=self._on_bulk_import),
+            ]),
+        ])
+        layout.addWidget(ribbon)
+
+        # Filter field is built here so it exists before the right
+        # pane's heading row references it. Lives on the right pane,
+        # aligned with the "Triggers" label (see right_layout below).
+        from PySide6.QtWidgets import QLineEdit
+        self._filter_edit = QLineEdit()
+        self._filter_edit.setPlaceholderText(
+            "Filter: phrase / sample / note (substring, case-insensitive)"
+        )
+        self._filter_edit.textChanged.connect(self._apply_filter)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
 
+        # Heading rows on both panes are taller QWidget containers
+        # with the same fixed height. The right pane's heading carries
+        # the filter field (which is taller than a bare QLabel), so
+        # we pin both heading widgets to the QLineEdit's height to
+        # keep the two lists aligned at the same Y baseline.
+        # Cap the filter width so the section label stays readable on
+        # narrow windows.
+        self._filter_edit.setMaximumWidth(360)
+        header_h = self._filter_edit.sizeHint().height()
+
+        # Left pane — heading + action-types list.
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(4)
-        # Mirror the right pane's toolbar row height so the list and
-        # table start at the same Y. Without this the right pane's
-        # +Add/Delete/Move toolbar pushes the table down ~30 px and the
-        # two scrollable areas look misaligned.
-        left_toolbar = QHBoxLayout()
-        left_toolbar.addWidget(QLabel("<b>Action types</b>"))
-        left_toolbar.addStretch()
-        # Invisible spacer button — same size as the right-pane buttons
-        # so vertical alignment holds even after a theme swap changes
-        # button heights.
-        spacer_btn = QPushButton("")
-        spacer_btn.setEnabled(False)
-        spacer_btn.setFlat(True)
-        spacer_btn.setStyleSheet("QPushButton { background: transparent; border: none; }")
-        spacer_btn.setFixedSize(0, 28)
-        left_toolbar.addWidget(spacer_btn)
-        left_layout.addLayout(left_toolbar)
+        left_header_widget = QWidget()
+        left_header_widget.setFixedHeight(header_h)
+        left_header = QHBoxLayout(left_header_widget)
+        left_header.setContentsMargins(0, 0, 0, 0)
+        left_header.setSpacing(6)
+        left_header.addWidget(QLabel("<b>Action types</b>"))
+        left_header.addStretch()
+        left_layout.addWidget(left_header_widget)
         self._types_list = QListWidget()
         self._types_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._types_list.currentItemChanged.connect(self._on_type_selected)
         left_layout.addWidget(self._types_list, 1)
         splitter.addWidget(left)
 
+        # Right pane — heading (section label + filter) + triggers table.
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(4)
-
-        right_toolbar = QHBoxLayout()
+        right_header_widget = QWidget()
+        right_header_widget.setFixedHeight(header_h)
+        right_header = QHBoxLayout(right_header_widget)
+        right_header.setContentsMargins(0, 0, 0, 0)
+        right_header.setSpacing(6)
         self._right_label = QLabel("<b>Triggers</b>")
-        right_toolbar.addWidget(self._right_label)
-        right_toolbar.addStretch()
-        self._add_btn = QPushButton("+ Add")
-        self._add_btn.clicked.connect(self._on_add)
-        right_toolbar.addWidget(self._add_btn)
-        self._delete_btn = QPushButton("Delete")
-        self._delete_btn.clicked.connect(self._on_delete)
-        right_toolbar.addWidget(self._delete_btn)
-        self._move_btn = QPushButton("Move to…")
-        self._move_btn.clicked.connect(self._on_move)
-        right_toolbar.addWidget(self._move_btn)
-        self._copy_btn = QPushButton("Copy to…")
-        self._copy_btn.clicked.connect(self._on_copy)
-        right_toolbar.addWidget(self._copy_btn)
-        right_layout.addLayout(right_toolbar)
+        right_header.addWidget(self._right_label)
+        right_header.addStretch()
+        right_header.addWidget(self._filter_edit)
+        right_layout.addWidget(right_header_widget)
 
         self._table = QTableWidget(0, 3)
         self._table.setHorizontalHeaderLabels(["Phrase", "Sample message", "Note"])
@@ -283,17 +350,22 @@ class TriggersView(QWidget):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([220, 780])
 
-        # Vertical splitter: the existing list/table on top, the Test
-        # pane on the bottom. Operator can resize as needed; defaults
-        # give the editor ~70% of vertical space and the test pane ~30%.
-        v_splitter = QSplitter(Qt.Orientation.Vertical)
-        v_splitter.setChildrenCollapsible(False)
-        v_splitter.addWidget(splitter)
-        v_splitter.addWidget(self._build_test_pane())
-        v_splitter.setStretchFactor(0, 3)
-        v_splitter.setStretchFactor(1, 1)
-        v_splitter.setSizes([520, 240])
-        layout.addWidget(v_splitter, 1)
+        # Vertical splitter: editor on top, Test pane on the bottom.
+        # ``setChildrenCollapsible(True)`` lets the operator collapse
+        # the test pane to its title bar (via the QGroupBox checkbox)
+        # to maximize space for the triggers table. Default starts
+        # with the test pane closed so the editor gets the full view.
+        self._v_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._v_splitter.setChildrenCollapsible(True)
+        self._v_splitter.addWidget(splitter)
+        self._v_splitter.addWidget(self._build_test_pane())
+        self._v_splitter.setStretchFactor(0, 3)
+        self._v_splitter.setStretchFactor(1, 0)
+        # Initial sizes: editor takes everything, test pane shows
+        # only the QGroupBox title bar (~24px) since it's collapsed
+        # by default.
+        self._v_splitter.setSizes([760, 28])
+        layout.addWidget(self._v_splitter, 1)
 
     def _build_test_pane(self) -> QWidget:
         """Operator dry-run for the matcher: paste a message, choose
@@ -303,11 +375,35 @@ class TriggersView(QWidget):
         Tests UNSAVED edits — uses self._triggers directly, not the
         on-disk profile. Lets the operator calibrate phrase + context
         tokens + preconditions before saving.
+
+        Collapsible: the QGroupBox title carries a checkbox (toggled
+        via ``setCheckable``); unchecking it hides the entire pane
+        content, giving the triggers table above the freed vertical
+        space. The vertical splitter's setStretchFactor handles the
+        actual reflow — Qt collapses an empty QGroupBox down to its
+        title bar, which is what the operator wants here.
         """
         group = QGroupBox("Test matcher against a sample message")
+        group.setCheckable(True)
+        group.setChecked(False)  # collapsed by default — operators
+                                 # usually only need the test pane
+                                 # while authoring new triggers.
+        group.toggled.connect(self._on_test_pane_toggled)
         gl = QVBoxLayout(group)
         gl.setContentsMargins(8, 8, 8, 8)
         gl.setSpacing(6)
+        self._test_group = group
+
+        # Wrap the inner widgets in a single container so toggling
+        # the group's checkbox shows/hides them as one unit — without
+        # this each child would need its own setVisible call.
+        self._test_content = QWidget()
+        content_layout = QVBoxLayout(self._test_content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(6)
+        self._test_content.setVisible(False)
+        gl.addWidget(self._test_content)
+        gl = content_layout  # rest of the existing builder appends here
 
         self._test_input = QPlainTextEdit()
         self._test_input.setPlaceholderText(
@@ -333,6 +429,7 @@ class TriggersView(QWidget):
         state_row.addWidget(self._test_side)
         state_row.addStretch()
         self._test_btn = QPushButton("Test")
+        self._test_btn.setProperty("variant", "primary")
         self._test_btn.clicked.connect(self._on_test_clicked)
         state_row.addWidget(self._test_btn)
         gl.addLayout(state_row)
@@ -389,6 +486,33 @@ class TriggersView(QWidget):
             "Hide details ▴" if checked else "Show details ▾"
         )
 
+    def _on_test_pane_toggled(self, checked: bool) -> None:
+        """Collapse / expand the Test pane.
+
+        When unchecked the inner content widget is hidden so only the
+        QGroupBox title bar shows — the vertical splitter gives the
+        freed space to the editor above. Expanding restores the
+        previous ~240px share or grows a fresh expansion if the
+        operator dragged the editor over the test pane while collapsed.
+        """
+        self._test_content.setVisible(checked)
+        if not hasattr(self, "_v_splitter"):
+            return
+        sizes = self._v_splitter.sizes()
+        if len(sizes) != 2:
+            return
+        total = sum(sizes) or self._v_splitter.height() or 800
+        if checked:
+            # Expand to roughly a third of the available height.
+            test_h = max(240, total // 3)
+            editor_h = max(200, total - test_h)
+            self._v_splitter.setSizes([editor_h, test_h])
+        else:
+            # Collapse to just the title-bar height; give everything
+            # else to the editor.
+            title_h = self._test_group.fontMetrics().height() + 16
+            self._v_splitter.setSizes([max(200, total - title_h), title_h])
+
     def _on_test_clicked(self) -> None:
         from src.text_normalize import normalize
         from src import trigger_matcher
@@ -419,7 +543,7 @@ class TriggersView(QWidget):
         # placeholder. Avoids a UI input the operator would have to
         # mirror from the Profile tab.
         try:
-            data = profile_io.load_profile(self._stack.name)
+            data = profile_io.load_profile(self._active_profile_name())
             symbol = str(data.get("symbol") or "").strip()
         except Exception:
             symbol = ""
@@ -482,8 +606,15 @@ class TriggersView(QWidget):
                 f"<b>✓ Matched — would emit {_html_escape(types_str)}</b>"
                 f"</span>"
             )
-            # Pick the strongest Layer-1 match for the prose line.
-            best = max(layer1_matched, key=lambda d: len(d.rule.norm_phrase))
+            # Pick the strongest emittable Layer-1 match for the prose line
+            # (IGNORE rules don't emit, so they never explain an emit).
+            emittable_matched = [
+                d for d in layer1_matched if d.rule.action_type != "IGNORE"
+            ]
+            best = max(
+                emittable_matched or layer1_matched,
+                key=lambda d: len(d.rule.norm_phrase),
+            )
             explain = (
                 f"<span style='color:#787b86;'>Matched by the "
                 f"<b>deterministic matcher</b> on phrase "
@@ -514,6 +645,22 @@ class TriggersView(QWidget):
                 )
             else:
                 explain = ""
+            return verdict, explain
+
+        if result.suppressed_by:
+            # An IGNORE trigger matched on whole-message equality — the
+            # message is dropped before triage + Sonnet.
+            verdict = (
+                "<span style='color:#26a69a;'>"
+                "<b>✓ Suppressed — would drop as curated noise</b>"
+                "</span>"
+            )
+            explain = (
+                f"<span style='color:#787b86;'>Matched an <b>IGNORE</b> "
+                f"trigger on whole-message equality with sample "
+                f"<i>{_html_escape(result.suppressed_by.phrase)}</i>"
+                f" → dropped before triage + Sonnet.</span>"
+            )
             return verdict, explain
 
         # No match anywhere → falls through to Sonnet in production.
@@ -628,17 +775,18 @@ class TriggersView(QWidget):
         return "".join(parts)
 
     def _load_from_disk(self) -> None:
-        data = profile_io.load_profile(self._stack.name)
+        data = profile_io.load_profile(self._active_profile_name())
         self._triggers = profile_io.load_triggers(data)
         self._dirty = False
         self._refresh_types_list(keep_current=True)
         self._refresh_dirty_marker()
 
     def _save(self) -> None:
-        data = profile_io.load_profile(self._stack.name)
+        active = self._active_profile_name()
+        data = profile_io.load_profile(active)
         data["triggers"] = self._triggers
         try:
-            path = profile_io.save_profile(self._stack.name, data)
+            path = profile_io.save_profile(active, data)
         except OSError as e:
             QMessageBox.critical(self, "Save failed", str(e))
             return
@@ -673,7 +821,9 @@ class TriggersView(QWidget):
 
     def _refresh_dirty_marker(self) -> None:
         self._dirty_label.setText("● unsaved changes" if self._dirty else "")
-        self._save_btn.setEnabled(self._dirty)
+        # Save / Revert moved to the profile-wide ribbon (parent
+        # ProfileView). Save is always enabled there; the dirty marker
+        # above signals when there are edits to commit.
 
     def _refresh_types_list(self, keep_current: bool = False) -> None:
         previous = self._selected_type() if keep_current else None
@@ -714,6 +864,46 @@ class TriggersView(QWidget):
                     item.setToolTip("\n\n".join(samples) if samples else "")
                 self._table.setItem(row, col, item)
         self._table.blockSignals(False)
+        # Reapply the filter so switching action_types keeps the same
+        # filter active across views (operator can scope a search to
+        # "everything matching SL in CLOSE_FULL" then flip to
+        # CLOSE_PARTIAL and instantly see those matches too).
+        self._apply_filter()
+
+    def _apply_filter(self, *_args) -> None:
+        """Hide rows whose phrase / sample / note don't contain the
+        current filter text (case-insensitive). Empty filter → show all.
+
+        Searches the underlying ``self._triggers`` data rather than
+        re-reading the QTableWidget, so the result is unaffected by
+        column rendering order or future column additions. Also
+        checks every sample, not just samples[0] — operators often
+        store multiple sample messages and the filter should hit any
+        of them.
+        """
+        if not hasattr(self, "_filter_edit"):
+            return
+        query = (self._filter_edit.text() or "").strip().lower()
+        at = self._selected_type()
+        if at is None:
+            return
+        type_indices = self._grouped().get(at, [])
+        if not query:
+            for row in range(self._table.rowCount()):
+                self._table.setRowHidden(row, False)
+            return
+        for row, global_idx in enumerate(type_indices):
+            t = self._triggers[global_idx]
+            phrase = str(t.get("phrase", "") or "").lower()
+            note = str(t.get("note", "") or "").lower()
+            samples = t.get("samples") or []
+            samples_text = " ".join(str(s) for s in samples).lower()
+            match = (
+                query in phrase
+                or query in note
+                or query in samples_text
+            )
+            self._table.setRowHidden(row, not match)
 
     def _on_type_selected(self, *_args) -> None:
         self._refresh_table()
@@ -1014,6 +1204,7 @@ class _ProgressDialog(QDialog):
         self.resize(360, 100)
         self._label = QLabel(f"0 / {total}")
         self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setProperty("variant", "danger")
         self._cancel_btn.clicked.connect(self._on_cancel)
         layout = QVBoxLayout(self)
         layout.addWidget(self._label)
@@ -1028,3 +1219,5 @@ class _ProgressDialog(QDialog):
     def _on_cancel(self) -> None:
         self.cancelled.emit()
         self.reject()
+
+

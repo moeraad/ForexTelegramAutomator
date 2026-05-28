@@ -4,7 +4,6 @@
 #property strict
 #include <Trade\Trade.mqh>
 #include "Dashboard.mqh"
-#include "LogPanel.mqh"
 
 input string ApiBaseUrl              = "http://127.0.0.1:8765";
 // Shared secret for the API auth_gate middleware. MUST match the
@@ -59,6 +58,11 @@ input int    EvaluationWaitMs        = 8000;
 input int    EvaluationPollMs        = 500;
 input int    SlippagePoints          = 50;
 input string Symbol_Override         = "XAUUSD";
+// Channel / stack label rendered next to "COPYTRADES" in the dashboard
+// header. Pure display; doesn't affect routing or any logic. Set this
+// per instance so an operator running both SMC and Forex Engineer EAs on
+// the same machine can tell the two charts apart at a glance.
+input string ChannelName             = "";
 // Magic number tags positions opened by this EA so reconciliation, plan
 // management, and singleton-position lookups can ignore unrelated orders on
 // the same account. Override per stack when running multiple CopyTrades
@@ -75,6 +79,18 @@ input double EntryPriceMargin        = 5.0;
 // against missing fast breakouts while keeping R:R sane.
 input bool   ChasePriceEnabled       = true;
 input double ChaseMinRewardRatio     = 0.5;   // require remaining/original >= this; e.g. 0.5 = >=50% of move still ahead
+// Progressive ladder: when a signal arrives with exactly ONE TP and the
+// entry→TP distance is at least ProgressiveLadderMinR multiples of the
+// SL distance, synthesise two virtual intermediate TPs at +1.5R and +3R
+// so the existing 3-stage ManagePlans machinery can take partials and
+// trail SL on the back half. Without this, wide 1-TP signals (typical
+// SMC channel: ~4-5R entry→TP) ride between SL and TP with no
+// intermediate management — a +3R-then-reverse stops out for -1R.
+//
+// Disable to fall back to the original behaviour: 1-TP signals use the
+// broker-side SL+TP only, no staged management.
+input bool   ProgressiveLadderEnabled = true;
+input double ProgressiveLadderMinR    = 3.0;   // skip synthesis below this — geometry too tight
 // Staged-partial retry cap. CTrade.PositionClosePartial can return false
 // in pre-OrderSend validation (hedging-mode quirks, transient stops-level
 // violations, broker rate-limits) while reporting a stale success retcode
@@ -85,12 +101,6 @@ input int    PartialMaxRetries       = 10;
 input bool   ShowDashboard           = true;
 input int    DashboardX              = 20;    // pixels from right edge (CORNER_RIGHT_UPPER)
 input int    DashboardY              = 20;    // pixels from top
-// Side-panel "ACTION LOG" widget — renders the last ~20 actions with
-// status glyphs. Polls GET /events/recent every LogPanelPollSec seconds.
-// Hash-gated repaint: zero canvas work when the head rows haven't moved.
-input bool   ShowLogPanel            = true;
-input int    LogPanelX               = 0;     // 0 = auto (right of dashboard); else absolute X
-input int    LogPanelPollSec         = 3;
 // Market-price heartbeat: every N seconds, POST current bid/ask to the API
 // so the AI prompt has a fresh quote for two-digit SL shorthand decoding
 // (e.g. "ستوبك 56" -> 4856 only when gold is around 4850). Set to 0 to
@@ -154,10 +164,6 @@ CTrade trade;
 
 // ---- Dashboard state (read by g_dashboard.Update each second) ----
 CDashboard g_dashboard;
-// ---- LogPanel state (right-of-dashboard action stream widget) ----
-CLogPanel  g_log_panel;
-LogEvent   g_log_events[];        // populated by FetchRecentEvents
-datetime   g_last_log_fetch = 0;  // throttle for FetchRecentEvents
 datetime   g_ea_start            = 0;
 datetime   g_last_api_ok         = 0;
 bool       g_kill_switch_cached  = false;
@@ -181,6 +187,13 @@ datetime   g_last_evaluation_fetch = 0; // throttle for FetchLatestEvaluation()
 // 404 from the API is normal (no OPEN yet, or eval not yet attached) and
 // keeps g_eval_available=false so the dashboard shows the empty-state.
 bool       g_eval_available    = false;
+// ai_evaluator_enabled setting mirror. Polled by FetchEvaluatorEnabled
+// on the same 5s cadence as FetchLatestEvaluation. Default "true"
+// (enabled) — same as the server-side default. On API failure we keep
+// the last-known value rather than reverting to ON, so a brief network
+// blip doesn't flash the EVALUATION OFF banner.
+bool       g_eval_setting_enabled = true;
+datetime   g_last_eval_setting_fetch = 0;
 long       g_eval_action_id    = 0;
 int        g_eval_score        = 0;
 string     g_eval_verdict      = "";
@@ -260,16 +273,6 @@ int OnInit() {
    g_balance_open_today = AccountInfoDouble(ACCOUNT_BALANCE);
    g_equity_peak_today = AccountInfoDouble(ACCOUNT_EQUITY);
    if(ShowDashboard) g_dashboard.Create(DashboardX, DashboardY);
-   if(ShowLogPanel) {
-      // Default X = right edge of dashboard + 8 px gap (388 = 380 width + 8).
-      // Override via LogPanelX input if the operator wants a custom layout.
-      int lx = (LogPanelX > 0) ? LogPanelX : (DashboardX + 388);
-      g_log_panel.Create(lx, DashboardY);
-      g_log_panel.Hide();  // hidden by default; revealed via toggle button
-      // Toggle button anchored just below the dashboard. Persists across
-      // ticks; OnChartEvent flips g_log_panel visibility and updates label.
-      CreateLogToggleButton();
-   }
 
    // Run broker-compatibility checks once. Result is cached in
    // g_broker_check, read by BuildStats every tick, and rendered in
@@ -305,6 +308,16 @@ int OnInit() {
    string aresp;
    HttpPostJson(ApiBaseUrl + "/alerts", alertJson, aresp);
 
+   // Publish snapshot-state sentinel so the GUI services-bar can tell
+   // "snapshot intentionally off" apart from "snapshot stale". Best-effort:
+   // if the POST fails (API down at boot) the pill just falls back to the
+   // stale-detection path — same behaviour as before this sentinel existed.
+   string stateBody = StringFormat(
+      "{\"symbol\":\"%s\",\"enabled\":%s}",
+      Symbol_Override, EnableMarketSnapshot ? "true" : "false");
+   string sresp;
+   HttpPostJson(ApiBaseUrl + "/market/snapshot/state", stateBody, sresp);
+
    Print("CopyTrades EA started. API=", ApiBaseUrl,
          " restored_plans=", ArraySize(g_plans));
    return INIT_SUCCEEDED;
@@ -313,71 +326,6 @@ int OnInit() {
 void OnDeinit(const int reason) {
    EventKillTimer();
    if(ShowDashboard) g_dashboard.Destroy();
-   if(ShowLogPanel)  { g_log_panel.Destroy(); DestroyLogToggleButton(); }
-}
-
-// ---- LogPanel toggle button (anchored just below the dashboard) ----
-// MT5 OBJ_BUTTON fires CHARTEVENT_OBJECT_CLICK in OnChartEvent. The
-// button stays "pressed" after click, so we always reset OBJPROP_STATE
-// back to false to keep it behaving like a momentary action.
-#define CT_LOG_TOGGLE_NAME "CT_LogToggle"
-
-void RefreshLogToggleLabel() {
-   string label = g_log_panel.IsVisible() ? "Hide Log" : "Show Log";
-   ObjectSetString(0, CT_LOG_TOGGLE_NAME, OBJPROP_TEXT, label);
-   ChartRedraw(0);
-}
-
-void CreateLogToggleButton() {
-   // Place it directly under the dashboard (dashboard height = 900).
-   // Width 120, height 24. Cheap enough to recreate on re-attach.
-   if(ObjectFind(0, CT_LOG_TOGGLE_NAME) >= 0)
-      ObjectDelete(0, CT_LOG_TOGGLE_NAME);
-   if(!ObjectCreate(0, CT_LOG_TOGGLE_NAME, OBJ_BUTTON, 0, 0, 0)) {
-      Print("CT logtoggle: ObjectCreate failed, err=", GetLastError());
-      return;
-   }
-   // Anchored inside the dashboard header row, to the left of the LIVE
-   // pill (which sits at canvas-relative x=300..380, y=8..22).
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_XDISTANCE, DashboardX + 220);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_YDISTANCE, DashboardY + 6);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_XSIZE, 70);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_YSIZE, 18);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_BGCOLOR, 0x141210);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_BORDER_COLOR, 0x3D2F18);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_COLOR, 0xD4AF37);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_FONTSIZE, 8);
-   ObjectSetString(0, CT_LOG_TOGGLE_NAME, OBJPROP_FONT, "Tahoma");
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_BACK, false);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_HIDDEN, true);
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_STATE, false);
-   RefreshLogToggleLabel();
-}
-
-void DestroyLogToggleButton() {
-   if(ObjectFind(0, CT_LOG_TOGGLE_NAME) >= 0)
-      ObjectDelete(0, CT_LOG_TOGGLE_NAME);
-}
-
-void OnChartEvent(const int id, const long &lparam,
-                  const double &dparam, const string &sparam) {
-   if(id != CHARTEVENT_OBJECT_CLICK) return;
-   if(sparam != CT_LOG_TOGGLE_NAME) return;
-   // Reset visual pressed-state (button is momentary, not toggle-style).
-   ObjectSetInteger(0, CT_LOG_TOGGLE_NAME, OBJPROP_STATE, false);
-   if(!ShowLogPanel) return;  // input-disabled, nothing to flip
-   g_log_panel.Toggle();
-   RefreshLogToggleLabel();
-   // If just shown, fetch+paint immediately rather than waiting for the
-   // next OnTimer tick so the operator doesn't see an empty panel.
-   if(g_log_panel.IsVisible()) {
-      g_last_log_fetch = 0;  // force FetchRecentEvents on next call
-      FetchRecentEvents();
-      g_log_panel.Update(g_log_events, ArraySize(g_log_events));
-   }
 }
 
 void OnTimer() {
@@ -395,19 +343,21 @@ void OnTimer() {
    // Heartbeat market price unconditionally (even when halted) — the AI
    // still needs a fresh quote to decode shorthand SL on incoming messages.
    HeartbeatMarketPrice();
-   // Push multi-timeframe OHLC snapshot for the signal-quality evaluator
-   // (src/ai_evaluator.py). Throttled to ~once per minute. Best-effort —
-   // failures degrade evaluator to reduced-context mode but never block.
-   PostMarketSnapshot();
+   // Paint the dashboard BEFORE the snapshot call. PostMarketSnapshot's
+   // first invocation blocks on indicator-history loads (SMA200 on D1
+   // needs 200+ daily bars; broker downloads on a fresh chart) plus the
+   // /market/snapshot HTTP POST. Painting first means the operator sees
+   // the dashboard within ~50ms of attach instead of waiting for that
+   // whole chain to settle.
    if(ShowDashboard) {
       DashboardStats s;
       BuildStats(s);
       g_dashboard.Update(s);
    }
-   if(ShowLogPanel && g_log_panel.IsVisible()) {
-      FetchRecentEvents();   // self-throttled to LogPanelPollSec
-      g_log_panel.Update(g_log_events, ArraySize(g_log_events));
-   }
+   // Push multi-timeframe OHLC snapshot for the signal-quality evaluator
+   // (src/ai_evaluator.py). Throttled to ~once per minute. Best-effort —
+   // failures degrade evaluator to reduced-context mode but never block.
+   PostMarketSnapshot();
 }
 
 // Throttled POST of current bid/ask to /market/price so the AI prompt has
@@ -598,6 +548,24 @@ void PostMarketSnapshot() {
    }
 }
 
+// Poll the ai_evaluator_enabled server setting and cache it for the
+// dashboard. 5s throttle, mirrors FetchLatestEvaluation. On HTTP failure
+// we leave the cache as-is so a transient outage doesn't flap the
+// "EVALUATION OFF" banner.
+void FetchEvaluatorEnabled() {
+   datetime now = TimeCurrent();
+   if(now - g_last_eval_setting_fetch < 5) return;
+   g_last_eval_setting_fetch = now;
+   string body;
+   if(!HttpGet(ApiBaseUrl + "/settings/ai_evaluator_enabled", body)) return;
+   // 404 = key not present in DB → fall back to the server default (ON).
+   if(StringFind(body, "\"value\"") < 0) {
+      g_eval_setting_enabled = true;
+      return;
+   }
+   g_eval_setting_enabled = (StringFind(body, "\"value\":\"1\"") >= 0);
+}
+
 // Fetch the latest OPEN action's signal-quality evaluation from the API
 // and refresh the g_eval_* cache used by BuildStats / the dashboard.
 // Throttled to once per 5s — the score doesn't change between OPEN
@@ -669,69 +637,6 @@ void FetchLatestEvaluation() {
    }
    g_eval_evaluated_at = evalTs;
    g_eval_age_sec = (evalTs > 0) ? (int)(now - evalTs) : 0;
-}
-
-// Pull the recent action stream from the API and refresh g_log_events for
-// the LogPanel widget. Throttled to LogPanelPollSec — the panel itself
-// hash-gates repaints, so polling at 3s costs at most one HTTP round-trip
-// every 3s and zero canvas work when nothing changed.
-//
-// Parser is a one-shot scan over the JSON body. The endpoint shape is
-// {"events":[{"id":N,"type":"...","status":"...","summary":"...",
-//             "ea_response":"...","created_at":"YYYY-MM-DDTHH:MM:SS..."}, ...]}.
-// We rely on JsonField for per-field extraction inside each {...} block.
-void FetchRecentEvents() {
-   datetime now = TimeCurrent();
-   if(now - g_last_log_fetch < LogPanelPollSec) return;
-   g_last_log_fetch = now;
-
-   string body;
-   if(!HttpGet(ApiBaseUrl + "/events/recent?limit=20", body)) {
-      // Network/API down — leave cache as-is; LogPanel keeps showing
-      // the last good rows so the operator isn't blinded mid-incident.
-      return;
-   }
-
-   // Reset the cache and walk each event object in the array.
-   ArrayResize(g_log_events, 0);
-   int pos = 0;
-   while(true) {
-      // Each event starts with `{"id":` — same anchor pattern used by
-      // ProcessActionsJson for /actions polling.
-      int objStart = StringFind(body, "{\"id\":", pos);
-      if(objStart < 0) break;
-      int depth = 0;
-      int objEnd = -1;
-      for(int i = objStart; i < StringLen(body); i++) {
-         ushort c = StringGetCharacter(body, i);
-         if(c == '{') depth++;
-         else if(c == '}') { depth--; if(depth == 0) { objEnd = i; break; } }
-      }
-      if(objEnd < 0) break;
-      string obj = StringSubstr(body, objStart, objEnd - objStart + 1);
-      pos = objEnd + 1;
-
-      LogEvent e;
-      e.id          = StringToInteger(JsonField(obj, "id"));
-      e.type        = JsonField(obj, "type");
-      e.status      = JsonField(obj, "status");
-      e.summary     = JsonField(obj, "summary");
-      e.ea_response = JsonField(obj, "ea_response");
-
-      // created_at is ISO-8601 like "2026-05-09T13:42:18.123+00:00".
-      // Extract HH:MM (chars 11..16) for the panel's leftmost column.
-      string created = JsonField(obj, "created_at");
-      if(StringLen(created) >= 16)
-         e.ts = StringSubstr(created, 11, 5);
-      else
-         e.ts = "--:--";
-
-      int n = ArraySize(g_log_events);
-      ArrayResize(g_log_events, n + 1);
-      g_log_events[n] = e;
-
-      if(n + 1 >= LP_MAX_EVENTS) break;
-   }
 }
 
 // Day rollover in broker-server time: when the date changes, reset the
@@ -811,6 +716,7 @@ void BuildStats(DashboardStats &s) {
    s.equity         = AccountInfoDouble(ACCOUNT_EQUITY);
    s.free_margin    = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    s.account_ccy    = AccountInfoString(ACCOUNT_CURRENCY);
+   s.channel_name   = ChannelName;
 
    // Static broker-check result. Populated once at OnInit; copied each
    // tick so the dashboard sees it after the first paint. Cheap struct
@@ -821,6 +727,8 @@ void BuildStats(DashboardStats &s) {
    // on a 5s throttle by FetchLatestEvaluation). Populated by the Python
    // orchestrator after each OPEN action (see src/ai_evaluator.py).
    FetchLatestEvaluation();
+   FetchEvaluatorEnabled();
+   s.eval_disabled     = !g_eval_setting_enabled;
    s.eval_available    = g_eval_available;
    s.eval_action_id    = g_eval_action_id;
    s.eval_score        = g_eval_score;
@@ -1138,17 +1046,32 @@ string AuthHeader() {
 }
 
 bool HttpGet(string url, string &outBody) {
+   // Use the 7-arg WebRequest overload (method,url,headers,timeout,data,
+   // result,result_headers) so AuthHeader() lands in the request-headers
+   // slot. The previous 9-arg form put AuthHeader() in the COOKIE slot,
+   // which meant the Authorization header was never actually sent — any
+   // endpoint that enforces auth would 401 every GET.
    char post[]; char result[]; string headers;
-   int res = WebRequest("GET", url, AuthHeader(), "", 5000, post, 0, result, headers);
+   int res = WebRequest("GET", url, AuthHeader(), 5000, post, result, headers);
    if(res == -1) {
       Print("WebRequest GET error ", GetLastError(), " url=", url);
       return false;
    }
    // Force UTF-8 decoding — the API serializes Arabic summaries as raw
    // UTF-8 (FastAPI/Starlette uses ensure_ascii=False). Without CP_UTF8
-   // here the bytes get reinterpreted in the system codepage and the
-   // LogPanel shows mojibake.
+   // here the bytes get reinterpreted in the system codepage and any
+   // downstream renderer shows mojibake.
    outBody = CharArrayToString(result, 0, -1, CP_UTF8);
+   if(res >= 400) {
+      // Without this guard, FetchLatestEvaluation interprets a 404's
+      // {"detail":"latest OPEN has no evaluation"} body as "evaluation
+      // present" (the substring matches) and pins g_eval_available=true
+      // with zero-filled fields. Mirror HttpPostJsonWithStatus and
+      // return false on any 4xx/5xx so callers can branch on transport
+      // success vs server failure.
+      Print("HTTP ", res, " on ", url, " body=", outBody);
+      return false;
+   }
    return true;
 }
 
@@ -1355,7 +1278,7 @@ double LotsFromRisk(double slPrice, double entryPrice) {
    if(maxSlLossPct > 0 && slPrice > 0 && entryPrice > 0) {
       double tickSize = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_SIZE);
       double tickValue = SymbolInfoDouble(Symbol_Override, SYMBOL_TRADE_TICK_VALUE);
-      double freeMargin = AccountInfoDouble(ACCOUNT_FREEMARGIN);
+      double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
       double capDenom = (freeMargin > 0) ? freeMargin : balance;
       if(tickSize > 0 && tickValue > 0) {
          double slDistance = MathAbs(entryPrice - slPrice);
@@ -1527,6 +1450,38 @@ void DoOpen(long id, string payload) {
    string pendingField = JsonField(payload, "pending");
    bool isPending = (pendingField == "true");
    if(isPending) {
+      // ---- Dedupe guard ----
+      // release_stale_claims (bot-side, 300s threshold) flips claimed
+      // actions back to 'sent' so a crashed EA can recover. If our
+      // PREVIOUS placement succeeded at the broker but the API never
+      // got the watching POST (transport HTTP 1003 on the loopback —
+      // antivirus/WinHTTP friction), the action sits in 'claimed', gets
+      // recycled, and the EA on its next /actions?status=sent poll
+      // re-fires DoOpen → second pending order, both fill → duplicate
+      // position. Concrete incident: 2026-05-27 SMC action #25, tickets
+      // 8802699870 + 8802736674 filled in the same second.
+      //
+      // Before placing, check g_pending_orders[] for an entry with this
+      // action_id. If one exists, the broker order is already there —
+      // re-POST the watching status (idempotent on the server) and
+      // bail. Belt-and-suspenders with the retry-queue fix below.
+      for(int existIdx = 0; existIdx < ArraySize(g_pending_orders); existIdx++) {
+         if(g_pending_orders[existIdx].action_id != id) continue;
+         ulong existTicket = g_pending_orders[existIdx].order_ticket;
+         Print("CT OPEN id=", id, " DEDUPE — pending order already placed ticket=",
+               existTicket, " — re-POSTing watching status, not placing again");
+         string dupBody = StringFormat(
+            "{\"status\":\"watching\",\"error\":\"pending_order_ticket=%I64u\"}",
+            existTicket);
+         string dupResp; int dupStatus;
+         string dupUrl = ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result";
+         bool dupOk = HttpPostJsonWithStatus(dupUrl, dupBody, dupResp, dupStatus);
+         if(!dupOk && IsRetryableStatus(dupStatus)) {
+            EnqueueRetry(dupUrl, dupBody);
+         }
+         return;
+      }
+
       // pending_type chooses Limit vs Stop semantics. Default "limit"
       // when the field is missing (back-compat with profiles emitted
       // before pending_type was plumbed). "stop" support is FALLBACK
@@ -1545,6 +1500,11 @@ void DoOpen(long id, string payload) {
       // Midpoint formula collapses to entry_low when low == high (the
       // single-price-entry convention used by SMC-style channels).
       double entryLimit = (entryLow + entryHigh) / 2.0;
+      // Pending-limit fills don't have a real fill price yet; the broker
+      // will fill at entryLimit (the limit price). Use that as the anchor
+      // for ladder synthesis so the stored PendingOrder.tps[] is ready
+      // for RegisterPlan when ManagePendingOrders detects the fill.
+      tpCount = MaybeSynthesizeLadder(isBuyP, entryLimit, sl, tps);
       double lotsP = LotsFromRisk(sl, entryLimit);
       if(lotsP <= 0.0) {
          PostResult(id, "rejected", 0, "sl_too_wide_for_max_risk_pct");
@@ -1594,13 +1554,28 @@ void DoOpen(long id, string payload) {
 
       // POST status='watching' — the action sits in this state until
       // ManagePendingOrders detects a fill (-> executed) or the server
-      // CANCEL_PENDING handler flips us to rejected.
+      // CANCEL_PENDING handler flips us to rejected. If this transport-
+      // fails (HTTP 1003 etc.) the action would otherwise sit in
+      // 'claimed' until release_stale_claims (300s) flipped it back to
+      // 'sent', causing the EA to re-fire DoOpen and place a second
+      // pending order. Route through the retry queue so it resends
+      // until the API records the watching status.
       string watchBody = StringFormat(
          "{\"status\":\"watching\",\"error\":\"pending_order_ticket=%I64u\"}",
          order_ticket);
-      string watchResp;
-      HttpPostJson(ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result",
-                   watchBody, watchResp);
+      string watchResp; int watchStatus;
+      string watchUrl = ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result";
+      bool watchOk = HttpPostJsonWithStatus(watchUrl, watchBody, watchResp, watchStatus);
+      if(!watchOk) {
+         if(IsRetryableStatus(watchStatus)) {
+            Print("Watching POST failed for pending action ", id,
+                  " status=", watchStatus, " — queued for retry");
+            EnqueueRetry(watchUrl, watchBody);
+         } else {
+            Print("Watching POST terminal ", watchStatus,
+                  " for pending action ", id, " — not retrying");
+         }
+      }
       Print("CT OPEN id=", id, " pending limit placed ticket=", order_ticket,
             " entry=", entryLimit, " sl=", sl, " tp=", tpFinalP);
       return;
@@ -1667,6 +1642,15 @@ void DoOpen(long id, string payload) {
       return;
    }
 
+   // Progressive ladder: when a 1-TP signal has enough room (≥ MinR),
+   // turn it into a 3-stage plan keyed off the actual fill price. Must
+   // happen here — after entry is finalised (chase / useMarket may have
+   // overridden the zone midpoint) and before RegisterPlan / tpFinal —
+   // so the stages are anchored to the price we actually opened at.
+   // SortTpsByDistance above already arranged the single TP in tps[0];
+   // the helper expands the array in place when it fires.
+   tpCount = MaybeSynthesizeLadder(isBuy, entry, sl, tps);
+
    // Single full-lots position. Final TP set on MT5 so the last leg auto-closes
    // without EA involvement; intermediate TPs are handled by ManagePlans().
    double lotsTotal = LotsFromRisk(sl, entry);
@@ -1727,9 +1711,18 @@ void DoOpen(long id, string payload) {
       // Don't drop it — that strands the trade with no DB row and the
       // sweeper will eventually re-queue the action, which would cause
       // a second OPEN attempt. Persist for retry instead.
-      Print("Result POST failed for action ", id, " status=", status,
-            " — queued for retry");
-      EnqueueRetry(resultUrl, body);
+      // BUT only enqueue for transport / 5xx errors. 4xx is the server's
+      // final answer (e.g. 409 claim_expired when the action is already
+      // terminal) — retrying just spams /actions/{id}/result every tick
+      // until the 24h purge kicks in.
+      if(IsRetryableStatus(status)) {
+         Print("Result POST failed for action ", id, " status=", status,
+               " — queued for retry");
+         EnqueueRetry(resultUrl, body);
+      } else {
+         Print("Result POST terminal ", status, " for action ", id,
+               " — not retrying (server has final answer)");
+      }
    }
    g_stats_executed++;
    g_last_action_status = "executed";
@@ -1790,6 +1783,21 @@ int FindPlanIdx(long ticket) {
    for(int i = 0; i < ArraySize(g_plans); i++)
       if(g_plans[i].ticket == ticket) return i;
    return -1;
+}
+
+// Update slOrig in the live plan + persisted GlobalVariable so that
+// SignalAnchorSl's "don't loosen past original SL" guard reflects the
+// new SL after a channel-driven MOVE_SL / MOVE_SL_BE / TIGHTEN_SL.
+// Called instead of RemovePlanByTicket for SL-only modifications so the
+// 3-TP staged management (partial closes, trail) stays armed.
+void UpdatePlanSl(long ticket, double newSl) {
+   int idx = FindPlanIdx(ticket);
+   if(idx < 0) return;
+   g_plans[idx].slOrig = newSl;
+   GlobalVariableSet(PlanKey(ticket, "slOrig"), newSl);
+   Print("CT plan slOrig updated ticket=", ticket, " newSl=", newSl,
+         " stage=", g_plans[idx].stage,
+         " tpCount=", g_plans[idx].tpCount);
 }
 
 // ---- EA-restart persistence (GlobalVariables are doubles; bool/int encoded) ----
@@ -1927,9 +1935,14 @@ void PostPositionUpdate(long ticket, double newVolume, double newSl,
       // stale in the DB. The AI prompt's SYSTEM STATE block would then
       // show partials_taken=0 / at_BE=false when those should be true,
       // causing duplicate management actions on reminder messages.
-      Print("PostPositionUpdate failed ticket=", ticket,
-            " status=", status, " — queued for retry");
-      EnqueueRetry(url, body);
+      if(IsRetryableStatus(status)) {
+         Print("PostPositionUpdate failed ticket=", ticket,
+               " status=", status, " — queued for retry");
+         EnqueueRetry(url, body);
+      } else {
+         Print("PostPositionUpdate terminal ", status, " ticket=", ticket,
+               " — not retrying");
+      }
    }
 }
 
@@ -2246,10 +2259,10 @@ void ManagePlans() {
          bool hit = p.isBuy ? (exitPrice >= tp1) : (exitPrice <= tp1);
          if(!hit) continue;
 
-         // Stage-0 close fraction (revised 2026-05-09):
-         //   2-TP: 70% (front-loaded; remainder trails for the rest)
-         //   3-TP: 50% (still room for stage-1 to close another 30%)
-         double frac = (p.tpCount == 2) ? 0.70 : 0.50;
+         // Stage-0 close fraction (revised 2026-05-22):
+         //   2-TP: 50% (leaves 50% to trail on ATR-based step)
+         //   3-TP: 25% (leaves 75% for stage-1 + trail to capture continuation)
+         double frac = (p.tpCount == 2) ? 0.50 : 0.25;
          double closeLots = MathFloor((p.origLots * frac) / lotStep) * lotStep;
          closeLots = NormalizeDouble(closeLots, 2);
          double volBefore = PositionGetDouble(POSITION_VOLUME);
@@ -2375,9 +2388,9 @@ void ManagePlans() {
          bool hit = p.isBuy ? (exitPrice >= tp2) : (exitPrice <= tp2);
          if(!hit) continue;
 
-         // Close 30% of ORIGINAL lots (revised 2026-05-09). Combined with
-         // the 50% closed at stage 0, ~20% remains to ride the trail.
-         double closeLots = MathFloor((p.origLots * 0.30) / lotStep) * lotStep;
+         // Close 25% of ORIGINAL lots (revised 2026-05-22). Combined with
+         // the 25% closed at stage 0, 50% remains to ride the trail.
+         double closeLots = MathFloor((p.origLots * 0.25) / lotStep) * lotStep;
          closeLots = NormalizeDouble(closeLots, 2);
          double volBefore = PositionGetDouble(POSITION_VOLUME);
          double remaining = volBefore - closeLots;
@@ -2507,6 +2520,17 @@ void TrailStage2Sls() {
    double minDist = (double)stopsLevel * pointSize;
    int digits = (int)SymbolInfoInteger(Symbol_Override, SYMBOL_DIGITS);
 
+   // ATR(14) on M15 drives the trail gap (revised 2026-05-22). Handle is
+   // created lazily and cached. If ATR isn't ready yet (just-after-attach
+   // race), fall back to the legacy signal-range/N formula for this tick.
+   static int hTrailAtr = INVALID_HANDLE;
+   if(hTrailAtr == INVALID_HANDLE) hTrailAtr = iATR(Symbol_Override, PERIOD_M15, 14);
+   double atrBuf[];
+   double atrM15 = 0.0;
+   if(hTrailAtr != INVALID_HANDLE && CopyBuffer(hTrailAtr, 0, 0, 1, atrBuf) > 0) {
+      atrM15 = atrBuf[0];
+   }
+
    for(int i = 0; i < ArraySize(g_plans); i++) {
       TradePlan p = g_plans[i];
       // Activation gates (revised 2026-05-09):
@@ -2517,13 +2541,17 @@ void TrailStage2Sls() {
       if(!active) continue;
       if(!PositionSelectByTicket(p.ticket)) continue;
 
-      // finalTp: last TP in the signal — TP2 for 2-TP, TP3 for 3-TP.
-      // Gap divisor: 2 for 2-TP (wider gap matches the wider remainder
-      // sitting on a single-stage trail), 3 for 3-TP (tighter, since the
-      // remainder is smaller and SL already sits at TP1).
-      double finalTp = p.tps[p.tpCount - 1];
-      double divisor = (p.tpCount == 2) ? 2.0 : 3.0;
-      double trailGap = MathAbs(finalTp - p.entry) / divisor;
+      // Trail gap = 1.5 * ATR(M15, 14). Adapts to current volatility instead
+      // of static signal range. Falls back to the legacy signal-range/N
+      // formula when ATR isn't ready (just-after-attach race).
+      double trailGap;
+      if(atrM15 > 0.0) {
+         trailGap = 1.5 * atrM15;
+      } else {
+         double finalTp = p.tps[p.tpCount - 1];
+         double divisor = (p.tpCount == 2) ? 2.0 : 3.0;
+         trailGap = MathAbs(finalTp - p.entry) / divisor;
+      }
       if(trailGap <= 0.0) continue;
 
       double bid = SymbolInfoDouble(Symbol_Override, SYMBOL_BID);
@@ -2735,25 +2763,12 @@ void DoMoveSlBe(long id, string payload) {
    }
    beSl = clampedBeSl;
    if(trade.PositionModify(ticket, beSl, curTp)) {
-      // For 3-TP plans still in stage 0: keep the plan armed and advance
-      // stage 0 -> 1 instead of dropping it. This lets ManagePlans fire
-      // the natural stage-1 partial close at TP2 even after the AI's
-      // half-and-BE override, producing a clean three-stage exit
-      // (50% at AI signal, ~33% at TP2, ~17% at TP3 or BE). For 2-TP
-      // plans, plans already past stage 0, and 1-TP signals (which
-      // never had a plan registered), fall back to the original
-      // operator-override behaviour and drop the plan entirely.
-      int planIdx = FindPlanIdx(ticket);
-      if(planIdx >= 0
-         && g_plans[planIdx].tpCount == 3
-         && g_plans[planIdx].stage == 0) {
-         g_plans[planIdx].stage = 1;
-         GlobalVariableSet(PlanKey(ticket, "stage"), 1.0);
-         Print("CT plan stage advanced 0->1 on AI MOVE_SL_BE ticket=", ticket,
-               " — TP2 partial close still armed");
-      } else {
-         RemovePlanByTicket(ticket);
-      }
+      // Keep the staged plan alive with updated slOrig so that ManagePlans
+      // continues firing TP-based partial closes and trailing SL moves.
+      // SignalAnchorSl uses slOrig as a "don't loosen past original" guard;
+      // updating it to beSl ensures auto-moves after TP hits don't loosen
+      // the SL below the BE price the operator just set.
+      UpdatePlanSl(ticket, beSl);
       PostPositionUpdate(ticket, 0, beSl);
       PostResult(id, "executed", ticket, "");
    } else {
@@ -2781,7 +2796,7 @@ void DoMoveSl(long id, string payload) {
       return;
    }
    if(trade.PositionModify(ticket, finalSl, curTp)) {
-      RemovePlanByTicket(ticket);
+      UpdatePlanSl(ticket, finalSl);
       PostPositionUpdate(ticket, 0, finalSl);
       string note = wasClamped
          ? StringFormat("clamped %.2f->%.2f (broker minDist)", requestedSl, finalSl)
@@ -2880,7 +2895,7 @@ void DoClosePartial(long id, string payload) {
    if(ticket <= 0) { PostResult(id, "rejected", 0, "no_open_position"); return; }
    if(!PositionSelectByTicket(ticket)) { PostResult(id, "failed", ticket, "no_position"); return; }
    double frac = StringToDouble(JsonField(payload, "fraction"));
-   if(frac <= 0.0 || frac >= 1.0) frac = 0.5;  // sanity fallback
+   if(frac <= 0.0 || frac >= 1.0) frac = 0.25;  // sanity fallback
    // Use plan.origLots when available so partials chain correctly across
    // multiple manual closes; fall back to current volume otherwise.
    int planIdx = FindPlanIdx(ticket);
@@ -3051,7 +3066,7 @@ void DoTightenSl(long id, string payload) {
    }
    newSl = clampedT;
    if(trade.PositionModify(ticket, newSl, curTp)) {
-      RemovePlanByTicket(ticket);
+      UpdatePlanSl(ticket, newSl);
       PostPositionUpdate(ticket, 0, newSl);
       string clampNote = wasClampedT
          ? StringFormat(" clamped %.2f->%.2f", requestedT, newSl)
@@ -3243,6 +3258,49 @@ void ParseTps(string tpsStr, double &out[]) {
    }
 }
 
+// Progressive ladder synthesis for 1-TP signals. When enabled, replaces
+// a single far-away TP with three: [entry +1.5R, entry +3R, original TP]
+// so ManagePlans's existing 3-stage flow can take partials and trail SL
+// instead of riding bare between SL and TP. R = SL distance from entry.
+//
+// Returns the new count (1 if unchanged, 3 if synthesised). Caller MUST
+// pass `tps` as a dynamic array since this resizes it to 3.
+//
+// Skipped (returns 1, leaves tps unchanged) when:
+//   - feature disabled (ProgressiveLadderEnabled=false)
+//   - tps already has ≥2 entries (channel already laddered)
+//   - entry→TP distance < ProgressiveLadderMinR × SL distance (too tight
+//     to fit a 1.5R/3R ladder before the final TP)
+//   - SL on the wrong side of entry (malformed signal)
+int MaybeSynthesizeLadder(bool isBuy, double entry, double sl, double &tps[]) {
+   int count = ArraySize(tps);
+   if(!ProgressiveLadderEnabled) return count;
+   if(count != 1) return count;
+   double slDist = MathAbs(entry - sl);
+   if(slDist <= 0.0) return count;
+   double origTp = tps[0];
+   double tpDist = isBuy ? (origTp - entry) : (entry - origTp);
+   if(tpDist <= 0.0) return count;   // TP behind entry → malformed
+   double tpR = tpDist / slDist;
+   if(tpR < ProgressiveLadderMinR) {
+      Print("CT ladder: skip — entry→TP R=", DoubleToString(tpR, 2),
+            " < threshold ", DoubleToString(ProgressiveLadderMinR, 2));
+      return count;
+   }
+   double stage1 = isBuy ? (entry + 1.5 * slDist) : (entry - 1.5 * slDist);
+   double stage2 = isBuy ? (entry + 3.0 * slDist) : (entry - 3.0 * slDist);
+   ArrayResize(tps, 3);
+   tps[0] = stage1;
+   tps[1] = stage2;
+   tps[2] = origTp;
+   Print("CT ladder: synthesised stages from 1 TP (R=",
+         DoubleToString(tpR, 2), "): ",
+         DoubleToString(stage1, 2), " / ",
+         DoubleToString(stage2, 2), " / ",
+         DoubleToString(origTp, 2));
+   return 3;
+}
+
 // Sort TPs so tps[0] is nearest the trade's intended entry direction and
 // tps[n-1] is farthest. Works by signal side, not raw numeric order:
 //   BUY  → all TPs above entry  → ascending (nearest first).
@@ -3287,7 +3345,53 @@ long _NextRetrySeq() {
    return ((long)TimeCurrent() << 16) | (long)(g_retry_counter & 0xFFFF);
 }
 
+// HTTP status classifier used by every POST-result / POST-update call
+// site. "Retryable" = transport / 5xx / WebRequest-internal codes —
+// none of which represent the server having a final answer.
+//
+// Treated as retryable:
+//   < 0           : WebRequest returned -1 (URL not whitelisted, DNS, etc)
+//   1xx, 3xx      : informational/redirect (unusual but not terminal)
+//   5xx           : server-side error, likely transient
+//   >= 1000       : MT5 / WinHTTP internal error codes (1001 ERROR_GEN_FAILURE,
+//                   1003 ERROR_INVALID_DATA) seen ~1800 times in 2026-05-25/26
+//                   SMC logs against localhost — transport hiccups, not
+//                   server rejections.
+//
+// Treated as terminal (NOT retryable):
+//   4xx           : client error — 409 claim_expired, 422 validation,
+//                   404 missing action, etc. The server has the final
+//                   say; retrying just spams /actions/{id}/result every
+//                   tick until the 24h queue purge.
+bool IsRetryableStatus(int status) {
+   if(status < 0) return true;
+   if(status >= 400 && status < 500) return false;
+   return true;
+}
+
 void EnqueueRetry(string url, string body) {
+   // Dedupe: if a retry file with the same URL already exists, skip the
+   // new enqueue. Without this, repeated POST failures (or an EA restart
+   // re-firing the same /actions/{id}/result) created multiple identical
+   // entries that all drained against the same terminal /result endpoint.
+   string existing;
+   long h = FileFindFirst("ct_retry_*.txt", existing);
+   if(h != INVALID_HANDLE) {
+      do {
+         int fh = FileOpen(existing, FILE_READ | FILE_TXT | FILE_ANSI);
+         if(fh == INVALID_HANDLE) continue;
+         string oldUrl = FileReadString(fh);
+         FileClose(fh);
+         if(oldUrl == url) {
+            FileFindClose(h);
+            Print("CT retry: skip duplicate enqueue for ", url,
+                  " (already pending in ", existing, ")");
+            return;
+         }
+      } while(FileFindNext(h, existing));
+      FileFindClose(h);
+   }
+
    long seq = _NextRetrySeq();
    string fname = _RetryFilename(seq);
    int fh = FileOpen(fname, FILE_WRITE | FILE_TXT | FILE_ANSI);
@@ -3344,7 +3448,20 @@ void DrainRetryQueue() {
          Print("CT retry: SUCCESS after ", attempts + 1,
                " attempt(s), purging ", fname);
          _PurgeRetry(fname);
+      } else if(status >= 400 && status < 500) {
+         // 4xx is a permanent client error: server has a final answer
+         // (e.g. 409 claim_expired when the action is already terminal).
+         // Retrying just spams the API + logs — purge the entry so the
+         // queue can move on. Without this guard the 2026-05-25 SMC
+         // session re-POSTed /actions/4/result every ~47s for 6+ hours
+         // after the position closed, generating hundreds of stale
+         // claim_expired log lines on both sides.
+         Print("CT retry: terminal ", status, " after ", attempts + 1,
+               " attempt(s) — purging ", fname,
+               " (server has a final answer; not retrying)");
+         _PurgeRetry(fname);
       } else {
+         // 5xx or transport-level failure: transient, keep retrying.
          // Bump attempts and keep the entry for the next tick.
          int fhw = FileOpen(fname, FILE_WRITE | FILE_TXT | FILE_ANSI);
          if(fhw != INVALID_HANDLE) {
@@ -3586,9 +3703,14 @@ void DoOpenInstant(long id, string payload) {
    string resultUrl = ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result";
    bool postOk = HttpPostJsonWithStatus(resultUrl, body, resp, status);
    if(!postOk) {
-      Print("Result POST failed for instant action ", id, " status=", status,
-            " — queued for retry");
-      EnqueueRetry(resultUrl, body);
+      if(IsRetryableStatus(status)) {
+         Print("Result POST failed for instant action ", id, " status=", status,
+               " — queued for retry");
+         EnqueueRetry(resultUrl, body);
+      } else {
+         Print("Result POST terminal ", status, " for instant action ", id,
+               " — not retrying");
+      }
    }
    Print("CT OPEN_INSTANT id=", id, " ticket=", ticket, " side=", side,
          " lots=", lots, " entry=", fillPrice, " emergency_sl=", slPrice,
@@ -3641,8 +3763,14 @@ void DoAttachSignal(long id, string payload) {
    }
 
    SortTpsByDistance(tps, tpCount, isBuy);
-   double tpFinal = tps[tpCount - 1];
    double entry = g_naked[idx].entry;
+
+   // Progressive ladder: same synthesis as DoOpen. Anchored on the
+   // naked position's actual fill (g_naked[idx].entry) so the 1.5R/3R
+   // stages reflect what we genuinely opened at, not the channel's
+   // intended zone midpoint.
+   tpCount = MaybeSynthesizeLadder(isBuy, entry, sl, tps);
+   double tpFinal = tps[tpCount - 1];
 
    // Broker minDist clamp on the signal SL. The signal can specify an SL
    // very close to (or past) the chased fill on fast markets; pass through
@@ -3918,9 +4046,16 @@ void ManagePendingOrders() {
                           + "/result";
          bool ok = HttpPostJsonWithStatus(resultUrl, body, resp, httpStatus);
          if(!ok) {
-            Print("Result POST failed for filled pending action ",
-                  p.action_id, " status=", httpStatus, " — queued for retry");
-            EnqueueRetry(resultUrl, body);
+            if(IsRetryableStatus(httpStatus)) {
+               Print("Result POST failed for filled pending action ",
+                     p.action_id, " status=", httpStatus,
+                     " — queued for retry");
+               EnqueueRetry(resultUrl, body);
+            } else {
+               Print("Result POST terminal ", httpStatus,
+                     " for filled pending action ", p.action_id,
+                     " — not retrying");
+            }
          }
 
          // Multi-TP: register the staged plan so ManagePlans takes over.

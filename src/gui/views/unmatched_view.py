@@ -48,19 +48,36 @@ _REFRESH_MS = 15_000
 
 
 class UnmatchedView(QWidget):
-    """Pane listing queued unmatched messages with promote/dismiss controls."""
+    """Pane listing queued unmatched messages with promote/dismiss controls.
+
+    Post-v2 fix: ``get_profile_name`` callback ties promote-to-trigger
+    writes to the ProfileView's picker so the operator promotes INTO
+    the right profile. Falls back to ``stack.name`` when no callback
+    is given (v1 / single-channel).
+    """
 
     trigger_promoted = Signal()
 
-    def __init__(self, stack: Stack, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, stack: Stack, parent: QWidget | None = None,
+        get_profile_name=None,
+    ) -> None:
         super().__init__(parent)
         self._stack = stack
+        self._get_profile_name = get_profile_name
         self._build_ui()
         self._refresh()
         self._timer = QTimer(self)
         self._timer.setInterval(_REFRESH_MS)
         self._timer.timeout.connect(self._refresh)
         self._timer.start()
+
+    def _active_profile_name(self) -> str:
+        if self._get_profile_name is not None:
+            picked = self._get_profile_name()
+            if picked:
+                return picked
+        return self._stack.name
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -75,7 +92,8 @@ class UnmatchedView(QWidget):
         self._count_label.setStyleSheet("color: #787b86;")
         header.addWidget(self._count_label)
         header.addStretch()
-        self._refresh_btn = QPushButton("Refresh")
+        from src.gui._button_helpers import make_refresh_button
+        self._refresh_btn = make_refresh_button("Reload unmatched")
         self._refresh_btn.clicked.connect(self._refresh)
         header.addWidget(self._refresh_btn)
         layout.addLayout(header)
@@ -143,11 +161,18 @@ class UnmatchedView(QWidget):
             self._table.setItem(row_idx, 0, when_item)
             self._table.setItem(row_idx, 1, type_item)
             self._table.setItem(row_idx, 2, msg_item)
-            promote_btn = QPushButton("Promote")
+            from src.gui._button_helpers import make_icon_button
+            promote_btn = make_icon_button(
+                "ACCEPT", "Promote this message into an action",
+                variant="success", fallback_text="Promote",
+            )
             promote_btn.clicked.connect(
                 lambda _checked=False, rid=r.id: self._on_promote(rid)
             )
-            dismiss_btn = QPushButton("Dismiss")
+            dismiss_btn = make_icon_button(
+                "CLOSE", "Dismiss — never replay this message",
+                variant="danger", fallback_text="Dismiss",
+            )
             dismiss_btn.clicked.connect(
                 lambda _checked=False, rid=r.id: self._on_dismiss(rid)
             )
@@ -221,8 +246,9 @@ class UnmatchedView(QWidget):
         ).fetchone()
 
     def _append_to_profile(self, trigger: dict) -> None:
-        data = profile_io.load_profile(self._stack.name)
+        active = self._active_profile_name()
+        data = profile_io.load_profile(active)
         triggers = list(profile_io.load_triggers(data))
         triggers.append(trigger)
         data["triggers"] = triggers
-        profile_io.save_profile(self._stack.name, data)
+        profile_io.save_profile(active, data)

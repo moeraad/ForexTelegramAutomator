@@ -25,12 +25,6 @@ def test_journal_view_constructs(qtbot, tmp_stack):
     qtbot.addWidget(view)
 
 
-def test_rejected_view_constructs(qtbot, tmp_stack):
-    from src.gui.views.rejected_view import RejectedView
-    view = RejectedView(tmp_stack)
-    qtbot.addWidget(view)
-
-
 def test_cost_view_constructs(qtbot, tmp_stack):
     from src.gui.views.cost_view import CostView
     view = CostView(tmp_stack)

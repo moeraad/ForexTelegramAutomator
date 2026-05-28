@@ -77,7 +77,7 @@ class CrashWatcher(QThread):
 
     def _log_path(self, service: str) -> Path:
         tag = _service_to_log_tag(service)
-        return self._stack.project_path / "logs" / f"nssm-{tag}.err.log"
+        return self._stack.db_path.parent / "logs" / f"nssm-{tag}.err.log"
 
     def _read_state(self, service: str) -> _ServiceState:
         running = nssm_client.service_running(service)

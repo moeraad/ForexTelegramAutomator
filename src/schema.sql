@@ -2,15 +2,53 @@ PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS messages (
-  id              INTEGER PRIMARY KEY,
-  tg_message_id   INTEGER NOT NULL,
-  chat_id         INTEGER NOT NULL,
-  sender          TEXT,
-  text            TEXT NOT NULL,
-  received_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
-  is_backfill     INTEGER DEFAULT 0,
+  id                INTEGER PRIMARY KEY,
+  tg_message_id     INTEGER NOT NULL,
+  chat_id           INTEGER NOT NULL,
+  sender            TEXT,
+  text              TEXT NOT NULL,
+  received_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+  is_backfill       INTEGER DEFAULT 0,
+  -- v2 multi-channel: the Channel.id (from stacks_config.json v2) the
+  -- message arrived on. NULL on pre-v2 rows; backfilled by the API at
+  -- startup. See docs/plans/2026-05-23-multi-channel-routing.md.
+  -- NOTE: source_channel_id only exists on fresh installs. Pre-v2 DBs
+  -- get the column added by _migrate_messages_add_source_channel; that
+  -- migration also creates the matching index. Keep the index out of
+  -- schema.sql so init_schema's executescript can't reference a column
+  -- that doesn't yet exist on an existing DB.
+  source_channel_id TEXT,
+  -- Telegram reply_to_msg_id when this message is a reply to a prior
+  -- one in the same chat. Captured by the listener so state_summary
+  -- can prepend the parent's text to the SYSTEM STATE block — lets
+  -- the AI resolve pronouns like "cancel that order". NULL on normal
+  -- (non-reply) messages.
+  reply_to_tg_message_id INTEGER,
+  -- Pipeline decision tracking. Written by orchestrator at each stage's
+  -- terminal exit point so the Pipeline GUI view can show "this message
+  -- was decided at stage X with outcome Y" without scanning the JSONL.
+  --   decided_stage     — one of: prefilter_drop, trigger_text,
+  --                       trigger_embedding, triage_ignored,
+  --                       interpreted_signal, interpreted_ignore.
+  --                       NULL while in flight. Drives the radial chart.
+  --   decided_outcome   — short tag for the row's badge (e.g.
+  --                       symbol-mismatch, ad-shape, keep, ignore,
+  --                       comma-joined action types for matched).
+  --   decided_at        — ISO-8601 UTC at decision time.
+  --   pipeline_meta_json— optional blob: triage latency, embedding score,
+  --                       matched trigger id, raw responses. Rendered in
+  --                       the detail panel; not used for filtering.
+  decided_stage     TEXT,
+  decided_outcome   TEXT,
+  decided_at        TIMESTAMP,
+  pipeline_meta_json TEXT,
   UNIQUE(chat_id, tg_message_id)
 );
+-- idx_messages_decided_stage is created inside
+-- _migrate_messages_add_pipeline_columns. Pre-v2 DBs run that migration
+-- AFTER executescript(schema.sql), so the columns referenced by the
+-- index don't exist here yet — keep the CREATE INDEX co-located with
+-- the ALTERs.
 
 CREATE TABLE IF NOT EXISTS actions (
   id              INTEGER PRIMARY KEY,
@@ -30,7 +68,11 @@ CREATE TABLE IF NOT EXISTS actions (
   claimed_at      DATETIME,
   executed_at     DATETIME,
   ea_response     TEXT,
-  fingerprint     TEXT
+  fingerprint     TEXT,
+  -- v2 multi-channel: Channel.id and Route.id that produced this action.
+  -- NULL on pre-v2 rows. See docs/plans/2026-05-23-multi-channel-routing.md.
+  source_channel_id TEXT,
+  route_id          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);
 -- Partial composite: most rows have fingerprint=NULL (management types,
@@ -39,6 +81,10 @@ CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);
 CREATE INDEX IF NOT EXISTS idx_actions_fingerprint
   ON actions(fingerprint, created_at)
   WHERE fingerprint IS NOT NULL;
+-- NOTE: idx_actions_source_channel and idx_actions_route belong to the
+-- _migrate_actions_add_source_channel_route migration only. Pre-v2 DBs
+-- don't have the columns yet when this script runs; the migration adds
+-- column + index together. Don't duplicate the CREATE INDEX here.
 
 CREATE TABLE IF NOT EXISTS positions (
   id                   INTEGER PRIMARY KEY,
@@ -101,6 +147,24 @@ CREATE TABLE IF NOT EXISTS settings (
   key             TEXT PRIMARY KEY,
   value           TEXT NOT NULL
 );
+
+-- v2 per-bot notification queue. The notification dispatcher in the API
+-- writes events here; each Bot process polls undelivered rows for the
+-- bot_id(s) it serves and DMs the operator.
+-- See docs/plans/2026-05-23-multi-channel-routing.md Step 7.
+CREATE TABLE IF NOT EXISTS bot_outbox (
+  id                INTEGER PRIMARY KEY,
+  bot_id            TEXT NOT NULL,
+  event_type        TEXT NOT NULL,
+  event_payload     TEXT NOT NULL,
+  source_channel_id TEXT,
+  route_id          TEXT,
+  action_id         INTEGER REFERENCES actions(id),
+  created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+  delivered_at      DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_bot_outbox_undelivered
+  ON bot_outbox(bot_id, created_at) WHERE delivered_at IS NULL;
 
 INSERT OR IGNORE INTO settings(key, value) VALUES
   ('kill_switch', 'off'),

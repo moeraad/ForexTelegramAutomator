@@ -86,11 +86,23 @@ class _PromptSection(QWidget):
 
 
 class PromptsView(QWidget):
+    """Prompts inspector — post-v2 Prompts/Playground gap fix: gains a
+    profile picker so the interpreter + triage prompts can be rendered
+    against ANY profile, not just the current stack's default.
+
+    Same picker pattern as ``ProfileView`` (Phase 2) — when the
+    operator picks a different profile, the prompts re-render via
+    ``prompt_inspector.render(..., profile_name=...)``.
+    """
+
     def __init__(self, stack: Stack) -> None:
         super().__init__()
         self._stack = stack
         self._mode = "demo"
         self._selected = PROMPT_IDS[0]
+        # Profile follows the active stack (set by the header channel
+        # switcher). The previous in-view profile picker was removed —
+        # operators switch profiles via the header instead.
         self._build_ui()
         self._refresh()
 
@@ -115,10 +127,14 @@ class PromptsView(QWidget):
         hint.setTextFormat(Qt.TextFormat.RichText)
         title_row.addWidget(hint)
         title_row.addStretch()
-        self._refresh_btn = QPushButton("Refresh")
+        from src.gui._button_helpers import make_refresh_button
+        self._refresh_btn = make_refresh_button("Reload prompts")
         self._refresh_btn.clicked.connect(self._refresh)
         title_row.addWidget(self._refresh_btn)
         layout.addLayout(title_row)
+
+        # Profile picker removed — prompts render against the active
+        # stack's profile (driven by the header channel switcher).
 
         # Prompt selector (radio buttons left-to-right) — wrapped in a
         # dark "segmented bar" so the white-bordered indicators have
@@ -220,21 +236,21 @@ class PromptsView(QWidget):
     def _apply_sel_bar_style(self) -> None:
         from src.gui.theme import current_palette
         p = current_palette()
-        # In dark mode the bar uses our nav_bg for contrast. In light
-        # mode it uses the strong-border surface so it reads as elevated.
-        bar_bg = p.nav_bg if p.name == "dark" else p.surface_alt
-        # Only style the bar itself by objectName so the QSS does NOT
-        # cascade into the qfluentwidgets SegmentedWidget living inside
-        # (a bare `QWidget {bg:...}` rule made its tabs invisible —
-        # dark-on-dark — and that's what blanked the prompt selector).
-        # Labels and the fallback QRadioButtons pick up colors from the
-        # global stylesheet.
+        # Match the ribbon / top-panel visual vocabulary: surface bg
+        # (raised from page), border_strong 1 px rim, 6 px radius. The
+        # previous nav_bg fill was nearly black in dark mode and looked
+        # out of place against the rest of the design language.
+        # Direct-child labels + radio buttons stay transparent so they
+        # inherit the bar's surface rather than painting over it.
         self._sel_bar.setStyleSheet(
-            "QWidget#PromptsSelBar { background-color: %s; border-radius: 6px; }"
+            "QWidget#PromptsSelBar { "
+            f" background-color: {p.surface};"
+            f" border: 1px solid {p.border_strong};"
+            "  border-radius: 6px;"
+            "}"
             "QWidget#PromptsSelBar > QLabel, "
             "QWidget#PromptsSelBar > QRadioButton "
             "{ background: transparent; }"
-            % bar_bg
         )
 
     def _on_prompt_changed(self, checked: bool) -> None:
@@ -263,7 +279,10 @@ class PromptsView(QWidget):
         self._refresh()
 
     def _refresh(self) -> None:
-        rp = render(self._selected, self._stack.db_path, mode=self._mode)
+        rp = render(
+            self._selected, self._stack.db_path, mode=self._mode,
+            profile_name=self._stack.name,
+        )
         self._title_lbl.setText(rp.title)
         self._notes_lbl.setText(rp.notes)
         self._system_section.set_text(rp.system_prompt or "(empty)")

@@ -198,6 +198,7 @@ class DiagnosticsExportDialog(QDialog):
             QDialogButtonBox.StandardButton.Cancel
         )
         self._export_btn = QPushButton("Export…")
+        self._export_btn.setProperty("variant", "primary")
         self._export_btn.setDefault(True)
         self._export_btn.clicked.connect(self._on_export)
         self._buttons.addButton(

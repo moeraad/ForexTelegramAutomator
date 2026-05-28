@@ -98,6 +98,14 @@ class _IntroPage(QWizardPage):
         self._lookback.setValue(30)
         self._lookback.setSuffix(" days")
 
+        # Phase-4 channel-picker: shown only when the destination has
+        # N>1 channels routing to it. For single-channel stacks (the
+        # typical case) we hide the row entirely so the operator UX
+        # doesn't gain a useless dropdown.
+        from PySide6.QtWidgets import QComboBox
+        self._channel = QComboBox()
+        self._channel.setMinimumWidth(360)
+
         cost = QLabel(
             "<span style='color:#787b86;'>Mid-tier classifier runs on every "
             "prefilter survivor. 500 msgs ≈ $0.05 - $0.20 depending on "
@@ -107,8 +115,10 @@ class _IntroPage(QWizardPage):
         cost.setWordWrap(True)
 
         form = QFormLayout()
+        form.addRow("Channel", self._channel)
         form.addRow("Max messages to fetch", self._max)
         form.addRow("Look back", self._lookback)
+        self._form = form
 
         self._settings_note = QLabel("")
         self._settings_note.setTextFormat(Qt.TextFormat.RichText)
@@ -122,9 +132,49 @@ class _IntroPage(QWizardPage):
         layout.addWidget(cost)
         layout.addStretch()
 
+    def _populate_channels(self, stack) -> None:
+        """Discover channels routing to this stack's destination from v2 config.
+
+        Behaviour:
+          - 0 channels found → hide the picker; fall back to legacy
+            ``tg_watched_chat_id`` (the worker handles this path).
+          - 1 channel → hide the picker (no choice to make), still
+            populate so ``params()`` carries the chat_id.
+          - N>1 → SHOW the picker so the operator chooses.
+        """
+        self._channel.clear()
+        candidates: list[tuple[str, int]] = []  # (label, chat_id)
+        try:
+            from src import config_v2
+            cfg = config_v2.load_v2(config_v2.config_path())
+            if cfg is not None:
+                dest = next(
+                    (d for d in cfg.destinations if d.name == stack.name),
+                    None,
+                )
+                if dest is not None:
+                    for r in cfg.routes:
+                        if r.destination_id != dest.id or not r.enabled:
+                            continue
+                        ch = cfg.channel(r.channel_id)
+                        if ch is None:
+                            continue
+                        candidates.append((
+                            f"{ch.name}  (chat_id={ch.chat_id})",
+                            int(ch.chat_id),
+                        ))
+        except Exception:
+            pass
+        for label, cid in candidates:
+            self._channel.addItem(label, cid)
+        # Hide-when-single rule.
+        show = len(candidates) > 1
+        self._form.setRowVisible(self._channel, show)
+
     def initializePage(self) -> None:
         from src import db_settings
         wiz: "ProfileGeneratorWizard" = self.wizard()  # type: ignore[assignment]
+        self._populate_channels(wiz.stack)
         prov = (db_settings.get_str(wiz.stack.db_path, "ai_provider", "anthropic")
                 or "anthropic").lower()
         classifier_model = (
@@ -136,9 +186,19 @@ class _IntroPage(QWizardPage):
         )
 
     def params(self) -> WizardParameters:
+        chat_id = 0
+        channel_name = ""
+        if self._channel.count() > 0:
+            data = self._channel.currentData()
+            if data:
+                chat_id = int(data)
+            text = self._channel.currentText().split("(")[0].strip()
+            channel_name = text
         return WizardParameters(
             max_messages=self._max.value(),
             lookback_days=self._lookback.value(),
+            chat_id=chat_id,
+            channel_name=channel_name,
         )
 
     def validatePage(self) -> bool:
@@ -159,6 +219,7 @@ class _ProgressPage(QWizardPage):
         self._counts = QLabel("")
         self._counts.setStyleSheet("color: #787b86;")
         self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setProperty("variant", "danger")
         self._cancel_btn.clicked.connect(self._on_cancel)
         self._done = False
         self._worker: ProfileWizardWorker | None = None
@@ -404,7 +465,8 @@ class _SavePage(QWizardPage):
 
         form = QFormLayout()
         form.addRow("Description", self._description)
-        self._refresh_btn = QPushButton("Refresh preview")
+        from src.gui._button_helpers import make_refresh_button
+        self._refresh_btn = make_refresh_button("Refresh preview")
         self._refresh_btn.clicked.connect(self._refresh_preview)
 
         layout = QVBoxLayout(self)

@@ -45,6 +45,62 @@ def _pick_stack(stacks: list[Stack], state: AppState, force_picker: bool) -> Sta
     return None
 
 
+def _ensure_empty_v2_config() -> None:
+    """Write an empty v2 ``stacks_config.json`` if no config exists.
+
+    Without this, V2 Config view sees "no v2 config found" and Add
+    dialogs reject because ``self._cfg is None``. Seeding an empty
+    ``ConfigV2()`` (zero entities) lets the operator start adding
+    entities immediately — the file is real on disk and the first
+    save_v2 just appends to it.
+    """
+    from src import config_v2
+    cfg_path = config_v2.config_path()
+    if cfg_path.exists():
+        return  # don't clobber an existing config (v1 or v2)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    config_v2.save_v2(config_v2.ConfigV2(), cfg_path)
+    _log.info("seeded empty v2 config at %s", cfg_path)
+
+
+def _empty_stack_for_v2_setup() -> Stack:
+    """Construct a placeholder Stack so MainWindow can render before any
+    v2 entity has been configured.
+
+    The operator clicked "Skip — use V2 Config" on the first-launch
+    wizard. We need MainWindow to open so they can use V2 Config's
+    Add Account / Profile / Destination / Bot / Channel dialogs. The
+    placeholder Stack points at a throwaway in-APPDATA DB path that
+    won't get queried (every per-destination view shows empty data
+    until the operator wires a real Destination + restarts the GUI).
+    """
+    import os
+    from pathlib import Path as _Path
+    appdata = _Path(os.environ.get("APPDATA", str(_Path.home())))
+    placeholder_dir = appdata / "CopyTrades" / "_v2_setup_placeholder"
+    placeholder_dir.mkdir(parents=True, exist_ok=True)
+    placeholder_db = placeholder_dir / "copytrades.db"
+    # Touch the DB so the schema init in Live/Journal/etc views doesn't
+    # raise on file-not-found. Empty schema = empty tables = clean
+    # "no data yet" rendering.
+    if not placeholder_db.exists():
+        from src.db import connect, init_schema
+        conn = connect(str(placeholder_db))
+        init_schema(conn)
+        conn.close()
+    return Stack(
+        name="(setup — use V2 Config)",
+        profile_path=placeholder_dir / "profile.json",
+        project_path=_Path.cwd(),
+        db_path=placeholder_db,
+        api_host="127.0.0.1", api_port=8765,
+        service_names=("(placeholder)",),
+        primary_api_service="(placeholder)",
+        primary_bot_service="(placeholder)",
+        primary_listener_service="(placeholder)",
+    )
+
+
 def _ensure_db_ready(stack: Stack) -> None:
     target = stack.db_path
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -140,22 +196,6 @@ def _migrate_legacy_session_file(stack: Stack, db_path: Path) -> None:
         _log.warning("session migration failed (%s): %s", legacy_session, e)
 
 
-def _maybe_run_setup_wizard(stack: Stack, parent_widget) -> None:
-    from src import db_settings
-    from src.gui.windows.telegram_wizard import TelegramWizard
-    missing = db_settings.missing_critical_keys(stack.db_path)
-    if not missing:
-        return
-    QMessageBox.information(
-        parent_widget,
-        "Setup required",
-        "This stack is missing critical settings:\n  - "
-        + "\n  - ".join(missing)
-        + "\n\nThe setup wizard will open now.",
-    )
-    TelegramWizard(stack, parent_widget).exec()
-
-
 def _acquire_single_instance_lock(app: QApplication) -> QLockFile | None:
     """Acquire a single-instance lock for the GUI process.
 
@@ -180,12 +220,21 @@ def _acquire_single_instance_lock(app: QApplication) -> QLockFile | None:
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / "copytrades-gui.lock"
     lock = QLockFile(str(lock_path))
-    lock.setStaleLockTime(30_000)  # 30s — matches Qt's default; explicit
+    # 3s stale-lock window: long enough to dodge the rare GC race when
+    # a fast quit→relaunch happens, short enough that a real crash
+    # doesn't lock the operator out for half a minute. The original 30s
+    # default surfaced as "another instance is open" complaints whenever
+    # someone clicked Quit-from-tray and immediately relaunched.
+    lock.setStaleLockTime(3_000)
     if lock.tryLock(0):
         # Pin to the QApplication so the QLockFile (and thus the OS-
         # level lock) outlives this function. Without the attachment
         # Python would GC it, releasing the lock immediately.
         app._copytrades_single_instance_lock = lock  # type: ignore[attr-defined]
+        # Belt-and-braces: explicitly unlock when the QApplication is
+        # tearing down, so a fast relaunch sees the slot free instead
+        # of waiting for the GC to release the QLockFile destructor.
+        app.aboutToQuit.connect(lambda l=lock: l.unlock())
         return lock
     return None
 
@@ -207,9 +256,10 @@ def run(argv: list[str] | None = None) -> int:
             None,  # type: ignore[arg-type]  # app-modal, no parent yet
             "CopyTrades already running",
             "Another instance of CopyTrades is already open. Look for "
-            "its window in the taskbar (or system tray) — this launch "
-            "will exit so you don't have two competing GUIs against "
-            "the same database.",
+            "its window in the taskbar or system tray (right-click the "
+            "tray icon → Quit CopyTrades to close it cleanly).\n\n"
+            "If you JUST quit and got this anyway, wait ~3 seconds and "
+            "try again — the lock takes a moment to release.",
         )
         return 0
 
@@ -226,12 +276,15 @@ def run(argv: list[str] | None = None) -> int:
     state = load_state()
 
     if not stacks:
-        from src.gui.windows.telegram_wizard import TelegramWizard
-        wiz = TelegramWizard(None)
-        if not wiz.exec() or wiz.stack is None:
-            _log.info("user cancelled first-launch wizard; exiting")
-            return 0
-        active = wiz.stack
+        # First launch: do NOT auto-open the wizard. Just write an empty
+        # v2 config + open the main window pointed at a placeholder
+        # destination so the operator can use V2 Config to add Account
+        # / Profile / Destination / Bot / Channel one at a time. The
+        # wizard remains reachable via Settings → "Setup wizard" for
+        # operators who want the guided flow.
+        _ensure_empty_v2_config()
+        active = _empty_stack_for_v2_setup()
+        _log.info("first launch: opened V2 Config with empty config")
     else:
         force_picker = os.environ.get("GUI_FORCE_PICKER", "") == "1"
         active = _pick_stack(stacks, state, force_picker)
@@ -245,6 +298,4 @@ def run(argv: list[str] | None = None) -> int:
 
     win = MainWindow(active)
     win.show()
-    _maybe_run_setup_wizard(active, win)
-
     return app.exec()

@@ -20,6 +20,10 @@ class TradeRow:
     close_reason: str
     opened_at: str
     closed_at: str
+    # v2 per-channel attribution (Step 11 tag, propagated through actions
+    # → positions via the action_id JOIN in closed_trades). Empty string
+    # for legacy positions opened before tag rollout.
+    source_channel_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -66,21 +70,35 @@ def closed_trades(db_path: Path, days: int | None = 30) -> list[TradeRow]:
     if not db_path.exists():
         return []
     since = _since_iso(days)
+    # LEFT JOIN actions → surface source_channel_id so the Journal view's
+    # Channel column attributes trades per channel (Step-11 tagging).
+    # LEFT JOIN preserves rows when an old position predates the column.
     sql = (
-        "SELECT mt5_ticket, action_id, side, volume, original_volume, "
-        "entry_price, exit_price, realized_pnl, close_reason, opened_at, closed_at "
-        "FROM positions WHERE status='closed'"
+        "SELECT p.mt5_ticket, p.action_id, p.side, p.volume, p.original_volume, "
+        "p.entry_price, p.exit_price, p.realized_pnl, p.close_reason, "
+        "p.opened_at, p.closed_at, "
+        "a.source_channel_id "
+        "FROM positions p "
+        "LEFT JOIN actions a ON a.id = p.action_id "
+        "WHERE p.status='closed'"
     )
     params: tuple = ()
     if since is not None:
-        sql += " AND closed_at >= ?"
+        sql += " AND p.closed_at >= ?"
         params = (since,)
-    sql += " ORDER BY closed_at DESC"
+    sql += " ORDER BY p.closed_at DESC"
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(sql, params).fetchall()
-    return [
-        TradeRow(
+    out: list[TradeRow] = []
+    for r in rows:
+        # source_channel_id may be missing on pre-v2 DBs without the column;
+        # tolerate the KeyError by treating it as blank.
+        try:
+            sci = r["source_channel_id"]
+        except (IndexError, KeyError):
+            sci = None
+        out.append(TradeRow(
             ticket=int(r["mt5_ticket"]),
             action_id=int(r["action_id"]) if r["action_id"] is not None else None,
             side=str(r["side"]).upper(),
@@ -92,9 +110,9 @@ def closed_trades(db_path: Path, days: int | None = 30) -> list[TradeRow]:
             close_reason=str(r["close_reason"] or ""),
             opened_at=str(r["opened_at"] or ""),
             closed_at=str(r["closed_at"] or ""),
-        )
-        for r in rows
-    ]
+            source_channel_id=str(sci) if sci is not None else "",
+        ))
+    return out
 
 
 def summary(trades: list[TradeRow]) -> JournalSummary:

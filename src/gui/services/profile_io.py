@@ -69,7 +69,57 @@ def load_profile(stack_name: str) -> OrderedDict:
         data = json.loads(p.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return OrderedDict()
+    _migrate_reply_intent_keys(data)
     return OrderedDict(data)
+
+
+def _migrate_reply_intent_keys(data: dict) -> None:
+    """Convert legacy ``reply_intent_activate`` / ``reply_intent_ignore``
+    phrase lists into ``triggers`` rows with action_types
+    TRIGGER_PARENT / IGNORE_PARENT.
+
+    Earlier versions stored reply intents as separate top-level lists.
+    The 2026-05-26 refactor folded them into the unified triggers
+    array so they reuse the full editing experience (samples, context
+    tokens, Test pane). Migration is one-shot, idempotent, and
+    in-place: legacy keys are removed; rebuilt rows are appended to
+    ``triggers``. Re-save persists the migrated shape.
+    """
+    legacy_activate = data.pop("reply_intent_activate", None)
+    legacy_ignore = data.pop("reply_intent_ignore", None)
+    if not (isinstance(legacy_activate, list) or isinstance(legacy_ignore, list)):
+        return
+    triggers = data.get("triggers")
+    if not isinstance(triggers, list):
+        triggers = []
+        data["triggers"] = triggers
+    existing_phrases: set[tuple[str, str]] = {
+        ((t.get("action_type") or "").upper(), (t.get("phrase") or "").strip())
+        for t in triggers
+        if isinstance(t, dict)
+    }
+    for action_type, raw in (
+        ("TRIGGER_PARENT", legacy_activate),
+        ("IGNORE_PARENT", legacy_ignore),
+    ):
+        if not isinstance(raw, list):
+            continue
+        for phrase in raw:
+            if not isinstance(phrase, str):
+                continue
+            phrase = phrase.strip()
+            if not phrase:
+                continue
+            key = (action_type, phrase)
+            if key in existing_phrases:
+                continue
+            triggers.append({
+                "phrase": phrase,
+                "action_type": action_type,
+                "samples": [phrase],
+                "context_tokens": [],
+            })
+            existing_phrases.add(key)
 
 
 def save_profile(stack_name: str, data: dict) -> Path:

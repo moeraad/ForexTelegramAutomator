@@ -22,15 +22,16 @@ from src.gui.services.log_tailer import LogTailer
 from src.gui.services.stack_registry import Stack
 
 
-_SOURCES: list[tuple[str, str, str]] = [
-    # (key, filename, "stack_logs" | "project_logs")
-    # stack_logs  -> %APPDATA%/CopyTrades/<stack>/logs/<file>
-    # project_logs -> <repo>/logs/<file>   (NSSM-captured stderr)
-    ("system", "system.log", "stack_logs"),
-    ("trades", "trades.log", "stack_logs"),
-    ("nssm-api", "nssm-api.err.log", "project_logs"),
-    ("nssm-bot", "nssm-bot.err.log", "project_logs"),
-    ("nssm-listener", "nssm-listener.err.log", "project_logs"),
+_SOURCES: list[tuple[str, str]] = [
+    # (key, filename)
+    # All resolved against %APPDATA%/CopyTrades/<stack>/logs/<file>
+    # (i.e. Path(stack.db_path).parent / "logs"), where both app loggers
+    # and NSSM stdout/stderr write. See bootstrap_services_install.py.
+    ("system", "system.log"),
+    ("trades", "trades.log"),
+    ("nssm-api", "nssm-api.err.log"),
+    ("nssm-bot", "nssm-bot.err.log"),
+    ("nssm-listener", "nssm-listener.err.log"),
 ]
 
 _LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
@@ -68,7 +69,7 @@ class LogStream(QWidget):
         self._build_ui()
         # Default first source. Falls back to 'api' for backward
         # compatibility if `_SOURCES` ever omits 'system' again.
-        _default = "system" if any(k == "system" for k, _f, _w in _SOURCES) else _SOURCES[0][0]
+        _default = "system" if any(k == "system" for k, _f in _SOURCES) else _SOURCES[0][0]
         self._switch_source(_default)
 
         self._rate_timer = QTimer(self)
@@ -103,12 +104,12 @@ class LogStream(QWidget):
         # Default-checked source key. system is the catch-all per-stack
         # log so it's the safest first impression for a new operator.
         default_key = "system" if any(
-            k == "system" for k, _f, _w in _SOURCES
+            k == "system" for k, _f in _SOURCES
         ) else _SOURCES[0][0]
         try:
             from qfluentwidgets import SegmentedWidget
             self._source_seg = SegmentedWidget(self)
-            for key, _filename, _where in _SOURCES:
+            for key, _filename in _SOURCES:
                 # See PromptsView for the lambda signature — the
                 # SegmentedWidget routes `clicked(bool)` into onClick;
                 # without accepting & discarding the bool we'd pass it
@@ -122,7 +123,7 @@ class LogStream(QWidget):
             header.addWidget(self._source_seg)
         except Exception:
             self._radio_group = QButtonGroup(self)
-            for key, _filename, _where in _SOURCES:
+            for key, _filename in _SOURCES:
                 rb = QRadioButton(key)
                 rb.setProperty("source_key", key)
                 self._radio_group.addButton(rb)
@@ -206,16 +207,13 @@ class LogStream(QWidget):
             self._tailer.stop()
             self._tailer.deleteLater()
 
-        entry = next(((f, where) for k, f, where in _SOURCES if k == key), None)
+        entry = next(((f,) for k, f in _SOURCES if k == key), None)
         if entry is None:
             return
-        filename, where = entry
+        (filename,) = entry
         self._active_source = key
         self._reset_view()
-        if where == "stack_logs":
-            path = self._stack.db_path.parent / "logs" / filename
-        else:
-            path = self._stack.project_path / "logs" / filename
+        path = self._stack.db_path.parent / "logs" / filename
         self._tailer = LogTailer(path, parent=self)
         self._tailer.line.connect(self._on_line)
         self._tailer.rotated.connect(self._on_rotated)

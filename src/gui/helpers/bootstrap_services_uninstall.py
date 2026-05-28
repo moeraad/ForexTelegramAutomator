@@ -1,16 +1,26 @@
-"""Elevated one-shot: stop + delete CT-<NAME>-Api/Bot/Listener services.
+"""Elevated one-shot: stop + delete one or more NSSM services.
 
-argv: <api_svc> <bot_svc> <listener_svc>
+argv: <svc_name> [<svc_name> ...]
+
+Idempotent: services that aren't registered are skipped silently. A
+running service is stopped first (with a 10s SCM transition wait) so
+the subsequent ``sc delete`` doesn't leave a marked-for-deletion ghost
+until next reboot.
 
 Uses sc.exe rather than nssm so the helper has no dependency on the
 bundled nssm.exe path (which moves whenever PyInstaller's layout
 changes). sc.exe is part of base Windows and always present.
 
-Sequencing matters: a `sc delete` issued against a RUNNING service
-marks the service for deletion but leaves it active until the next
-reboot, which defeats the point of an "uninstall services" button.
-We stop first, give the SCM up to ~10s to transition out of RUNNING,
-then delete.
+Two callers historically:
+
+  - The legacy "uninstall services" GUI button passed exactly three
+    args (api_svc, bot_svc, listener_svc) to remove the full per-stack
+    triple. That invocation still works — the helper accepts ANY number
+    of service names ≥1.
+
+  - Step 8 of the multi-channel plan passes the list of dangling legacy
+    ``CT-<NAME>-Listener`` services found in the registry but no longer
+    named in v2 config. The list length is N (one per migrated stack).
 """
 from __future__ import annotations
 
@@ -71,17 +81,33 @@ def _remove_one(name: str) -> tuple[bool, str]:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 3:
-        error(
-            "CopyTrades - services uninstall",
-            f"helper invoked with {len(argv)} args, need 3:\n"
-            "<api_svc> <bot_svc> <listener_svc>",
-        )
+    # Accept any number of service names ≥1. The legacy 3-arg form keeps
+    # working; new callers (Step 8 listener migration) can pass any N.
+    names = [a.strip() for a in argv if a and a.strip()]
+    if not names:
+        # Most common cause: caller passed a tuple containing only empty
+        # strings (e.g., v2 entities whose service_name field was left
+        # blank). Distinguish "operator passed nothing" from "operator
+        # passed blanks" — the latter is a config-level issue, not a
+        # helper-invocation bug.
+        if argv:
+            msg = (
+                "no usable service names to remove — every name passed was "
+                "blank. This usually means the stack's Account / Destination "
+                "/ Bot v2 entries have empty service_name fields. Open "
+                "stacks_config.json and fill them in (e.g. CT-MyApi, "
+                "CT-MyBot, CT-Listener-myacct), then retry.\n\n"
+                f"Argv received: {argv!r}"
+            )
+        else:
+            msg = (
+                "helper invoked with no service names; expected at least one."
+            )
+        error("CopyTrades - services uninstall", msg)
         return 2
 
-    api_svc, bot_svc, listener_svc = argv[:3]
     failures: list[str] = []
-    for svc in (api_svc, bot_svc, listener_svc):
+    for svc in names:
         ok, msg = _remove_one(svc)
         info(f"{svc}: {msg}")
         if not ok:

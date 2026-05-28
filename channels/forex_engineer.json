@@ -1,0 +1,14 @@
+{
+  "name": "Forex Engineer",
+  "description": "",
+  "symbol": "XAUUSD",
+  "language": "ar",
+  "shorthand_decode_example": "",
+  "header": "",
+  "vocabulary_table": "",
+  "compound_messages": "",
+  "commentary_filter": "",
+  "directional_command_flow": "",
+  "worked_examples": "",
+  "triage_keep_triggers": ""
+}

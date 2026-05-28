@@ -70,6 +70,15 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # to v1 in production if v2 produces obviously bad scores during
     # the rollout window.
     "evaluator_version": "v2",
+    # Master on/off switch for the post-OPEN AI evaluator background
+    # worker (src/ai_evaluator.py + src/evaluator/). When "0", the
+    # orchestrator skips spawning the evaluator thread entirely — no
+    # LLM call, no payload_json["evaluation"] block, no score-tied
+    # sizing. The trade still flows through the pipeline normally;
+    # the EA falls back to baseline lot sizing. Use this to halt
+    # evaluator spend or while iterating on the evaluator without
+    # affecting live trading. Default "1" (enabled).
+    "ai_evaluator_enabled": "1",
     # Per-trade SL risk cap. The EA computes the dollar loss that would
     # be taken if the signal's stop-loss hits at the baseline lot size;
     # if that loss exceeds `max_sl_loss_percent` of the account balance,

@@ -96,8 +96,12 @@ class HeaderBar(QWidget):
         # instead of repainting it. The 1px bottom border is the visual
         # seam — `border_strong` for a touch more contrast than the
         # default border so the seam is unmistakable.
+        # Transparent band — the header inherits the page bg behind it
+        # so the picker + summary + halt button sit on the same surface
+        # as the views below, no visible stripe. A thin border_strong
+        # bottom rule still separates the header from the services bar.
         self.setStyleSheet(
-            f"#HeaderBar {{ background: {pal.surface}; "
+            f"#HeaderBar {{ background: transparent; "
             f"border-bottom: 1px solid {pal.border_strong}; }}"
         )
 

@@ -99,6 +99,11 @@ class TelegramWizard(QWizard):
             pass
 
         self.stack: Stack | None = stack
+        # v2 cleanup: when set to True by _WelcomePage's Skip button,
+        # app.py opens the main window straight to V2 Config (the
+        # operator wants multi-channel topology, not single-stack
+        # wizard output).
+        self.skipped: bool = False
         self.data = _Collected(session_name=stack.name if stack else "")
         self.data.session_file = stack.db_path if stack else None
         self.service = TelegramSessionService(self)
@@ -155,12 +160,38 @@ class TelegramWizard(QWizard):
             QMessageBox.critical(self, "Save failed", f"{type(e).__name__}: {e}")
             return
         config.invalidate_cache()
+
+        # v2 cleanup: now that the wizard captured the channel chat_id +
+        # phone, fill in Channel + Route + BotBinding in stacks_config.json
+        # so the operator goes straight to v2 without an auto-migration.
+        try:
+            from src import config_v2
+            from src.gui.windows._wizard_v2_persist import (
+                finalize_wizard_channel,
+            )
+            cfg = config_v2.load_v2(config_v2.config_path())
+            if cfg is not None:
+                cfg = finalize_wizard_channel(
+                    cfg,
+                    stack_name=self.stack.name,
+                    chat_id=d.selected_chat_id,
+                    account_phone=d.phone,
+                )
+                config_v2.save_v2(cfg)
+        except Exception:
+            # Non-fatal: per-stack DB writes already succeeded, the v1→v2
+            # migrator will pick this up on next launch.
+            pass
+
         QMessageBox.information(
             self,
             "Setup complete",
             f"Saved settings for {self.stack.name}.\n\n"
             f"Channel: {d.selected_chat_title}\n\n"
-            "Open Settings to start the services.",
+            "Open Settings to start the services.\n\n"
+            "Need to add ANOTHER channel or MT5 terminal? "
+            "Use V2 Config in the main window — Account, Profile, "
+            "Destination, Bot and Channel can each be added individually.",
         )
 
     def _on_service_error(self, _kind: str, msg: str) -> None:
@@ -258,6 +289,7 @@ class _PhonePage(_BasePage):
         self._phone.setPlaceholderText("+<country><number>, e.g. +14155551234")
         self._session = QLineEdit()
         self._send_btn = QPushButton("Send code")
+        self._send_btn.setProperty("variant", "primary")
         self._send_btn.clicked.connect(self._on_send)
         self._busy = QLabel("")
         # Muted-role token tracks the active palette (REVIEW.md §3 Theming).
@@ -350,6 +382,7 @@ class _CodePage(_BasePage):
         self._password.setVisible(False)
 
         self._submit_btn = QPushButton("Sign in")
+        self._submit_btn.setProperty("variant", "success")
         self._submit_btn.clicked.connect(self._on_submit)
         self._busy = QLabel("")
         # Muted-role token tracks the active palette (REVIEW.md §3 Theming).
@@ -805,21 +838,39 @@ class _WelcomePage(_BasePage):
     def __init__(self) -> None:
         super().__init__()
         self.setTitle("Welcome to CopyTrades")
-        self.setSubTitle("Walks you through every credential the bridge needs.")
+        self.setSubTitle(
+            "Sets up one Telegram channel → one MT5 terminal. "
+            "Skip this if you need a multi-channel topology."
+        )
         body = QLabel(
+            "<p>This wizard creates the full set of v2 entities for the "
+            "common <b>one-channel, one-MT5</b> case:</p>"
+            "<ul>"
+            "<li><b>Account</b> — your Telegram session (api_id + api_hash + login).</li>"
+            "<li><b>Profile</b> — the AI vocabulary for this channel.</li>"
+            "<li><b>Destination</b> — the MT5 terminal's DB + API port.</li>"
+            "<li><b>Bot</b> — the Telegram bot that DMs you about trades.</li>"
+            "<li><b>Channel</b> + <b>Route</b> + <b>BotBinding</b> — wires them all together.</li>"
+            "</ul>"
             "<p>Have these ready before you start:</p>"
             "<ul>"
-            "<li><b>An AI provider API key</b> — Anthropic (Claude) or OpenAI.</li>"
-            "<li><b>A Telegram bot token</b> from @BotFather.</li>"
-            "<li><b>Telegram API credentials</b> (api_id + api_hash) from "
-            "<a href='https://my.telegram.org'>my.telegram.org</a>.</li>"
-            "<li><b>The phone number</b> of the Telegram account that reads "
-            "the channel.</li>"
-            "<li><b>MT5</b> with the CopyTrades EA compiled — the final page "
-            "lists the steps for that.</li>"
+            "<li>An AI provider API key (Anthropic or OpenAI)</li>"
+            "<li>A Telegram bot token from @BotFather</li>"
+            "<li>Telegram API credentials (api_id + api_hash) from "
+            "<a href='https://my.telegram.org'>my.telegram.org</a></li>"
+            "<li>The phone number of the Telegram account that reads the channel</li>"
+            "<li>MT5 with the CopyTrades EA compiled — the final page lists the steps</li>"
             "</ul>"
-            "<p style='color:#787b86;'>Each step validates before moving on. "
-            "Anything you enter can be changed later from Settings → Setup wizard.</p>"
+            "<div style='background:#1e2a3a;border-left:3px solid #2962ff;"
+            "padding:8px 12px;border-radius:4px;margin-top:10px;'>"
+            "<b>Need 2+ channels OR 2+ MT5 terminals?</b><br>"
+            "Click <b>Skip</b> below to go straight to <b>V2 Config</b>, "
+            "where you can add each entity (Account, Profile, Destination, "
+            "Bot, Channel) one at a time and wire any topology you want — "
+            "mirror routing, aggregate routing, multi-account, etc."
+            "</div>"
+            "<p style='color:#787b86;'>Anything you enter can be changed later "
+            "from Settings → Setup wizard, or from V2 Config.</p>"
         )
         body.setTextFormat(Qt.TextFormat.RichText)
         body.setWordWrap(True)
@@ -827,6 +878,29 @@ class _WelcomePage(_BasePage):
         layout = QVBoxLayout(self)
         layout.addWidget(body)
         layout.addStretch()
+
+        # Skip button — operator with a multi-channel topology bypasses
+        # the wizard entirely. Returns to V2 Config in the main window
+        # (handled by gui/app.py checking wiz.skipped before checking stack).
+        skip_row = QHBoxLayout()
+        skip_row.addStretch()
+        self._skip_btn = QPushButton("Skip — use V2 Config")
+        self._skip_btn.setToolTip(
+            "Close this wizard and open the main window. Use V2 Config to "
+            "add Account, Profile, Destination, Bot, and Channel entities "
+            "individually — required for multi-channel / multi-MT5 setups."
+        )
+        self._skip_btn.clicked.connect(self._on_skip)
+        skip_row.addWidget(self._skip_btn)
+        layout.addLayout(skip_row)
+
+    def _on_skip(self) -> None:
+        """Operator chose multi-channel path — signal the wizard to
+        close with the 'skipped' marker so app.py knows to open the
+        main window pointed at V2 Config."""
+        w = self.wiz()
+        w.skipped = True
+        w.reject()
 
 
 # --- Stack identity page -------------------------------------------------
@@ -878,31 +952,57 @@ class _StackIdentityPage(_BasePage):
         if any(ch in name for ch in r'\/:*?"<>|'):
             self.show_error("Stack name can't contain \\ / : * ? \" < > |")
             return False
-        from src.gui.services.stacks_config_io import StackEntry, load_entries, save_entries
+        # v2 cleanup: write the full v2 entity set (Account placeholder,
+        # Profile, Destination, Bot placeholder) directly to
+        # stacks_config.json instead of the v1 StackEntry path. Channel
+        # + Route + BotBinding get filled in by _persist() on Finish
+        # (after Telethon auth captures the chat_id).
         from src.gui.services.stack_registry import build_stack_for_new_entry
-        existing = load_entries()
-        if any(e.name == name for e in existing):
-            self.show_error(f"A stack named '{name}' already exists.")
-            return False
+        from src import config_v2
+        existing_v2 = (
+            config_v2.load_v2(config_v2.config_path())
+            if config_v2.is_v2(config_v2.config_path()) else None
+        )
+        if existing_v2 is not None:
+            for d in existing_v2.destinations:
+                if d.name == name:
+                    self.show_error(
+                        f"A destination named '{name}' already exists. "
+                        "Pick a different name, or close this wizard and "
+                        "edit the existing setup in V2 Config."
+                    )
+                    return False
+
         _write_blank_channel_profile(name, symbol)
         new_stack = build_stack_for_new_entry(name, name)
         new_stack.db_path.parent.mkdir(parents=True, exist_ok=True)
-        existing.append(StackEntry(
-            name=new_stack.name,
-            profile_path=str(new_stack.profile_path),
-            project_path=str(new_stack.project_path),
-            db_path="",
-            service_names=list(new_stack.service_names),
-        ))
-        save_entries(existing)
+
+        # Compose the new v2 entities. Account + Bot are placeholders
+        # (token + Telethon session populate via later wizard pages);
+        # Channel + Route + BotBinding are written in _persist() after
+        # the operator picks the channel from Telethon's dialog list.
+        from src.gui.windows._wizard_v2_persist import compose_wizard_entities
+        cfg_with_new = compose_wizard_entities(
+            existing_v2,
+            stack_name=name, symbol=symbol,
+            db_path=new_stack.db_path,
+            api_host=new_stack.api_host, api_port=new_stack.api_port,
+            profile_path=new_stack.profile_path,
+            service_names=tuple(new_stack.service_names),
+        )
+        config_v2.save_v2(cfg_with_new)
+
         w = self.wiz()
         w.stack = new_stack
         w.data.session_name = new_stack.name
         w.data.session_file = new_stack.db_path
-        from src import db, db_settings
+        from src import db
         with db.connect(str(new_stack.db_path)) as conn:
             db.init_schema(conn)
-        db_settings.set_str(new_stack.db_path, "channel_profile", name)
+        # Profile resolution is now handled by src.ai._resolve_profile_path
+        # via the v2 config (Route → Channel → Profile.path). No need to
+        # write channel_profile to settings — kept for v1 back-compat
+        # before, removed as part of v1 GUI retirement.
         return True
 
 
@@ -946,6 +1046,7 @@ class _ServicesInstallPage(_BasePage):
         self._status.setWordWrap(True)
         self._status.setStyleSheet("padding: 8px;")
         self._install_btn = QPushButton("Install + start services")
+        self._install_btn.setProperty("variant", "success")
         self._install_btn.clicked.connect(self._on_install)
         self._busy = QLabel("")
         # Muted-role token tracks the active palette (REVIEW.md §3 Theming).
@@ -1065,6 +1166,14 @@ class _DonePage(_BasePage):
             "</ol>"
             "<p style='color:#787b86;'>You can re-open this wizard anytime from "
             "Settings → Setup wizard.</p>"
+            "<div style='background:#1e2a3a;border-left:3px solid #2962ff;"
+            "padding:8px 12px;border-radius:4px;margin-top:10px;'>"
+            "<b>Want a second channel or MT5 terminal?</b><br>"
+            "Open <b>V2 Config</b> in the main window. Use Add Account, "
+            "Add Profile, Add Destination, Add Bot, Add Channel — each "
+            "is a separate dialog so you can build mirror / aggregate / "
+            "multi-account topologies without re-running this wizard."
+            "</div>"
         )
 
     def _copy_url(self) -> None:

@@ -43,6 +43,7 @@ class PickerWindow(QDialog):
         add_row = QHBoxLayout()
         add_row.addStretch()
         self._add_btn = QPushButton("+ New stack…")
+        self._add_btn.setProperty("variant", "success")
         self._add_btn.setToolTip(
             "Open the full setup wizard to create and configure a new stack."
         )

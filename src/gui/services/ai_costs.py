@@ -31,6 +31,9 @@ class CallRecord:
     cache_read_tokens: int
     cache_creation_tokens: int
     error: str | None
+    # Step 18: cost attribution tags. Both blank ("") on pre-Step-18 rows.
+    source_channel_id: str = ""
+    route_id: str = ""
 
     @property
     def is_error(self) -> bool:
@@ -134,6 +137,8 @@ def _parse_line(line: str) -> CallRecord | None:
         cache_read_tokens=int(obj.get("cache_read_tokens") or 0),
         cache_creation_tokens=int(obj.get("cache_creation_tokens") or 0),
         error=obj.get("error"),
+        source_channel_id=str(obj.get("source_channel_id") or ""),
+        route_id=str(obj.get("route_id") or ""),
     )
 
 
@@ -189,6 +194,75 @@ def summarize(
         per_day[r.ts.date().isoformat()] += cost
     s.per_day = dict(sorted(per_day.items()))
     return s
+
+
+def summarize_by_key(
+    records: list[CallRecord],
+    key_fn,
+    *,
+    input_per_m: float = DEFAULT_INPUT_PER_M,
+    output_per_m: float = DEFAULT_OUTPUT_PER_M,
+    cache_read_per_m: float = DEFAULT_CACHE_READ_PER_M,
+) -> dict[str, CostSummary]:
+    """Group records by a callable key, then ``summarize`` each group.
+
+    Step 18: backs ``summarize_by_channel`` / ``summarize_by_route`` /
+    any future per-axis breakdown without duplicating the loop.
+
+    Records whose ``key_fn(record)`` returns a falsy value (empty string,
+    None) are bucketed under the literal key ``"(unattributed)"`` so the
+    operator can see cost that's missing channel/route tags (legacy rows
+    or pre-Step-18 entries). Returning the empty dict on no records.
+    """
+    buckets: dict[str, list[CallRecord]] = {}
+    for r in records:
+        key = key_fn(r) or "(unattributed)"
+        buckets.setdefault(key, []).append(r)
+    return {
+        k: summarize(v, input_per_m, output_per_m, cache_read_per_m)
+        for k, v in buckets.items()
+    }
+
+
+def summarize_by_channel(
+    records: list[CallRecord],
+    *,
+    input_per_m: float = DEFAULT_INPUT_PER_M,
+    output_per_m: float = DEFAULT_OUTPUT_PER_M,
+    cache_read_per_m: float = DEFAULT_CACHE_READ_PER_M,
+) -> dict[str, CostSummary]:
+    """Cost breakdown per ``source_channel_id``.
+
+    Useful for "which channel costs me the most?" — particularly relevant
+    once aggregate routing (Step 12) puts multiple channels through one
+    destination, making the per-destination total ambiguous.
+    """
+    return summarize_by_key(
+        records, lambda r: r.source_channel_id,
+        input_per_m=input_per_m, output_per_m=output_per_m,
+        cache_read_per_m=cache_read_per_m,
+    )
+
+
+def summarize_by_route(
+    records: list[CallRecord],
+    *,
+    input_per_m: float = DEFAULT_INPUT_PER_M,
+    output_per_m: float = DEFAULT_OUTPUT_PER_M,
+    cache_read_per_m: float = DEFAULT_CACHE_READ_PER_M,
+) -> dict[str, CostSummary]:
+    """Cost breakdown per ``route_id``.
+
+    Useful with mirror routing (Step 11): each leg's cost separately.
+    Note that AI is called ONCE per message regardless of how many routes
+    fan out — so per-route totals are derived from the leg's
+    ``route_id`` tag at log time, not a literal re-multiplication.
+    """
+    return summarize_by_key(
+        records, lambda r: r.route_id,
+        input_per_m=input_per_m, output_per_m=output_per_m,
+        cache_read_per_m=cache_read_per_m,
+    )
 
 
 def expensive_calls(records: list[CallRecord], top: int = 10) -> list[CallRecord]:

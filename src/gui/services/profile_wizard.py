@@ -69,6 +69,14 @@ class WizardParameters:
     lookback_days: int = 30
     concurrency: int = 4
     batch_size: int = 10
+    # 0 = use legacy tg_watched_chat_id from the dest DB (single-channel
+    # stacks). Set explicitly by the intro page's channel picker when
+    # the destination has N>1 channels routing to it (v2 aggregate).
+    chat_id: int = 0
+    # Display name for the picked channel — surfaced in the worker's
+    # progress UI + saved profile preview so the operator sees WHICH
+    # channel was scraped, not just the numeric chat_id.
+    channel_name: str = ""
 
 
 @dataclass
@@ -84,6 +92,65 @@ class WizardResults:
 # --- Telethon fetch -------------------------------------------------------
 
 
+def _resolve_telethon_credentials(
+    db_path: Path,
+) -> tuple[int, str, str]:
+    """Resolve (api_id, api_hash, session_blob) for the wizard's pipeline.
+
+    Two paths, in order:
+
+      1. Legacy / wizard-installed: ``db_settings`` on this destination's
+         DB (the Setup wizard wrote them there).
+      2. v2 Add Account sidecar files: walks the v2 config to find the
+         account whose channels route to this destination, then reads
+         ``%APPDATA%/CopyTrades/accounts/<acc>.creds.json`` +
+         ``.session.txt``. This is the path for accounts created via
+         the v2 Add Account dialog where the dest DB is still empty.
+
+    Raises ``RuntimeError`` with an operator-friendly hint when neither
+    path resolves a complete triple.
+    """
+    api_id = db_settings.get_int(db_path, "tg_api_id", 0)
+    api_hash = db_settings.get_str(db_path, "tg_api_hash", "")
+    session_blob = db_settings.get_str(db_path, "tg_session_blob", "")
+    if api_id and api_hash and session_blob:
+        return api_id, api_hash, session_blob
+    # Fall back to v2 sidecar via the same resolver Add Channel uses.
+    try:
+        from src import config_v2
+        from src.gui.services.account_credentials import (
+            load_account_credentials,
+        )
+        cfg = config_v2.load_v2(config_v2.config_path())
+        if cfg is not None:
+            target = db_path.resolve()
+            dest = next(
+                (d for d in cfg.destinations
+                 if d.db_path and Path(d.db_path).resolve() == target),
+                None,
+            )
+            if dest is not None:
+                for ch in cfg.channels:
+                    if any(
+                        r.destination_id == dest.id and r.channel_id == ch.id
+                        for r in cfg.routes
+                    ):
+                        acct = cfg.account(ch.account_id)
+                        if acct is None:
+                            continue
+                        creds = load_account_credentials(cfg, acct)
+                        if creds is not None:
+                            return (
+                                creds.api_id, creds.api_hash, creds.session_blob,
+                            )
+    except Exception:
+        pass
+    raise RuntimeError(
+        "Telegram credentials missing — finish Add Account for this stack "
+        "(or run the Setup wizard) before generating from channel history."
+    )
+
+
 async def _fetch_history(
     db_path: Path,
     chat_id: int,
@@ -96,13 +163,7 @@ async def _fetch_history(
     from telethon import TelegramClient
     from telethon.sessions import StringSession
 
-    api_id = db_settings.get_int(db_path, "tg_api_id", 0)
-    api_hash = db_settings.get_str(db_path, "tg_api_hash", "")
-    session_blob = db_settings.get_str(db_path, "tg_session_blob", "")
-    if not api_id or not api_hash or not session_blob:
-        raise RuntimeError(
-            "Telegram credentials missing in DB — run the Setup wizard first."
-        )
+    api_id, api_hash, session_blob = _resolve_telethon_credentials(db_path)
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     client = TelegramClient(StringSession(session_blob), api_id, api_hash)
     out: list[_Message] = []
@@ -184,11 +245,20 @@ class ProfileWizardWorker(QThread):
             self.failed.emit(f"{type(e).__name__}: {e}")
 
     def _do_pipeline(self) -> WizardResults:
-        chat_id = db_settings.get_int(self._stack.db_path, "tg_watched_chat_id", 0)
+        # Phase-4 channel-picker: the intro page's WizardParameters can
+        # supply a specific chat_id (v2 multi-channel destinations).
+        # Falls back to the legacy single-channel ``tg_watched_chat_id``
+        # for pre-v2 / single-channel-per-dest setups.
+        chat_id = self._params.chat_id
+        if not chat_id:
+            chat_id = db_settings.get_int(
+                self._stack.db_path, "tg_watched_chat_id", 0,
+            )
         if not chat_id:
             raise RuntimeError(
-                "No watched channel configured (tg_watched_chat_id is empty). "
-                "Open the Setup wizard, pick a channel, then retry."
+                "No channel selected. The destination has no channels "
+                "routing to it AND tg_watched_chat_id is empty. Use V2 "
+                "Config → Channels to add one, then retry."
             )
         self.stage_changed.emit("fetch")
         msgs = asyncio.run(

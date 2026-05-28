@@ -91,7 +91,9 @@ def _summarize_replayed(actions: list) -> str:
 
 
 class _ReplayModel(QAbstractTableModel):
-    HEADERS = ("When", "Msg", "Text", "Original", "Replayed", "Drift")
+    HEADERS = (
+        "When", "Msg", "Channel", "Text", "Original", "Replayed", "Drift",
+    )
 
     def __init__(self) -> None:
         super().__init__()
@@ -135,21 +137,26 @@ class _ReplayModel(QAbstractTableModel):
             if col == 1:
                 return str(r.msg.id)
             if col == 2:
+                from src.gui.models.actions_model import _channel_display_name
+                if not r.msg.source_channel_id:
+                    return "—"
+                return _channel_display_name(r.msg.source_channel_id)
+            if col == 3:
                 t = r.msg.text.replace("\n", " ").strip()
                 return (t[:80] + "…") if len(t) > 80 else t
-            if col == 3:
-                return _summarize_original(r.original)
             if col == 4:
+                return _summarize_original(r.original)
+            if col == 5:
                 if r.error:
                     return f"(error: {r.error[:40]})"
                 if r.triage_decision == "ignore":
                     return "(triage=ignore)"
                 return _summarize_replayed(r.replayed)
-            if col == 5:
+            if col == 6:
                 return r.drift
-        if role == Qt.ItemDataRole.ForegroundRole and col == 5:
+        if role == Qt.ItemDataRole.ForegroundRole and col == 6:
             return _DRIFT_COLOR.get(r.drift, QColor("#787b86"))
-        if role == Qt.ItemDataRole.ToolTipRole and col == 2:
+        if role == Qt.ItemDataRole.ToolTipRole and col == 3:
             return r.msg.text
         return None
 
@@ -251,6 +258,39 @@ class ReplayView(QWidget):
         top.addStretch()
         layout.addLayout(top)
 
+        # Ribbon directly under the title — full-width, same visual
+        # language as Settings / Risk / Profile / etc. Built before the
+        # controls row so the references can be wired up before any
+        # logic that touches them. Two groups: "Run" (Start/Cancel/Clear)
+        # and "Fixture" (save selected row to the management replay set).
+        from src.gui.panels.ribbon_bar import RibbonAction, RibbonBar, RibbonGroup
+        ribbon = RibbonBar([
+            RibbonGroup("Run", [
+                RibbonAction("PLAY", "Start", "Start replay",
+                             variant="success", callback=self._on_run),
+                RibbonAction("BROOM", "Cancel", "Cancel in-flight replay",
+                             variant="danger", callback=self._on_cancel),
+                RibbonAction("DELETE", "Clear", "Clear replay results",
+                             callback=self._reset),
+            ]),
+            RibbonGroup("Fixture", [
+                RibbonAction("PIN", "Save",
+                             "Append the selected replay row to "
+                             "fixtures/management_messages.jsonl. "
+                             "Captures message + current DB state + "
+                             "the action types the AI returned.",
+                             variant="primary",
+                             callback=self._on_save_fixture),
+            ]),
+        ])
+        layout.addWidget(ribbon)
+        # Recover button refs so existing enable/disable logic keeps
+        # working. ribbon.buttons() returns them in declaration order.
+        btns = ribbon.buttons()
+        self._run_btn, self._cancel_btn, self._clear_btn, self._save_fixture_btn = btns
+        self._cancel_btn.setEnabled(False)
+        self._save_fixture_btn.setEnabled(False)
+
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Range:"))
         self._range_combo = QComboBox()
@@ -278,32 +318,6 @@ class ReplayView(QWidget):
         self._estimate_lbl.setStyleSheet("color: #787b86; padding-left: 12px;")
         controls.addWidget(self._estimate_lbl)
         controls.addStretch()
-
-        self._run_btn = QPushButton("Start")
-        self._run_btn.clicked.connect(self._on_run)
-        controls.addWidget(self._run_btn)
-        self._cancel_btn = QPushButton("Cancel")
-        self._cancel_btn.setEnabled(False)
-        self._cancel_btn.clicked.connect(self._on_cancel)
-        controls.addWidget(self._cancel_btn)
-        self._clear_btn = QPushButton("Clear")
-        self._clear_btn.clicked.connect(self._reset)
-        controls.addWidget(self._clear_btn)
-        # Save-as-fixture (REVIEW.md §4.6) — appends the selected row's
-        # (message, state, expected_action_types) to
-        # fixtures/management_messages.jsonl so the next prompt-drift
-        # safety-net replay (tests/test_management_replay.py) covers
-        # this case. Disabled until a row is selected.
-        self._save_fixture_btn = QPushButton("Save as fixture")
-        self._save_fixture_btn.setToolTip(
-            "Append the selected replay row to "
-            "fixtures/management_messages.jsonl. Captures message + "
-            "current DB state (open position / last closed / market) + "
-            "the action types the AI returned as the expected outcome."
-        )
-        self._save_fixture_btn.setEnabled(False)
-        self._save_fixture_btn.clicked.connect(self._on_save_fixture)
-        controls.addWidget(self._save_fixture_btn)
         layout.addLayout(controls)
 
         from src.gui.panels._stat_card import StatCard
@@ -343,44 +357,6 @@ class ReplayView(QWidget):
 
     def _on_range_changed(self, _idx: int) -> None:
         self._update_estimate()
-
-    def preload_message(self, source_msg_id: int) -> None:
-        """Cross-view entry point (REVIEW.md §4.3): RejectedView's
-        "Replay" button calls this with a specific message id so the
-        operator lands in Replay with the failing message already
-        loaded and queued as the only planned run.
-
-        Loads the message text from the DB, sets it as the single
-        planned message, and updates the estimate line so the operator
-        sees "plan: 1 message" before clicking Run.
-        """
-        import sqlite3
-        try:
-            conn = sqlite3.connect(str(self._stack.db_path))
-            conn.row_factory = sqlite3.Row
-            try:
-                row = conn.execute(
-                    "SELECT id, text, received_at, sender FROM messages WHERE id=?",
-                    (source_msg_id,),
-                ).fetchone()
-            finally:
-                conn.close()
-        except sqlite3.Error:
-            return
-        if row is None:
-            return
-        self._planned_messages = [
-            HistMessage(
-                id=row["id"],
-                text=row["text"] or "",
-                received_at=row["received_at"] or "",
-                sender=row["sender"] or "",
-            )
-        ]
-        self._estimate_lbl.setText(
-            f"plan: 1 message (preloaded from Rejected · id={source_msg_id})"
-            f"  ·  est cost ~$0.01"
-        )
 
     def _update_estimate(self) -> None:
         days = self._range_combo.currentData()

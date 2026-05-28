@@ -27,6 +27,9 @@ class HistMessage:
     text: str
     received_at: str
     sender: str
+    # v2 per-channel attribution (Step 11). Empty on legacy / pre-tagging
+    # messages — view renders "—".
+    source_channel_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -70,7 +73,10 @@ def _since_iso(days: int | None) -> str | None:
 def load_messages(db_path: Path, days: int | None, limit: int = 200) -> list[HistMessage]:
     if not db_path.exists():
         return []
-    sql = "SELECT id, text, received_at, sender FROM messages WHERE 1=1"
+    sql = (
+        "SELECT id, text, received_at, sender, source_channel_id "
+        "FROM messages WHERE 1=1"
+    )
     params: tuple = ()
     since = _since_iso(days)
     if since is not None:
@@ -81,15 +87,20 @@ def load_messages(db_path: Path, days: int | None, limit: int = 200) -> list[His
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(sql, params).fetchall()
-    return [
-        HistMessage(
+    out: list[HistMessage] = []
+    for r in rows:
+        try:
+            sci = r["source_channel_id"]
+        except (IndexError, KeyError):
+            sci = None
+        out.append(HistMessage(
             id=int(r["id"]),
             text=str(r["text"] or ""),
             received_at=str(r["received_at"] or ""),
             sender=str(r["sender"] or ""),
-        )
-        for r in rows
-    ]
+            source_channel_id=str(sci) if sci is not None else "",
+        ))
+    return out
 
 
 def load_original_actions(db_path: Path, msg_id: int) -> list[OriginalAction]:

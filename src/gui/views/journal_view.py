@@ -175,10 +175,15 @@ class JournalView(QWidget):
         self._range_combo.currentIndexChanged.connect(self._on_range_changed)
         top.addWidget(self._range_combo)
         top.addStretch()
-        self._refresh_btn = QPushButton("Refresh")
+        from src.gui._button_helpers import make_refresh_button
+        self._refresh_btn = make_refresh_button("Reload journal")
         self._refresh_btn.clicked.connect(self.refresh)
         top.addWidget(self._refresh_btn)
-        self._export_btn = QPushButton("Export CSV")
+        from src.gui._button_helpers import make_icon_button
+        self._export_btn = make_icon_button(
+            "SHARE", "Export visible rows to CSV",
+            variant="primary", fallback_text="Export CSV",
+        )
         self._export_btn.clicked.connect(self._export_csv)
         top.addWidget(self._export_btn)
         return top

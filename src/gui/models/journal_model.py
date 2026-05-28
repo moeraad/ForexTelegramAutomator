@@ -13,17 +13,20 @@ from src.gui.services.journal_data import TradeRow
 COL_CLOSED = 0
 COL_TICKET = 1
 COL_SIDE = 2
-COL_LOTS = 3
-COL_ENTRY = 4
-COL_EXIT = 5
-COL_PNL = 6
-COL_DURATION = 7
-COL_REASON = 8
+COL_CHANNEL = 3
+COL_LOTS = 4
+COL_ENTRY = 5
+COL_EXIT = 6
+COL_PNL = 7
+COL_DURATION = 8
+COL_REASON = 9
 # Renamed "Reason" -> "Close source" so the operator distinguishes EA-driven
 # closes (tp, sl, trail_sl), manual MT5 closes (mt5_not_found, reconciled),
 # and channel-driven closes (close_full, reinforce_replace) from the column
 # header without diving into the tooltip (REVIEW.md §4.2).
-HEADERS = ("Closed", "Ticket", "Side", "Lots", "Entry", "Exit", "PnL", "Duration", "Close source")
+# Channel column (Step 11 attribution) lets aggregate-routing operators
+# see which channel produced each closed trade.
+HEADERS = ("Closed", "Ticket", "Side", "Channel", "Lots", "Entry", "Exit", "PnL", "Duration", "Close source")
 
 _GREEN = QColor("#26a69a")
 _RED = QColor("#ef5350")
@@ -99,6 +102,13 @@ class JournalModel(QAbstractTableModel):
                 return str(row.ticket)
             if col == COL_SIDE:
                 return row.side
+            if col == COL_CHANNEL:
+                # Resolve v2 Channel.id → friendly name via the shared
+                # helper used by Live view's column.
+                from src.gui.models.actions_model import _channel_display_name
+                if not row.source_channel_id:
+                    return "—"
+                return _channel_display_name(row.source_channel_id)
             if col == COL_LOTS:
                 if row.volume == row.original_volume:
                     return f"{row.volume:.2f}"

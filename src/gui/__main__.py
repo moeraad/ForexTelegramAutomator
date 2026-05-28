@@ -12,6 +12,10 @@ _HELPERS = {
     "bootstrap_nssm_install": "src.gui.helpers.bootstrap_nssm_install",
     "bootstrap_services_install": "src.gui.helpers.bootstrap_services_install",
     "bootstrap_services_uninstall": "src.gui.helpers.bootstrap_services_uninstall",
+    # Phase-3 v2 cleanup: entity-driven install (replaces the per-stack
+    # 1:1:1 path). The legacy ``bootstrap_services_install`` is kept
+    # for the per-stack Settings button until Phase 4.
+    "bootstrap_v2_install": "src.gui.helpers.bootstrap_v2_install",
 }
 
 
@@ -22,7 +26,11 @@ def _run_helper(name: str, rest: list[str]) -> int:
     import importlib
     mod = importlib.import_module(_HELPERS[name])
     if hasattr(mod, "main"):
-        if name in ("bootstrap_services_install", "bootstrap_services_uninstall"):
+        if name in (
+            "bootstrap_services_install",
+            "bootstrap_services_uninstall",
+            "bootstrap_v2_install",
+        ):
             return int(mod.main(rest))
         return int(mod.main())
     sys.stderr.write(f"helper {name} has no main()\n")

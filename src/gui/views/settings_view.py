@@ -37,12 +37,9 @@ from src.gui.services.env_io import EnvLine, is_secret, parse_env, write_env
 from src.gui.services.stack_registry import Stack
 from src.gui.services.stacks_config_io import StackEntry, load_entries, save_entries, stacks_config_path
 from src.gui.services.telegram_session import session_path
-from src.gui.windows.telegram_wizard import TelegramWizard
 
 
 class SettingsView(QWidget):
-    new_stack_requested = Signal()
-
     def __init__(self, stack: Stack) -> None:
         super().__init__()
         self._stack = stack
@@ -63,26 +60,23 @@ class SettingsView(QWidget):
         self._status_label.setStyleSheet("padding-left: 16px;")
         title_row.addWidget(self._status_label)
         title_row.addStretch()
-        self._wizard_btn = QPushButton("Setup wizard")
-        self._wizard_btn.setToolTip("Re-configure the active stack (AI keys, bot token, channel, services).")
-        self._wizard_btn.clicked.connect(self._open_telegram_wizard)
-        title_row.addWidget(self._wizard_btn)
-        self._new_stack_btn = QPushButton("+ New stack")
-        self._new_stack_btn.setToolTip("Create a new stack from scratch (full setup wizard).")
-        self._new_stack_btn.clicked.connect(self._open_new_stack_wizard)
-        title_row.addWidget(self._new_stack_btn)
-        # Service start/stop/restart lives in the top-right services bar
-        # (one canonical surface). The Services tab below still owns
-        # lifecycle (Install / Uninstall) and a read-only state view.
+        # Stack creation lives in the header bar's channel switcher
+        # ("+ New stack"). The per-stack setup-wizard re-run was removed
+        # from this view — operators run it from the channel switcher or
+        # from the main-window "Add stack" entry. Settings here are
+        # field-level (Tuning / Services / Backup), not lifecycle.
         layout.addLayout(title_row)
 
         self._tabs = QTabWidget()
-        self._channels_tab = _ChannelsTab()
         self._tuning_tab = _TuningTab(stack)
-        self._services_tab = _ServicesTab(stack)
+        # v2 cleanup: legacy _ServicesTab (flat 3-tuple) replaced by the
+        # entity-grouped ServicesTabV2. The legacy _ChannelsTab (which
+        # edited v1 stacks_config.json directly) is retired — operators
+        # manage entities via V2 Config.
+        from src.gui.views._services_tab_v2 import ServicesTabV2
+        self._services_tab = ServicesTabV2(stack)
         from src.gui.views._backup_tab import BackupTab
         self._backup_tab = BackupTab()
-        self._tabs.addTab(self._channels_tab, "Stacks")
         self._tabs.addTab(self._tuning_tab, "Tuning")
         self._tabs.addTab(self._services_tab, "Services")
         self._tabs.addTab(self._backup_tab, "Backup")
@@ -100,39 +94,6 @@ class SettingsView(QWidget):
         self._tuning_tab.rebind(stack)
         self._services_tab.rebind(stack)
         self._refresh_status()
-
-    def _open_telegram_wizard(self) -> None:
-        chat_id_before = db_settings.get_int(
-            self._stack.db_path, "tg_watched_chat_id", 0
-        )
-        TelegramWizard(self._stack, self).exec()
-        chat_id_after = db_settings.get_int(
-            self._stack.db_path, "tg_watched_chat_id", 0
-        )
-        self._tuning_tab.rebind(self._stack)
-        self._refresh_status()
-        if chat_id_before and chat_id_after and chat_id_before != chat_id_after:
-            listener_svc = self._stack.service_names[2]
-            if nssm_client.service_running(listener_svc):
-                QMessageBox.warning(
-                    self,
-                    "Listener restart required",
-                    f"Watched channel changed "
-                    f"({chat_id_before} -> {chat_id_after}).\n\n"
-                    f"The listener service '{listener_svc}' is still "
-                    f"running with the previous channel id and will not "
-                    f"see signals from the new channel until restarted. "
-                    f"This is because Telethon binds the channel filter "
-                    f"at handler-attach time (REVIEW.md P1).\n\n"
-                    f"Stop and start services from this page to apply "
-                    f"the change.",
-                )
-
-    def _open_new_stack_wizard(self) -> None:
-        # Defer to MainWindow — it owns the stack list, services bar,
-        # crash watcher, and all views that need to rebind to the new
-        # stack after the wizard finishes.
-        self.new_stack_requested.emit()
 
     def _refresh_status(self) -> None:
         missing = db_settings.missing_critical_keys(self._stack.db_path)
@@ -380,26 +341,24 @@ class _TuningTab(QWidget):
         self._meta.setStyleSheet("color: #787b86;")
         layout.addWidget(self._meta)
 
-        actions = QHBoxLayout()
-        # Promote primary affordance — Save is the page's primary action.
-        # Falls back to QPushButton if qfluentwidgets isn't importable.
-        try:
-            from qfluentwidgets import PrimaryPushButton
-            save_btn = PrimaryPushButton("Save")
-        except Exception:
-            save_btn = QPushButton("Save")
-        save_btn.clicked.connect(self._save)
-        reload_btn = QPushButton("Reload")
-        reload_btn.clicked.connect(self._load)
-        actions.addWidget(save_btn)
-        actions.addWidget(reload_btn)
-        actions.addStretch()
+        # Compact ribbon (Office-style) replaces the previous flat
+        # toolbar. Single "Settings" group with Save + Reload, both
+        # tinted by variant token.
+        from src.gui.panels.ribbon_bar import RibbonAction, RibbonBar, RibbonGroup
+        ribbon = RibbonBar([
+            RibbonGroup("Settings", [
+                RibbonAction("SAVE", "Save", "Commit settings changes",
+                             variant="success", callback=self._save),
+                RibbonAction("SYNC", "Reload", "Discard pending edits and re-read from disk",
+                             variant="primary", callback=self._load),
+            ]),
+        ])
+        layout.addWidget(ribbon)
         note = QLabel(
             "<span style='color:#787b86;'>changes apply on the next service restart</span>"
         )
         note.setTextFormat(Qt.TextFormat.RichText)
-        actions.addWidget(note)
-        layout.addLayout(actions)
+        layout.addWidget(note)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -727,6 +686,24 @@ class _TuningTab(QWidget):
 
 
 _TUNING_SECTIONS: list[tuple[str, list[_Field]]] = [
+    ("TELEGRAM BOT", [
+        _Field("tg_bot_token", "Bot token", "secret",
+               tooltip=(
+                   "Telegram bot token (from @BotFather, format "
+                   "<digits>:<base64ish>). Each destination's bot service "
+                   "polls Telegram with this token. If two bots share the "
+                   "same token, Telegram boots one with Conflict 409 and "
+                   "the loser flaps in NSSM restart-throttle. Use a "
+                   "DIFFERENT bot per destination."
+               )),
+        _Field("tg_bot_owner_user_id", "Bot owner Telegram user id", "int",
+               tooltip=(
+                   "Numeric Telegram user id that receives DM "
+                   "notifications + can use /halt /resume /cancel. "
+                   "Find yours by messaging @userinfobot."
+               ),
+               opts=(0, 2_147_483_647)),
+    ]),
     ("NETWORK", [
         _Field("api_host", "API host", "str",
                tooltip=(
@@ -823,6 +800,19 @@ _TUNING_SECTIONS: list[tuple[str, list[_Field]]] = [
                opts=(["gpt-5-nano", "gpt-5-mini", "gpt-5"],),
                editable=False),
     ]),
+    ("AI EVALUATOR", [
+        _Field("ai_evaluator_enabled", "Evaluator enabled", "bool",
+               tooltip=(
+                   "Master on/off for the post-OPEN AI evaluator that scores "
+                   "each signal across 15 axes (v1) or runs the layered "
+                   "deterministic + LLM-synthesizer pipeline (v2). When OFF, "
+                   "trades still flow through normally but no evaluation "
+                   "block is attached and the EA falls back to baseline lot "
+                   "sizing (no score-tied sizing). Disable to halt evaluator "
+                   "spend or while iterating on the evaluator without "
+                   "affecting live execution."
+               )),
+    ]),
     ("AI THINKING", [
         _Field("ai_thinking_enabled", "Extended thinking", "bool",
                tooltip=(
@@ -881,14 +871,6 @@ _TUNING_SECTIONS: list[tuple[str, list[_Field]]] = [
                    "has likely moved too far for the signal to be safe."
                ),
                opts=(0, 1440)),
-    ]),
-    ("CHANNEL PROFILE", [
-        _Field("channel_profile", "Active profile", "str",
-               tooltip=(
-                   "Which channels/<name>.json profile to load at listener "
-                   "startup. Determines the AI prompt's vocabulary table, "
-                   "worked examples, and language. Must match a file in channels/."
-               )),
     ]),
     ("RISK MANAGEMENT", [
         _Field("max_sl_loss_percent", "Max SL loss (% of balance)", "float",
@@ -1066,12 +1048,14 @@ class _ServicesTab(QWidget):
         actions_row = QHBoxLayout()
         actions_row.setContentsMargins(0, 4, 0, 4)
         self._install_btn = QPushButton("Install services")
+        self._install_btn.setProperty("variant", "success")  # neon lime — creates services
         self._install_btn.setToolTip(
             "Register the three NSSM services for this stack (api, bot, "
             "listener). Triggers a UAC prompt."
         )
         self._install_btn.clicked.connect(self._on_install_services)
         self._uninstall_btn = QPushButton("Uninstall services")
+        self._uninstall_btn.setProperty("variant", "danger")  # hot pink — destructive
         self._uninstall_btn.setToolTip(
             "Stop and unregister all three NSSM services for this stack. "
             "Triggers a UAC prompt. Logs and the database are not touched."
@@ -1090,6 +1074,31 @@ class _ServicesTab(QWidget):
         actions_row.addWidget(self._export_diag_btn)
         actions_row.addStretch()
         layout.addLayout(actions_row)
+
+        # Phase-4 v2 cleanup: dedicated row for the entity-driven install
+        # path. Operators with multi-bot or multi-account setups should
+        # prefer this — the legacy per-stack button uses a rigid 3-tuple
+        # that silently misses extra bots/accounts.
+        v2_row = QHBoxLayout()
+        self._v2_install_all_btn = QPushButton("Install ALL v2 services")
+        self._v2_install_all_btn.setProperty("variant", "primary")  # cyan — broad action
+        self._v2_install_all_btn.setToolTip(
+            "Reads stacks_config.json and registers every NSSM service "
+            "(one per Destination, Bot, and Account) in a single elevated "
+            "pass. Works correctly with multi-bot / multi-account setups."
+        )
+        self._v2_install_all_btn.clicked.connect(self._on_install_v2_all)
+        v2_row.addWidget(self._v2_install_all_btn)
+        v2_hint = QLabel(
+            "<span style='color:#787b86;font-size:11px;'>"
+            "Replaces per-stack install for v2 configs. Each entity → 1 service. "
+            "Open Services.msc to verify after."
+            "</span>"
+        )
+        v2_hint.setTextFormat(Qt.TextFormat.RichText)
+        v2_hint.setWordWrap(True)
+        v2_row.addWidget(v2_hint, 1)
+        layout.addLayout(v2_row)
 
         self._table = QTableWidget(0, len(self.HEADERS))
         self._table.setHorizontalHeaderLabels(list(self.HEADERS))
@@ -1120,6 +1129,24 @@ class _ServicesTab(QWidget):
         from src.gui.windows.diagnostics_export_dialog import DiagnosticsExportDialog
         dlg = DiagnosticsExportDialog(self._stack, self)
         dlg.exec()
+
+    def _on_install_v2_all(self) -> None:
+        """Phase-4 v2 cleanup: install every v2 entity's service in one pass.
+
+        Walks the v2 config, derives the full service spec (1 API per
+        Destination + 1 per Bot + 1 per Account), writes it to a temp
+        JSON, and ShellExecuteW's the new ``bootstrap_v2_install``
+        helper. Operator sees one UAC prompt for the whole config.
+        """
+        from src.gui.services.bootstrap import install_v2_services_all
+        ok, msg = install_v2_services_all()
+        if ok:
+            QMessageBox.information(self, "Install ALL v2 services", msg)
+        else:
+            QMessageBox.warning(self, "Install ALL v2 services", msg)
+        # Refresh the table so the operator sees the new service rows.
+        QTimer.singleShot(1500, self._refresh)
+        QTimer.singleShot(4000, self._refresh)
 
     def _on_install_services(self) -> None:
         """(Re-)register the three NSSM services for the active stack.

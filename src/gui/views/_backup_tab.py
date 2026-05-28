@@ -63,18 +63,26 @@ class BackupTab(QWidget):
         info.setWordWrap(True)
         layout.addWidget(info)
 
-        actions = QHBoxLayout()
-        self._backup_btn = QPushButton("Backup now")
-        self._backup_btn.clicked.connect(self._on_backup_default)
-        actions.addWidget(self._backup_btn)
-        self._backup_to_btn = QPushButton("Backup to…")
-        self._backup_to_btn.clicked.connect(self._on_backup_to)
-        actions.addWidget(self._backup_to_btn)
-        self._restore_btn = QPushButton("Restore from zip…")
-        self._restore_btn.clicked.connect(self._on_restore)
-        actions.addWidget(self._restore_btn)
-        actions.addStretch()
-        layout.addLayout(actions)
+        # Office-style ribbon: Create group (default + custom location)
+        # and Restore group (single destructive action). Separator makes
+        # the destructive intent of restore visibly distinct.
+        from src.gui.panels.ribbon_bar import RibbonAction, RibbonBar, RibbonGroup
+        ribbon = RibbonBar([
+            RibbonGroup("Create", [
+                RibbonAction("SAVE", "Backup now",
+                             "Snapshot DB + logs to the default backup folder",
+                             variant="success", callback=self._on_backup_default),
+                RibbonAction("FOLDER", "Backup to…",
+                             "Snapshot DB + logs to a chosen folder",
+                             variant="success", callback=self._on_backup_to),
+            ]),
+            RibbonGroup("Restore", [
+                RibbonAction("DOWNLOAD", "Restore…",
+                             "Restore the DB from a previously-created backup zip",
+                             variant="warning", callback=self._on_restore),
+            ]),
+        ])
+        layout.addWidget(ribbon)
 
         layout.addWidget(QLabel("Recent backups"))
         self._list = QListWidget()
