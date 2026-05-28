@@ -85,6 +85,14 @@ EMBEDDING_THRESHOLD = float(
 # entry without warning.
 EMBEDDING_MODEL = "text-embedding-3-small"
 
+# After an embedding-build failure (no key, API error, rate limit), Layer 2
+# is suppressed for this long before the next message retries it. Long enough
+# not to hammer a broken endpoint per-message; short enough that a transient
+# blip self-heals without a listener restart.
+EMBED_RETRY_COOLDOWN_SEC = float(
+    os.environ.get("COPYTRADES_EMBED_RETRY_COOLDOWN_SEC", "300")
+)
+
 
 # Action types the matcher is allowed to emit. Anything else stays with
 # Sonnet because deterministic-emit needs more than a phrase (price,
@@ -201,8 +209,14 @@ class _ProfileCache:
     symbol: str
     # Parallel list of 1536-dim vectors aligned with `rules`. Populated
     # lazily on the first Layer 2 attempt to avoid embedding cost when
-    # Layer 1 covers everything.
+    # Layer 1 covers everything. `None` means "not built yet, or a prior
+    # build failed" — Layer 2 retries (subject to the cooldown below) rather
+    # than treating a one-off failure as a permanent disable.
     embeddings: list[list[float]] | None = None
+    # Monotonic-clock deadline; after a populate failure Layer 2 stays off
+    # until now() passes this, so a broken/rate-limited embedding endpoint
+    # isn't hit once per message but still recovers on its own.
+    embeddings_retry_after: float = 0.0
 
 
 _cache: _ProfileCache | None = None
@@ -535,24 +549,65 @@ def _layer2_embedding(
     state precondition is satisfied. None if the embedding API is
     unavailable or no rule clears the threshold.
     """
+    # (Re)build the per-rule embedding cache. `None` = not built yet OR a
+    # prior build failed; retry, but no sooner than the cooldown so a broken
+    # endpoint isn't hit once per message. Fixes the old behaviour where a
+    # single populate failure disabled Layer 2 for the whole process life.
+    # Cache fields below are mutated lock-free. Safe because match() is only
+    # called from the single-threaded listener asyncio loop; the GUI Test
+    # pane uses a separate inline cache (_parse_raw_triggers), never _cache.
     if cache.embeddings is None:
-        if not _populate_embeddings(cache):
+        if time.monotonic() < cache.embeddings_retry_after:
             return None
+        if not _populate_embeddings(cache):
+            cache.embeddings_retry_after = (
+                time.monotonic() + EMBED_RETRY_COOLDOWN_SEC
+            )
+            log.warning(
+                "trigger_match Layer 2 suppressed for %.0fs after embedding "
+                "build failure (auto-retries after)", EMBED_RETRY_COOLDOWN_SEC,
+            )
+            return None
+    # Defensive: rules and their embeddings must stay 1:1. A mismatch means a
+    # partial build slipped through; skip + force a rebuild rather than raise
+    # a ValueError on every message (which the orchestrator would swallow,
+    # silently killing Layer 2).
+    if len(cache.embeddings) != len(cache.rules):
+        log.warning(
+            "trigger_match Layer 2 skipped: embeddings/rules length mismatch "
+            "(%d vs %d) — forcing rebuild",
+            len(cache.embeddings), len(cache.rules),
+        )
+        cache.embeddings = None
+        return None
     msg_vec = _embed_one(text)
     if msg_vec is None:
         return None
     best_score = 0.0
     best_rule: TriggerRule | None = None
-    for rule, vec in zip(cache.rules, cache.embeddings, strict=True):
+    scored = 0
+    for rule, vec in zip(cache.rules, cache.embeddings):
         if not rule.is_emittable:
             continue
         if not _precondition_ok(rule.action_type, ctx):
             continue
+        scored += 1
         score = _cosine(msg_vec, vec)
         if score > best_score:
             best_score = score
             best_rule = rule
     if best_rule is None or best_score < EMBEDDING_THRESHOLD:
+        # Per-message tuning detail at DEBUG (this fires on most messages that
+        # reach Layer 2 — INFO would swamp the log). "Did Layer 2 run at all?"
+        # is answered by the rare INFO "embeddings built" line and the failure
+        # WARNING; this line is for threshold calibration once you know it
+        # ran. scored==0 → no emittable rule to score; scored>0 → ran, nothing
+        # cleared the bar.
+        log.debug(
+            "trigger_match Layer 2 no hit: scored=%d best=%.3f threshold=%.2f%s",
+            scored, best_score, EMBEDDING_THRESHOLD,
+            (" top=" + best_rule.action_type) if best_rule else "",
+        )
         return None
     return best_rule, best_score
 
@@ -564,9 +619,9 @@ def _populate_embeddings(cache: _ProfileCache) -> bool:
     operator captured, not against a short stub phrase that's
     ambiguous on its own.
 
-    Returns False if the OpenAI client/API fails; the cache keeps
-    empty embeddings so subsequent Layer 2 attempts skip immediately
-    rather than re-trying a broken endpoint on every message.
+    Returns False on failure and leaves `cache.embeddings = None` so the
+    caller can schedule a cooldown-bounded retry (a one-off API blip must
+    not disable Layer 2 for the whole process lifetime).
     """
     phrases = [r.match_text or r.phrase for r in cache.rules]
     if not phrases:
@@ -574,16 +629,20 @@ def _populate_embeddings(cache: _ProfileCache) -> bool:
         return True
     vecs = _embed_batch(phrases)
     if vecs is None:
-        cache.embeddings = []  # mark as "tried and failed"; don't retry per msg
+        cache.embeddings = None  # not "empty" — "needs retry"; caller gates it
         return False
     if len(vecs) != len(phrases):
         log.warning(
             "trigger_match embedding count mismatch: %d phrases, %d vectors",
             len(phrases), len(vecs),
         )
-        cache.embeddings = []
+        cache.embeddings = None
         return False
     cache.embeddings = vecs
+    log.info(
+        "trigger_match Layer 2 embeddings built: rules=%d dim=%d",
+        len(vecs), len(vecs[0]) if vecs[0] else 0,
+    )
     return True
 
 
