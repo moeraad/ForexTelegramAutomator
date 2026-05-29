@@ -12,6 +12,18 @@ input string ApiBaseUrl              = "http://127.0.0.1:8765";
 // results in 401 on every request and the EA effectively goes silent.
 input string ApiSharedToken          = "";
 input int    PollIntervalSec         = 1;
+// WebRequest timeouts (ms). OnTimer runs on one non-reentrant thread and
+// WebRequest is blocking, so these bound how long a slow/hung API can freeze
+// a whole tick (incl. staged-close + trailing-SL management). The API is
+// localhost, so the old 5000/10000 budgets were far larger than needed; a
+// hung API now stalls a tick for a few seconds at most.
+input int    HttpGetTimeoutMs        = 2000;
+input int    HttpPostTimeoutMs       = 3000;
+// Cache the kill-switch read this long (s) so OnTimer doesn't block on a
+// GET /settings/kill_switch every single tick. <= 0 disables the cache
+// (always fetch — legacy behaviour). Fail-closed semantics are unchanged:
+// a cold start and any read failure still default to halted / last-known.
+input int    KillSwitchCacheSec      = 3;
 // Position sizing: balance-based. lots = (ACCOUNT_BALANCE / 100) * LotsPer100Balance.
 // Default 0.01 means "0.01 lot per $100 of balance" -> $1000 balance = 0.10 lot,
 // $10000 balance = 1.0 lot. Independent of SL distance, so dollar risk per trade
@@ -331,15 +343,35 @@ void OnDeinit(const int reason) {
 void OnTimer() {
    RolloverDayIfNeeded();
    g_kill_switch_cached = KillSwitchOn();
+
+   // (H1) Manage the live position BEFORE any network pull. OnTimer is a
+   // single non-reentrant thread and WebRequest blocks, so sequencing the
+   // pulls first would freeze staged closes + trailing SL for the length of
+   // a slow/hung API call. These ops are broker-local — the SL move / close
+   // hits the broker before the bookkeeping POST that follows it.
+   //
+   // (M1) They also run UNCONDITIONALLY — the kill switch no longer gates
+   // them. /halt pauses acting on the CHANNEL (new + management actions via
+   // PollAndExecute), but an already-open position must stay protected:
+   // trailing SL keeps ratcheting, staged TP closes keep firing, naked/
+   // pending plans keep resolving, broker closes keep mirroring to the DB,
+   // and buffered POSTs keep draining. (OnTick already ran ManagePlans during
+   // a halt; this makes OnTimer consistent with that.)
+   ManagePlans();
+   TrailStage2Sls();       // post-TP trailing SL on 2/3-TP plans
+   ManageNakedPlans();     // Phase 4: OPEN_INSTANT timeout fallback + trail
+   ManagePendingOrders();  // Phase 5: broker pending-limit fill + cancel poll
+
+   // Only the channel-driven action pull is gated by the kill switch.
    if(!g_kill_switch_cached) {
       PollAndExecute();
-      ManagePlans();  // also driven by OnTick; belt-and-suspenders
-      TrailStage2Sls();  // post-TP2 trailing SL on 3-TP plans (Flavour A)
-      ManageNakedPlans();  // Phase 4: OPEN_INSTANT timeout fallback + trail
-      ManagePendingOrders();  // Phase 5: broker pending-limit fill + cancel poll
-      ReconcileClosedPositions();
-      DrainRetryQueue();  // resend any persisted POSTs from a prior outage
    }
+
+   // Reconcile + retry-drain run regardless of halt so DB state converges
+   // and persisted POSTs from a prior outage flush even while halted.
+   ReconcileClosedPositions();
+   DrainRetryQueue();
+
    // Heartbeat market price unconditionally (even when halted) — the AI
    // still needs a fresh quote to decode shorthand SL on incoming messages.
    HeartbeatMarketPrice();
@@ -817,8 +849,13 @@ void BuildStats(DashboardStats &s) {
 }
 
 void OnTick() {
-   // Price-driven: reacts faster than the 1s timer to TP crossings.
+   // Price-driven: reacts faster than the 1s timer to TP crossings and trail
+   // steps. (L2) TrailStage2Sls joins ManagePlans here so the trailing SL
+   // ratchets on price movement, not only on the 1s OnTimer — important
+   // during a fast move when the timer may also be delayed behind a slow
+   // network pull.
    ManagePlans();
+   TrailStage2Sls();
 }
 
 // File-scope cache for the kill-switch state. The previous implementation
@@ -828,6 +865,9 @@ void OnTick() {
 // until the first successful read so the failure mode is fail-closed.
 static bool g_last_kill_switch = false;
 static bool g_kill_switch_known = false;
+// GetTickCount() ms of the last SUCCESSFUL kill-switch read. Drives the
+// KillSwitchCacheSec TTL so OnTimer doesn't issue a blocking GET every tick.
+static ulong g_kill_switch_fetched_at = 0;
 
 // Cached SL-risk cap. Fetched from /settings/max_sl_loss_percent on
 // first use and every 60 seconds thereafter, so operator edits in
@@ -1015,15 +1055,29 @@ double MaxSlLossPercentLive() {
 }
 
 bool KillSwitchOn() {
+   // Serve from cache within the TTL so OnTimer isn't blocked on an HTTP GET
+   // every tick (L1). The cache only short-circuits once a successful read
+   // has warmed it, so the fail-closed default below still applies on a cold
+   // start. GetTickCount wraps ~every 49 days; a single wrapped comparison at
+   // worst forces one extra fetch — harmless.
+   ulong now = GetTickCount();
+   if(g_kill_switch_known && KillSwitchCacheSec > 0
+      && g_kill_switch_fetched_at != 0
+      && (now - g_kill_switch_fetched_at) < (ulong)KillSwitchCacheSec * 1000) {
+      return g_last_kill_switch;
+   }
    string body;
    if(!HttpGet(ApiBaseUrl + "/settings/kill_switch", body)) {
       // First-failure: assume halted (safer default than firing trades
       // blindly during an outage).
       // Subsequent failures: trust the last successfully-read value.
+      // Do NOT stamp fetched_at on failure — keep retrying every tick until
+      // the API answers, so a recovered API is picked up promptly.
       return g_kill_switch_known ? g_last_kill_switch : true;
    }
    g_last_kill_switch = (StringFind(body, "\"value\":\"on\"") >= 0);
    g_kill_switch_known = true;
+   g_kill_switch_fetched_at = now;
    return g_last_kill_switch;
 }
 
@@ -1052,7 +1106,7 @@ bool HttpGet(string url, string &outBody) {
    // which meant the Authorization header was never actually sent — any
    // endpoint that enforces auth would 401 every GET.
    char post[]; char result[]; string headers;
-   int res = WebRequest("GET", url, AuthHeader(), 5000, post, result, headers);
+   int res = WebRequest("GET", url, AuthHeader(), HttpGetTimeoutMs, post, result, headers);
    if(res == -1) {
       Print("WebRequest GET error ", GetLastError(), " url=", url);
       return false;
@@ -1089,7 +1143,7 @@ bool HttpPostJsonWithStatus(string url, string jsonBody, string &outBody, int &o
    // would mangle multibyte chars before they ever reach the API.
    int blen = StringToCharArray(jsonBody, post, 0, -1, CP_UTF8);
    if(blen > 0) ArrayResize(post, blen - 1);  // drop trailing NUL
-   int res = WebRequest("POST", url, reqHeaders, 10000, post, result, respHeaders);
+   int res = WebRequest("POST", url, reqHeaders, HttpPostTimeoutMs, post, result, respHeaders);
    if(res == -1) {
       Print("WebRequest POST error ", GetLastError(), " url=", url);
       outStatus = -1;
