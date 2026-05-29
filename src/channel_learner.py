@@ -42,7 +42,7 @@ class SuggestionDraft:
     evidence: dict
 
 
-def _greedy_clusters(samples, threshold):
+def _greedy_clusters(samples: list, threshold: float) -> list[list]:
     """Greedy single-pass clustering by cosine vs each cluster's first member.
     Returns list[list[Sample]]. Samples without embeddings are skipped."""
     clusters: list[list] = []
@@ -60,7 +60,7 @@ def _greedy_clusters(samples, threshold):
     return clusters
 
 
-def _suppression_evidence(cluster, all_samples, threshold):
+def _suppression_evidence(cluster: list, all_samples: list, threshold: float) -> dict:
     """Replay: how many corpus messages does this cluster's centroid match,
     and how many of those were actually trade-relevant (false suppression)."""
     centroid = cluster[0].embedding
