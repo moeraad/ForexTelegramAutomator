@@ -90,6 +90,29 @@ def _default_profile_path(stack_name: str) -> Path:
     return Path(appdata) / "CopyTrades" / stack_name / "profile.json"
 
 
+def _resolve_live_profile_path(
+    db_path: Path | str, configured_path: str | None = None
+) -> Path:
+    """Resolve the profile.json a destination's runtime actually reads.
+
+    The listener/bot resolve the profile as ``Path(config.DB_PATH).parent /
+    "profile.json"`` (see ``trigger_matcher._resolve_profile_path`` and
+    ``ai._resolve_profile_path``) — i.e. db-adjacent. The v2 ``Profile.path``
+    (``configured_path``) historically points at the bundled
+    ``channels/<name>.json`` location, which the runtime ignores and which is
+    frequently stale/absent — so it's only a fallback here. Returns the live
+    db-adjacent location even when it doesn't exist yet, so the path always
+    points where the runtime will look (and where a freshly-created profile
+    should land).
+    """
+    live = Path(db_path).parent / "profile.json"
+    if live.exists():
+        return live
+    if configured_path and Path(configured_path).exists():
+        return Path(configured_path)
+    return live
+
+
 def _stacks_config_path() -> Path:
     appdata = os.environ.get("APPDATA", str(Path.home()))
     return Path(appdata) / "CopyTrades" / "stacks_config.json"
@@ -297,10 +320,13 @@ def _stacks_from_v2(config) -> list[Stack]:
         primary_profile = (
             config.profile(channels[0].profile_id) if channels else None
         )
-        profile_path = (
-            Path(primary_profile.path) if primary_profile and primary_profile.path
-            else _default_profile_path(dest.name)
+        # Prefer the LIVE db-adjacent profile.json the runtime reads; the v2
+        # Profile.path is only a (often stale) fallback. Fixes accepted-rule
+        # writes + the Profile view targeting a non-existent legacy path.
+        configured_profile = (
+            primary_profile.path if primary_profile and primary_profile.path else None
         )
+        profile_path = _resolve_live_profile_path(db_path, configured_profile)
         project_path = BASE_DIR
 
         stacks.append(Stack(
