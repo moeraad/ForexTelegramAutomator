@@ -933,7 +933,7 @@ class _StackIdentityPage(_BasePage):
 
         from PySide6.QtWidgets import QFormLayout
         form = QFormLayout()
-        form.addRow("Stack name", self._name)
+        form.addRow("Channel name", self._name)
         form.addRow("Symbol", self._symbol)
 
         layout = QVBoxLayout(self)
@@ -947,10 +947,10 @@ class _StackIdentityPage(_BasePage):
         name = self._name.text().strip()
         symbol = self._symbol.text().strip().upper() or "XAUUSD"
         if not name:
-            self.show_error("Stack name can't be empty.")
+            self.show_error("Channel name can't be empty.")
             return False
         if any(ch in name for ch in r'\/:*?"<>|'):
-            self.show_error("Stack name can't contain \\ / : * ? \" < > |")
+            self.show_error("Channel name can't contain \\ / : * ? \" < > |")
             return False
         # v2 cleanup: write the full v2 entity set (Account placeholder,
         # Profile, Destination, Bot placeholder) directly to
@@ -1067,7 +1067,7 @@ class _ServicesInstallPage(_BasePage):
         self._busy.setText("")
         w = self.wiz()
         if w.stack is None:
-            self.show_error("Internal error: stack not set.")
+            self.show_error("Internal error: channel not set.")
             return
         from src.gui.services import nssm_client
         running = sum(1 for s in w.stack.service_names if nssm_client.service_running(s))
