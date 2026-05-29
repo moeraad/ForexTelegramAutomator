@@ -336,6 +336,7 @@ async def post_init(app: Application):
         cost_guard_loop,
         cot_feed_loop,
         etf_flows_feed_loop,
+        learning_loop,
         macro_feed_loop,
         news_scan_feed_loop,
         notification_dispatcher,
@@ -424,6 +425,7 @@ async def post_init(app: Application):
     _supervise(asyncio.create_task(calendar_feed_loop(app)), "calendar_feed_loop")
     _supervise(asyncio.create_task(telegram_heartbeat_loop(app)), "telegram_heartbeat_loop")
     _supervise(asyncio.create_task(cost_guard_loop(app)), "cost_guard_loop")
+    _supervise(asyncio.create_task(learning_loop(app)), "learning_loop")
 
 
 def main() -> None:

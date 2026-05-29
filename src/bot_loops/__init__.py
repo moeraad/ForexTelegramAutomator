@@ -26,6 +26,7 @@ from src.bot_loops.feeds import (
     news_scan_feed_loop,
 )
 from src.bot_loops.orphan_recovery import recover_orphan_pending_actions
+from src.bot_loops.learning_loop import learning_loop
 
 __all__ = [
     "notification_dispatcher",
@@ -40,4 +41,5 @@ __all__ = [
     "calendar_feed_loop",
     "news_scan_feed_loop",
     "recover_orphan_pending_actions",
+    "learning_loop",
 ]
