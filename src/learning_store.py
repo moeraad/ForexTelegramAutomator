@@ -23,7 +23,7 @@ class Sample:
     id: int
     source_channel_id: str
     text: str
-    norm_text: str
+    norm_text: str  # stripped raw text used as per-channel dedup key (NOT text_normalize output)
     category: str
     action_types: str
     triage_decision: str
@@ -46,8 +46,17 @@ def _row_to_sample(r: sqlite3.Row) -> Sample:
     )
 
 
-def capture(conn, *, source_channel_id, route_id, source_msg_id,
-            text, category, action_types, triage_decision) -> int | None:
+def capture(
+    conn: sqlite3.Connection,
+    *,
+    source_channel_id: str,
+    route_id: str | None,
+    source_msg_id: int | None,
+    text: str,
+    category: str,
+    action_types: str,
+    triage_decision: str,
+) -> int | None:
     """Append one labeled sample. Dedups on (source_channel_id, norm_text):
     a verbatim resend bumps seen_count + last_seen_at instead of inserting.
 
@@ -58,8 +67,6 @@ def capture(conn, *, source_channel_id, route_id, source_msg_id,
         return None
     try:
         stripped = text.strip()
-        if not stripped:
-            return None
         # norm_text stores the raw text so the UNIQUE(source_channel_id, norm_text)
         # constraint deduplicates on exact-text identity. Using the normalized form
         # instead would collapse distinct messages that share the same normalized
@@ -92,12 +99,17 @@ def capture(conn, *, source_channel_id, route_id, source_msg_id,
              category, action_types or "", triage_decision or ""),
         )
         return int(cur.lastrowid) if cur.lastrowid else None
-    except Exception as e:  # noqa: BLE001 — live-path safety
+    except sqlite3.IntegrityError:
+        # Lost a UNIQUE(source_channel_id, norm_text) race with a concurrent
+        # writer — first insert won, this is a benign dedup, not a failure.
+        log.debug("learning_store.capture: dedup race, row already exists")
+        return None
+    except Exception as e:  # noqa: BLE001 — live-path safety: never crash msg processing
         log.warning("learning_store.capture failed: %s", e)
         return None
 
 
-def recent(conn, source_channel_id, limit) -> list[Sample]:
+def recent(conn: sqlite3.Connection, source_channel_id: str, limit: int) -> list[Sample]:
     rows = conn.execute(
         "SELECT * FROM learning_samples WHERE source_channel_id=? "
         "ORDER BY id DESC LIMIT ?",
@@ -106,7 +118,7 @@ def recent(conn, source_channel_id, limit) -> list[Sample]:
     return [_row_to_sample(r) for r in rows]
 
 
-def without_embedding(conn, source_channel_id, limit) -> list[Sample]:
+def without_embedding(conn: sqlite3.Connection, source_channel_id: str, limit: int) -> list[Sample]:
     rows = conn.execute(
         "SELECT * FROM learning_samples "
         "WHERE source_channel_id=? AND embedding_json IS NULL "
@@ -116,14 +128,14 @@ def without_embedding(conn, source_channel_id, limit) -> list[Sample]:
     return [_row_to_sample(r) for r in rows]
 
 
-def set_embedding(conn, sample_id: int, vec: list[float]) -> None:
+def set_embedding(conn: sqlite3.Connection, sample_id: int, vec: list[float]) -> None:
     conn.execute(
         "UPDATE learning_samples SET embedding_json=? WHERE id=?",
         (json.dumps(vec), sample_id),
     )
 
 
-def count_since(conn, source_channel_id, since_id: int) -> int:
+def count_since(conn: sqlite3.Connection, source_channel_id: str, since_id: int) -> int:
     row = conn.execute(
         "SELECT COUNT(*) AS n FROM learning_samples "
         "WHERE source_channel_id=? AND id>?",
@@ -132,7 +144,7 @@ def count_since(conn, source_channel_id, since_id: int) -> int:
     return int(row["n"]) if row else 0
 
 
-def max_id(conn, source_channel_id) -> int:
+def max_id(conn: sqlite3.Connection, source_channel_id: str) -> int:
     row = conn.execute(
         "SELECT COALESCE(MAX(id),0) AS m FROM learning_samples "
         "WHERE source_channel_id=?",
@@ -141,7 +153,7 @@ def max_id(conn, source_channel_id) -> int:
     return int(row["m"]) if row else 0
 
 
-def prune(conn, source_channel_id, keep: int) -> None:
+def prune(conn: sqlite3.Connection, source_channel_id: str, keep: int) -> None:
     """Drop oldest rows beyond `keep` for one channel."""
     conn.execute(
         "DELETE FROM learning_samples WHERE source_channel_id=? AND id NOT IN ("
