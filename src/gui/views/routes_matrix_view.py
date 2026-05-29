@@ -59,6 +59,7 @@ from PySide6.QtWidgets import (
 from src import config_v2
 from src.config_v2 import ConfigV2
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 class RoutesMatrixView(QWidget):
@@ -93,8 +94,9 @@ class RoutesMatrixView(QWidget):
         )
         title.setTextFormat(Qt.TextFormat.RichText)
         header.addWidget(title)
+        _tm = current_palette().text_muted
         hint = QLabel(
-            "<span style='color:#787b86;'>rows = channels  ·  "
+            f"<span style='color:{_tm};'>rows = channels  ·  "
             "columns = destinations  ·  check cell = create route  ·  "
             "edit number = sizing multiplier (1.0 = 1:1 lot size)</span>"
         )
@@ -108,7 +110,7 @@ class RoutesMatrixView(QWidget):
         layout.addLayout(header)
 
         self._summary = QLabel("")
-        self._summary.setStyleSheet("color: #787b86;")
+        self._summary.setStyleSheet(f"color: {current_palette().text_muted};")
         layout.addWidget(self._summary)
 
         self._table = QTableWidget()
@@ -153,8 +155,9 @@ class RoutesMatrixView(QWidget):
             self._table.setColumnCount(0)
             return
         self._cfg = cfg
+        _tm2 = current_palette().text_muted
         self._summary.setText(
-            f"<span style='color:#787b86;'>"
+            f"<span style='color:{_tm2};'>"
             f"{len(cfg.channels)} channel(s) × "
             f"{len(cfg.destinations)} destination(s) = "
             f"{len(cfg.routes)}/{len(cfg.channels) * len(cfg.destinations)} "
@@ -240,8 +243,9 @@ class RoutesMatrixView(QWidget):
         cfg = self._cfg
         from src import config_v2 as _cv2
         cfg_path = _cv2.config_path()
+        _tm3 = current_palette().text_muted
         self._summary.setText(
-            f"<span style='color:#787b86;'>"
+            f"<span style='color:{_tm3};'>"
             f"{len(cfg.channels)} channel(s) × "
             f"{len(cfg.destinations)} destination(s) = "
             f"{len(cfg.routes)}/{len(cfg.channels) * len(cfg.destinations)} "
@@ -449,15 +453,16 @@ class _EditRouteRulesDialog(QDialog):
         self.setMinimumWidth(520)
 
         outer = QVBoxLayout(self)
+        _tm4 = current_palette().text_muted
         header = QLabel(
             f"<span style='font-weight:600;'>{route_id}</span>  "
-            f"<span style='color:#787b86;'>"
+            f"<span style='color:{_tm4};'>"
             f"{route.channel_id} → {route.destination_id}</span>"
         )
         header.setTextFormat(Qt.TextFormat.RichText)
         outer.addWidget(header)
         hint = QLabel(
-            "<span style='color:#787b86;font-size:11px;'>"
+            f"<span style='color:{_tm4};font-size:11px;'>"
             "0 / empty = disabled. EA-side rules (max_lots, balance, "
             "drawdown) propagate via OPEN payload — see Decision Log."
             "</span>"

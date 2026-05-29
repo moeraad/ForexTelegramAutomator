@@ -47,6 +47,7 @@ from src.gui.panels._collapsible import CollapsibleSection
 from src.gui.panels._search_parser import ParsedQuery, apply as apply_search, parse as parse_search
 from src.gui.services.db_subscriber import DBSubscriber
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 # Filter dimensions. Each entry is (key, label, chip_color_token).
@@ -321,7 +322,8 @@ class ActionsTable(QWidget):
         strip_layout.setContentsMargins(0, 0, 0, 0)
         strip_layout.setSpacing(6)
         self._active_label = QLabel("Active:")
-        self._active_label.setStyleSheet("color: #787b86; font-size: 11px;")
+        pal = current_palette()
+        self._active_label.setStyleSheet(f"color: {pal.text_muted}; font-size: 11px;")
         strip_layout.addWidget(self._active_label)
         # Container for the dynamic chip labels — repopulated whenever
         # filter state changes.
@@ -332,10 +334,11 @@ class ActionsTable(QWidget):
         strip_layout.addWidget(self._active_chips_holder, 1)
         self._clear_all_btn = QPushButton("Clear all")
         self._clear_all_btn.clicked.connect(self._on_clear_all)
+        _pal = current_palette()
         self._clear_all_btn.setStyleSheet(
-            "QPushButton { color: #787b86; font-size: 11px; "
-            "border: none; padding: 0 8px; }"
-            "QPushButton:hover { color: #d1d4dc; }"
+            f"QPushButton {{ color: {_pal.text_muted}; font-size: 11px; "
+            f"border: none; padding: 0 8px; }}"
+            f"QPushButton:hover {{ color: {_pal.text}; }}"
         )
         strip_layout.addWidget(self._clear_all_btn)
         layout.addWidget(self._active_strip)
@@ -380,7 +383,7 @@ class ActionsTable(QWidget):
         # Footer with row count + "Load more".
         footer = QHBoxLayout()
         self._row_count_label = QLabel("0 rows")
-        self._row_count_label.setStyleSheet("color: #787b86; font-size: 11px;")
+        self._row_count_label.setStyleSheet(f"color: {current_palette().text_muted}; font-size: 11px;")
         footer.addWidget(self._row_count_label)
         footer.addStretch()
         self._load_more_btn = QPushButton("Load more (+100)")
@@ -398,7 +401,7 @@ class ActionsTable(QWidget):
         row.setSpacing(4)
         label = QLabel(title)
         label.setStyleSheet(
-            "color: #787b86; font-size: 11px; font-weight: 700; "
+            f"color: {current_palette().text_muted}; font-size: 11px; font-weight: 700; "
             "min-width: 55px;"
         )
         row.addWidget(label)
@@ -419,7 +422,7 @@ class ActionsTable(QWidget):
         row.setSpacing(4)
         label = QLabel("Range")
         label.setStyleSheet(
-            "color: #787b86; font-size: 11px; font-weight: 700; "
+            f"color: {current_palette().text_muted}; font-size: 11px; font-weight: 700; "
             "min-width: 55px;"
         )
         row.addWidget(label)

@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from src.gui.services import profile_io
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 ACTION_TYPES = (
@@ -461,7 +462,7 @@ class TriggersView(QWidget):
         self._test_details_btn.setFlat(True)
         self._test_details_btn.setCheckable(True)
         self._test_details_btn.setStyleSheet(
-            "QPushButton { color: #787b86; text-align: left; padding: 2px 4px; }"
+            f"QPushButton {{ color: {current_palette().text_muted}; text-align: left; padding: 2px 4px; }}"
         )
         self._test_details_btn.toggled.connect(self._on_test_details_toggled)
         gl.addWidget(self._test_details_btn)
@@ -472,8 +473,9 @@ class TriggersView(QWidget):
         gl.addWidget(self._test_details, 1)
 
         # Placeholder verdict before the operator clicks Test.
+        _tm = current_palette().text_muted
         self._test_verdict.setText(
-            "<span style='color:#787b86;'>"
+            f"<span style='color:{_tm};'>"
             "Click <b>Test</b> to see what the matcher would do with a sample message."
             "</span>"
         )
@@ -615,8 +617,9 @@ class TriggersView(QWidget):
                 emittable_matched or layer1_matched,
                 key=lambda d: len(d.rule.norm_phrase),
             )
+            _tm_v = current_palette().text_muted
             explain = (
-                f"<span style='color:#787b86;'>Matched by the "
+                f"<span style='color:{_tm_v};'>Matched by the "
                 f"<b>deterministic matcher</b> on phrase "
                 f"<i>{_html_escape(best.rule.phrase)}</i>"
                 f" → emits <b>{_html_escape(best.rule.action_type)}</b>"
@@ -634,8 +637,9 @@ class TriggersView(QWidget):
                 f"</span>"
             )
             if fired:
+                _tm_v2 = current_palette().text_muted
                 explain = (
-                    f"<span style='color:#787b86;'>Matched by the "
+                    f"<span style='color:{_tm_v2};'>Matched by the "
                     f"<b>embedding matcher</b> "
                     f"(score {fired.score:.3f} vs threshold "
                     f"{trigger_matcher.EMBEDDING_THRESHOLD:.2f}) on phrase "
@@ -655,8 +659,9 @@ class TriggersView(QWidget):
                 "<b>✓ Suppressed — would drop as curated noise</b>"
                 "</span>"
             )
+            _tm_v3 = current_palette().text_muted
             explain = (
-                f"<span style='color:#787b86;'>Matched an <b>IGNORE</b> "
+                f"<span style='color:{_tm_v3};'>Matched an <b>IGNORE</b> "
                 f"trigger on whole-message equality with sample "
                 f"<i>{_html_escape(result.suppressed_by.phrase)}</i>"
                 f" → dropped before triage + Sonnet.</span>"
@@ -664,8 +669,9 @@ class TriggersView(QWidget):
             return verdict, explain
 
         # No match anywhere → falls through to Sonnet in production.
+        _tm_v4 = current_palette().text_muted
         verdict = (
-            "<span style='color:#787b86;'>"
+            f"<span style='color:{_tm_v4};'>"
             "<b>✗ No match — Sonnet would handle this message</b>"
             "</span>"
         )
@@ -689,8 +695,9 @@ class TriggersView(QWidget):
                 f"Layer 2: top similarity was {top.score:.3f} "
                 f"(threshold {thr:.2f})"
             )
+        _tm_v5 = current_palette().text_muted
         explain = (
-            "<span style='color:#787b86;'>"
+            f"<span style='color:{_tm_v5};'>"
             + " · ".join(explain_bits)
             + ". Click <b>Show details</b> below for per-rule diagnostics."
             "</span>"
@@ -707,9 +714,10 @@ class TriggersView(QWidget):
         from src import trigger_matcher
 
         parts: list[str] = []
+        _tm_d = current_palette().text_muted
         norm = normalize(text)
         parts.append(
-            f"<p style='color:#787b86; margin:0 0 6px 0; font-size:11px;'>"
+            f"<p style='color:{_tm_d}; margin:0 0 6px 0; font-size:11px;'>"
             f"<b>Normalised message:</b> <code>{_html_escape(norm)}</code></p>"
         )
 
@@ -717,14 +725,14 @@ class TriggersView(QWidget):
         parts.append("<p style='margin:6px 0 2px 0;'><b>Layer 1 — deterministic</b></p>")
         if not result.layer1:
             parts.append(
-                "<p style='color:#787b86; margin:0 0 6px 0;'>"
+                f"<p style='color:{_tm_d}; margin:0 0 6px 0;'>"
                 "(no triggers in profile)</p>"
             )
         else:
             parts.append("<ul style='margin:0 0 6px 16px; padding:0;'>")
             for diag in result.layer1:
                 icon = "✓" if diag.matched else "✗"
-                color = "#26a69a" if diag.matched else "#787b86"
+                color = "#26a69a" if diag.matched else _tm_d
                 phrase = _html_escape(diag.rule.phrase)
                 parts.append(
                     f"<li style='color:{color};'>"
@@ -742,19 +750,19 @@ class TriggersView(QWidget):
         if not result.layer2:
             if not result.layer2_note:
                 parts.append(
-                    "<p style='color:#787b86; margin:0 0 6px 0;'>(no scores)</p>"
+                    f"<p style='color:{_tm_d}; margin:0 0 6px 0;'>(no scores)</p>"
                 )
         else:
             thr = trigger_matcher.EMBEDDING_THRESHOLD
             parts.append(
-                f"<p style='color:#787b86; margin:0 0 4px 0; font-size:11px;'>"
+                f"<p style='color:{_tm_d}; margin:0 0 4px 0; font-size:11px;'>"
                 f"threshold = {thr:.2f}. Top {min(len(result.layer2), 5)} of "
                 f"{len(result.layer2)}.</p>"
             )
             parts.append("<ul style='margin:0 0 6px 16px; padding:0;'>")
             for diag in result.layer2[:5]:
                 fire_color = "#26a69a" if diag.would_fire else (
-                    "#ff9800" if diag.score >= thr else "#787b86"
+                    "#ff9800" if diag.score >= thr else _tm_d
                 )
                 fire_icon = "✓" if diag.would_fire else (
                     "○" if diag.score >= thr else "·"
@@ -1140,8 +1148,9 @@ class _BulkImportDialog(QDialog):
         self.setWindowTitle("Bulk import messages")
         self.resize(640, 480)
 
+        _tm_bi = current_palette().text_muted
         info = QLabel(
-            "<span style='color:#787b86;'>Paste one or more channel "
+            f"<span style='color:{_tm_bi};'>Paste one or more channel "
             "messages. Real signals span multiple lines, so messages "
             "MUST be separated by a <b>blank line</b> (an empty line "
             "between them). Each message is classified via AI; results "

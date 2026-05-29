@@ -37,6 +37,7 @@ from src.gui.services.ai_costs import (
     summarize_by_route,
 )
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 _RANGES: list[tuple[str, int | None]] = [
@@ -249,12 +250,13 @@ class CostView(QWidget):
         today_cost = float(s.per_day.get(today, 0.0))
         pct = (today_cost / budget * 100) if budget > 0 else 0
         if budget <= 0:
+            _tm = current_palette().text_muted
             self._budget_status.setText(
-                "<span style='color:#787b86;'>budget disabled (set > $0 to enable alerts)</span>"
+                f"<span style='color:{_tm};'>budget disabled (set > $0 to enable alerts)</span>"
             )
             self._budget_banner.hide()
             return
-        color = "#787b86"
+        color = current_palette().text_muted
         if pct >= 100:
             color = "#ef5350"
         elif pct >= 80:
@@ -327,8 +329,9 @@ class CostView(QWidget):
         mark_heading(title, "Cost")
         title.setTextFormat(Qt.TextFormat.RichText)
         top.addWidget(title)
+        _tm2 = current_palette().text_muted
         hint = QLabel(
-            "<span style='color:#787b86;'>token usage from logs/ai_calls.jsonl  ·  "
+            f"<span style='color:{_tm2};'>token usage from logs/ai_calls.jsonl  ·  "
             "cost is an estimate using reference rates</span>"
         )
         hint.setTextFormat(Qt.TextFormat.RichText)
@@ -349,7 +352,7 @@ class CostView(QWidget):
         layout.addLayout(top)
 
         self._meta_label = QLabel()
-        self._meta_label.setStyleSheet("color: #787b86; padding-bottom: 4px;")
+        self._meta_label.setStyleSheet(f"color: {current_palette().text_muted}; padding-bottom: 4px;")
         layout.addWidget(self._meta_label)
 
         # Auto-halt toggle (REVIEW.md §4.4). Previously the cost cap was
@@ -476,7 +479,7 @@ class CostView(QWidget):
         ch_layout = QVBoxLayout(ch_panel)
         ch_layout.setContentsMargins(0, 0, 0, 0)
         ch_label = QLabel("Cost by channel  ·  source_channel_id")
-        ch_label.setStyleSheet("color: #787b86; padding-top: 4px;")
+        ch_label.setStyleSheet(f"color: {current_palette().text_muted}; padding-top: 4px;")
         ch_layout.addWidget(ch_label)
         self._channel_table = QTableView()
         self._channel_table.setModel(self._channel_model)
@@ -500,7 +503,7 @@ class CostView(QWidget):
         rt_layout = QVBoxLayout(rt_panel)
         rt_layout.setContentsMargins(0, 0, 0, 0)
         rt_label = QLabel("Cost by route  ·  route_id")
-        rt_label.setStyleSheet("color: #787b86; padding-top: 4px;")
+        rt_label.setStyleSheet(f"color: {current_palette().text_muted}; padding-top: 4px;")
         rt_layout.addWidget(rt_label)
         self._route_table = QTableView()
         self._route_table.setModel(self._route_model)

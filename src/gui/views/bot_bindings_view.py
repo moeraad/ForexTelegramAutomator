@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 from src import config_v2
 from src.config_v2 import ConfigV2
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 _SCOPES = ("global", "destination", "channel", "route")
@@ -79,8 +80,9 @@ class BotBindingsView(QWidget):
         )
         title.setTextFormat(Qt.TextFormat.RichText)
         header.addWidget(title)
+        _tm = current_palette().text_muted
         hint = QLabel(
-            "<span style='color:#787b86;'>which bots DM about which events  ·  "
+            f"<span style='color:{_tm};'>which bots DM about which events  ·  "
             "scope=global/destination/channel/route</span>"
         )
         hint.setTextFormat(Qt.TextFormat.RichText)
@@ -107,7 +109,7 @@ class BotBindingsView(QWidget):
         layout.addWidget(ribbon)
 
         self._summary = QLabel("")
-        self._summary.setStyleSheet("color: #787b86;")
+        self._summary.setStyleSheet(f"color: {current_palette().text_muted};")
         layout.addWidget(self._summary)
 
         self._warnings = QLabel("")
@@ -155,8 +157,9 @@ class BotBindingsView(QWidget):
             self._tree.clear()
             return
         self._cfg = cfg
+        _tm2 = current_palette().text_muted
         self._summary.setText(
-            f"<span style='color:#787b86;'>"
+            f"<span style='color:{_tm2};'>"
             f"{len(cfg.bots)} bot(s) · "
             f"{len(cfg.bot_bindings)} binding(s) · {cfg_path}"
             "</span>"

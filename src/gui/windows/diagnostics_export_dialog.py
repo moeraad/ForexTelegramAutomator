@@ -40,6 +40,7 @@ from src.gui.services.diagnostics_export import (
     estimate_bundle_size,
 )
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 class _ExportWorker(QThread):
@@ -92,8 +93,9 @@ class DiagnosticsExportDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
+        _tm = current_palette().text_muted
         intro = QLabel(
-            "<span style='color:#787b86;'>Bundles CopyTrades logs, the "
+            f"<span style='color:{_tm};'>Bundles CopyTrades logs, the "
             "channel DB (sanitized), service crash logs, and optionally "
             "MT5 terminal/experts logs into a single ZIP. Secrets are "
             "blanked. Filter by time window to keep the bundle small.</span>"
@@ -159,8 +161,9 @@ class DiagnosticsExportDialog(QDialog):
         self._mt5_combo.currentIndexChanged.connect(self._refresh_estimate)
         mt5_row.addWidget(self._mt5_combo, 0, 1)
         if not self._mt5_terminals:
+            _tm2 = current_palette().text_muted
             mt5_row.addWidget(
-                QLabel("<span style='color:#787b86;'>"
+                QLabel(f"<span style='color:{_tm2};'>"
                        "(no MT5 installs found under %APPDATA%/MetaQuotes/Terminal/)"
                        "</span>"),
                 1, 1,
@@ -179,8 +182,9 @@ class DiagnosticsExportDialog(QDialog):
         layout.addWidget(self._sanitize_db)
 
         # Estimate readout ------------------------------------------------
+        _tm3 = current_palette().text_muted
         self._estimate_lbl = QLabel("Estimated size: —")
-        self._estimate_lbl.setStyleSheet("color: #787b86;")
+        self._estimate_lbl.setStyleSheet(f"color: {_tm3};")
         layout.addWidget(self._estimate_lbl)
 
         # Progress bar (hidden until Export starts) -----------------------
@@ -188,7 +192,7 @@ class DiagnosticsExportDialog(QDialog):
         self._progress.setRange(0, 5)   # 5 stages incl. manifest
         self._progress.setVisible(False)
         self._progress_label = QLabel("")
-        self._progress_label.setStyleSheet("color: #787b86;")
+        self._progress_label.setStyleSheet(f"color: {_tm3};")
         self._progress_label.setVisible(False)
         layout.addWidget(self._progress)
         layout.addWidget(self._progress_label)

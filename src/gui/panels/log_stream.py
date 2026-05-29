@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from src.gui.services.log_tailer import LogTailer
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 _SOURCES: list[tuple[str, str]] = [
@@ -158,7 +159,7 @@ class LogStream(QWidget):
         header.addWidget(clear_btn)
 
         self._rate_lbl = QLabel("· tailing")
-        self._rate_lbl.setStyleSheet("color: #787b86; padding-left: 8px;")
+        self._rate_lbl.setStyleSheet(f"color: {current_palette().text_muted}; padding-left: 8px;")
         header.addWidget(self._rate_lbl)
 
         layout.addLayout(header)

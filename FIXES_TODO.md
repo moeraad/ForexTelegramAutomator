@@ -124,6 +124,32 @@ To reopen the review or add new items, run the review again
 
 ---
 
+## Post-review fixes
+
+### CRITICAL
+
+- **#23 Stale singleton-management action retargets a new position** —
+  `src/promoter.py` + `src/bot_loops/promoter_loops.py`. Root cause from
+  diagnostics bundle `SMC-20260529-152134`: a compound `[CLOSE_FULL,
+  OPEN]` emitted off a stale SYSTEM STATE block (36.5s interpreter
+  latency; the prior position had already hit SL). The `CLOSE_FULL`
+  (ticketless — targets the singleton via the EA's
+  `FindSingletonOpenTicket`) stranded in `claimed`, was resurrected by
+  `release_stale_claims` at the 300s mark, re-claimed against the
+  *freshly opened* position, and closed it 5 minutes in for +$486
+  instead of letting it run to its TP (~$4.4k of upside foreclosed).
+  Fix: `SINGLETON_MANAGEMENT_TYPES` set defined; `release_stale_claims`
+  now marks those types `failed`/`stale_claim_not_retried` instead of
+  recycling to `sent` (OPEN/legacy-ticketed keep recycling — duplicate
+  fire is blocked by the `api.py` `claim_expired` guard); new
+  `expire_stale_management` sweeper fails any singleton-management action
+  that sat in `sent` past `MANAGEMENT_MAX_AGE_SEC` (180s), closing the
+  slow-poll variant of the same race. Wired into `claim_sweeper_loop`.
+  9 tests added (`tests/test_promoter.py`). Python-only — restart
+  `bot.py` to activate, no EA recompile.
+
+---
+
 ## Test count progression
 
 - Session start: 161 hermetic tests

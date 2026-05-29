@@ -30,8 +30,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.gui.theme import current_palette
 
-_EDIT_NOTE_STYLE = "color: #787b86; font-style: italic;"
+
+def _edit_note_style() -> str:
+    return f"color: {current_palette().text_muted}; font-style: italic;"
 
 
 class _ReadOnlyBase(QWidget):
@@ -47,7 +50,7 @@ class _ReadOnlyBase(QWidget):
 
         top_row = QHBoxLayout()
         note_label = QLabel(note)
-        note_label.setStyleSheet(_EDIT_NOTE_STYLE)
+        note_label.setStyleSheet(_edit_note_style())
         note_label.setWordWrap(True)
         top_row.addWidget(note_label, 1)
         edit_btn = QPushButton("Edit in Triggers tab")
@@ -271,7 +274,7 @@ class ChipFlowView(_ReadOnlyBase):
         } - {""})
         if not phrases:
             placeholder = QLabel("(no trigger phrases yet)")
-            placeholder.setStyleSheet("color: #787b86;")
+            placeholder.setStyleSheet(f"color: {current_palette().text_muted};")
             self._flow.addWidget(placeholder)
             return
         # Pull colours from the active palette so chips swap with the

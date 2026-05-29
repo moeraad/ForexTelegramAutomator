@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from src.gui.services.replay import HistMessage, ReplayRow, ReplayRunner, load_messages
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 _RANGES: list[tuple[str, int | None]] = [
@@ -249,8 +250,9 @@ class ReplayView(QWidget):
         from src.gui.panels._a11y import mark_heading
         mark_heading(title, "Replay")
         top.addWidget(title)
+        _tm = current_palette().text_muted
         hint = QLabel(
-            "<span style='color:#787b86;'>rerun historical messages through current AI  ·  "
+            f"<span style='color:{_tm};'>rerun historical messages through current AI  ·  "
             "no DB writes  ·  costs real tokens</span>"
         )
         hint.setTextFormat(Qt.TextFormat.RichText)
@@ -315,7 +317,7 @@ class ReplayView(QWidget):
         controls.addWidget(self._ai_combo)
 
         self._estimate_lbl = QLabel("")
-        self._estimate_lbl.setStyleSheet("color: #787b86; padding-left: 12px;")
+        self._estimate_lbl.setStyleSheet(f"color: {current_palette().text_muted}; padding-left: 12px;")
         controls.addWidget(self._estimate_lbl)
         controls.addStretch()
         layout.addLayout(controls)

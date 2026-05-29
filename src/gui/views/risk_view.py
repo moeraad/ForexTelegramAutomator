@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from src.gui.services.risk_budget import RiskConfig, RiskMetrics, RiskMonitor
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 def _hex_to_accent(color: str) -> str:
@@ -65,8 +66,9 @@ class RiskView(QWidget):
         from src.gui.panels._a11y import mark_heading
         mark_heading(title, "Risk budget")
         top.addWidget(title)
+        _tm = current_palette().text_muted
         hint = QLabel(
-            "<span style='color:#787b86;'>auto-halts trading when any limit is breached  ·  "
+            f"<span style='color:{_tm};'>auto-halts trading when any limit is breached  ·  "
             "must be manually cleared via HALT button</span>"
         )
         hint.setTextFormat(Qt.TextFormat.RichText)
@@ -129,7 +131,7 @@ class RiskView(QWidget):
             row.addWidget(bar)
             cap = QLabel("—")
             cap.setMinimumWidth(220)
-            cap.setStyleSheet("color: #787b86; padding-left: 8px;")
+            cap.setStyleSheet(f"color: {current_palette().text_muted}; padding-left: 8px;")
             row.addWidget(cap)
             row.addStretch()
             layout.addLayout(row)

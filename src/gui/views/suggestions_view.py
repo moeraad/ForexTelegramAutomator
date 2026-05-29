@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from src import suggestion_store
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 from src.gui.views.suggestions_logic import (
     accept_suggestion,
     dismiss_suggestion,
@@ -113,7 +114,7 @@ class SuggestionsView(QWidget):
         title.setTextFormat(Qt.TextFormat.RichText)
         header.addWidget(title)
         self._count_label = QLabel("(0)")
-        self._count_label.setStyleSheet("color: #787b86;")
+        self._count_label.setStyleSheet(f"color: {current_palette().text_muted};")
         header.addWidget(self._count_label)
         header.addStretch()
         from src.gui._button_helpers import make_refresh_button
@@ -122,8 +123,9 @@ class SuggestionsView(QWidget):
         header.addWidget(self._refresh_btn)
         layout.addLayout(header)
 
+        _tm = current_palette().text_muted
         hint = QLabel(
-            "<span style='color:#787b86;'>Rules proposed by the channel learning "
+            f"<span style='color:{_tm};'>Rules proposed by the channel learning "
             "loop. Accept to write the rule into profile.json, or Dismiss to skip. "
             "Rows with a <b style='color:#c0392b;'>red warning</b> require "
             "confirmation — the evidence suggests a non-trivial suppression "

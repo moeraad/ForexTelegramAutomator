@@ -32,6 +32,8 @@ from qfluentwidgets import (
     PushButton,
 )
 
+from src.gui.theme import current_palette
+
 
 class CrashBanner(QWidget):
     """Hosts a stack of Fluent InfoBars, one per active crash alert."""
@@ -135,7 +137,7 @@ class _CrashContent(QWidget):
         outer.addLayout(row)
 
         self._path_lbl = QLabel(f"log: {self._log_path}")
-        self._path_lbl.setStyleSheet("color: #787b86; font-size: 11px;")
+        self._path_lbl.setStyleSheet(f"color: {current_palette().text_muted}; font-size: 11px;")
         self._path_lbl.hide()
         outer.addWidget(self._path_lbl)
 

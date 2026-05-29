@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from src.gui.services import nssm_client
 from src.gui.services.health_pinger import ping_once
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 @dataclass(frozen=True)
@@ -203,10 +204,11 @@ class _Pill(QLabel):
         self._set("●", color, caption)
 
     def _set(self, glyph: str, color: str, caption: str) -> None:
+        _tm = current_palette().text_muted
         self.setText(
-            f"<span style='color:#787b86; font-weight:600;'>{self._label}</span>"
+            f"<span style='color:{_tm}; font-weight:600;'>{self._label}</span>"
             f"&nbsp;<span style='color:{color}; font-size:13px;'>{glyph}</span>"
-            f"&nbsp;<span style='color:#787b86;'>{caption}</span>"
+            f"&nbsp;<span style='color:{_tm};'>{caption}</span>"
         )
 
 

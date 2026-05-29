@@ -35,6 +35,7 @@ from src.gui.services.profile_wizard import (
     WizardResults,
 )
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 _PAGE_INTRO = 0
@@ -106,8 +107,9 @@ class _IntroPage(QWizardPage):
         self._channel = QComboBox()
         self._channel.setMinimumWidth(360)
 
+        _tm = current_palette().text_muted
         cost = QLabel(
-            "<span style='color:#787b86;'>Mid-tier classifier runs on every "
+            f"<span style='color:{_tm};'>Mid-tier classifier runs on every "
             "prefilter survivor. 500 msgs ≈ $0.05 - $0.20 depending on "
             "provider.</span>"
         )
@@ -123,7 +125,7 @@ class _IntroPage(QWizardPage):
         self._settings_note = QLabel("")
         self._settings_note.setTextFormat(Qt.TextFormat.RichText)
         self._settings_note.setWordWrap(True)
-        self._settings_note.setStyleSheet("color:#787b86;")
+        self._settings_note.setStyleSheet(f"color:{current_palette().text_muted};")
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
@@ -217,7 +219,7 @@ class _ProgressPage(QWizardPage):
         self._bar = QProgressBar()
         self._bar.setRange(0, 100)
         self._counts = QLabel("")
-        self._counts.setStyleSheet("color: #787b86;")
+        self._counts.setStyleSheet(f"color: {current_palette().text_muted};")
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.setProperty("variant", "danger")
         self._cancel_btn.clicked.connect(self._on_cancel)

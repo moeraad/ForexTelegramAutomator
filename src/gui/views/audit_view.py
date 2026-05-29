@@ -40,6 +40,7 @@ from src.gui.services.audit_aggregator import (
     search_trace,
 )
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 class AuditView(QWidget):
@@ -54,8 +55,9 @@ class AuditView(QWidget):
         self._stack = stack
         # Cleared results; operator triggers a fresh search after rebind.
         self._tree.clear()
+        _tm = current_palette().text_muted
         self._summary.setText(
-            "<span style='color:#787b86;'>Channel rebind — re-run search.</span>"
+            f"<span style='color:{_tm};'>Channel rebind — re-run search.</span>"
         )
 
     # ---- UI scaffolding ---------------------------------------------------
@@ -71,8 +73,9 @@ class AuditView(QWidget):
         )
         title.setTextFormat(Qt.TextFormat.RichText)
         header.addWidget(title)
+        _tm2 = current_palette().text_muted
         hint = QLabel(
-            "<span style='color:#787b86;'>cross-destination message tracer  ·  "
+            f"<span style='color:{_tm2};'>cross-destination message tracer  ·  "
             "search by tg_message_id (exact) or text (substring)</span>"
         )
         hint.setTextFormat(Qt.TextFormat.RichText)
@@ -116,8 +119,9 @@ class AuditView(QWidget):
 
         layout.addLayout(controls)
 
+        _tm3 = current_palette().text_muted
         self._summary = QLabel(
-            "<span style='color:#787b86;'>Enter a tg_message_id or text "
+            f"<span style='color:{_tm3};'>Enter a tg_message_id or text "
             "substring and click Search. Empty query returns recent "
             "messages per destination.</span>"
         )
@@ -173,8 +177,9 @@ class AuditView(QWidget):
             criteria_parts.append(f"text~{text_query!r}")
         if not criteria_parts:
             criteria_parts.append("recent")
+        _tm4 = current_palette().text_muted
         self._summary.setText(
-            f"<span style='color:#787b86;'>"
+            f"<span style='color:{_tm4};'>"
             f"search [{' AND '.join(criteria_parts)}]  →  "
             f"{total_messages} message(s) across "
             f"{len(traces)} destination(s)"

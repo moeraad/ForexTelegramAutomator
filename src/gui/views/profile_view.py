@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 from src.gui.services import nssm_client
 from src.gui.services.playground import PlaygroundResult, format_actions, run_playground
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 _SHORT_FIELDS = ("name", "symbol", "language")
@@ -249,7 +250,7 @@ class ProfileView(QWidget):
         layout.addWidget(self._picker_holder)
 
         self._meta_label = QLabel()
-        self._meta_label.setStyleSheet("color: #787b86; padding-bottom: 4px;")
+        self._meta_label.setStyleSheet(f"color: {current_palette().text_muted}; padding-bottom: 4px;")
         layout.addWidget(self._meta_label)
 
         self._tabs = QTabWidget()
@@ -482,9 +483,10 @@ class ProfileView(QWidget):
 
     def _load_from_disk(self) -> None:
         path = self._active_profile_path()
+        _tm = current_palette().text_muted
         self._title.setText(
             f"<span style='font-size:16px; font-weight:700;'>PROFILE</span>"
-            f"&nbsp;&nbsp;<span style='color:#787b86;'>{self._active_profile_name}</span>"
+            f"&nbsp;&nbsp;<span style='color:{_tm};'>{self._active_profile_name}</span>"
         )
         self._meta_label.setText(f"file: {path}")
         if not path.exists():
@@ -801,8 +803,9 @@ class _PlaygroundTab(QWidget):
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(8)
 
+        _tm2 = current_palette().text_muted
         notice = QLabel(
-            "<span style='color:#787b86;'>"
+            f"<span style='color:{_tm2};'>"
             "Live AI call against the active channel's state (no DB writes). "
             "Save profile changes before running so the prompt picks them up. "
             "Costs real tokens."
@@ -825,7 +828,7 @@ class _PlaygroundTab(QWidget):
         self._run_btn.clicked.connect(self._on_run)
         action_row.addWidget(self._run_btn)
         self._status = QLabel("")
-        self._status.setStyleSheet("color: #787b86; padding-left: 12px;")
+        self._status.setStyleSheet(f"color: {current_palette().text_muted}; padding-left: 12px;")
         action_row.addWidget(self._status)
         action_row.addStretch()
         layout.addLayout(action_row)

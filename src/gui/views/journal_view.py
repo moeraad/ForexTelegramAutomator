@@ -42,6 +42,7 @@ from src.gui.services.journal_data import (
     summary,
 )
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 from src.gui.views._pg_hover import HoverPoint, HoverTracker
 
 
@@ -210,8 +211,8 @@ class JournalView(QWidget):
         """Common style for the section captions above each chart/table."""
         lbl = QLabel(text)
         lbl.setStyleSheet(
-            "font-size: 12px; font-weight: 700; letter-spacing: 1.5px; "
-            "color: #787b86; padding-top: 4px; padding-bottom: 4px;"
+            f"font-size: 12px; font-weight: 700; letter-spacing: 1.5px; "
+            f"color: {current_palette().text_muted}; padding-top: 4px; padding-bottom: 4px;"
         )
         return lbl
 

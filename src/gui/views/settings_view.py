@@ -37,6 +37,7 @@ from src.gui.services.env_io import EnvLine, is_secret, parse_env, write_env
 from src.gui.services.stack_registry import Stack
 from src.gui.services.stacks_config_io import StackEntry, load_entries, save_entries, stacks_config_path
 from src.gui.services.telegram_session import session_path
+from src.gui.theme import current_palette
 
 
 class SettingsView(QWidget):
@@ -107,8 +108,9 @@ class SettingsView(QWidget):
                 1 for svc in self._stack.service_names if nssm_client.service_running(svc)
             )
             total = len(self._stack.service_names)
+            _tm = current_palette().text_muted
             self._status_label.setText(
-                f"<span style='color:#787b86;'>services: {running}/{total} running</span>"
+                f"<span style='color:{_tm};'>services: {running}/{total} running</span>"
             )
         self._status_label.setTextFormat(Qt.TextFormat.RichText)
 
@@ -126,8 +128,9 @@ class _ChannelsTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 8, 0, 0)
 
+        _tm2 = current_palette().text_muted
         info = QLabel(
-            f"<span style='color:#787b86;'>file: {stacks_config_path()}  ·  "
+            f"<span style='color:{_tm2};'>file: {stacks_config_path()}  ·  "
             "edits require an app restart to take effect</span>"
         )
         info.setTextFormat(Qt.TextFormat.RichText)
@@ -338,7 +341,7 @@ class _TuningTab(QWidget):
         layout.setContentsMargins(0, 8, 0, 0)
 
         self._meta = QLabel()
-        self._meta.setStyleSheet("color: #787b86;")
+        self._meta.setStyleSheet(f"color: {current_palette().text_muted};")
         layout.addWidget(self._meta)
 
         # Compact ribbon (Office-style) replaces the previous flat
@@ -354,8 +357,9 @@ class _TuningTab(QWidget):
             ]),
         ])
         layout.addWidget(ribbon)
+        _tm3 = current_palette().text_muted
         note = QLabel(
-            "<span style='color:#787b86;'>changes apply on the next service restart</span>"
+            f"<span style='color:{_tm3};'>changes apply on the next service restart</span>"
         )
         note.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(note)
@@ -378,7 +382,7 @@ class _TuningTab(QWidget):
     def _make_section_label(self, text: str) -> QLabel:
         lbl = QLabel(text)
         lbl.setStyleSheet(
-            "color: #787b86; font-size: 11px; font-weight: 700; "
+            f"color: {current_palette().text_muted}; font-size: 11px; font-weight: 700; "
             "letter-spacing: 1.5px; padding-top: 4px; border-bottom: 1px solid #2a2e39;"
         )
         return lbl
@@ -469,7 +473,7 @@ class _TuningTab(QWidget):
     def _info_icon(self, tooltip: str) -> QLabel:
         icon = QLabel("ⓘ")
         icon.setStyleSheet(
-            "color: #787b86; padding: 0 6px; font-size: 14px;"
+            f"color: {current_palette().text_muted}; padding: 0 6px; font-size: 14px;"
         )
         icon.setCursor(Qt.CursorShape.WhatsThisCursor)
         icon.setToolTip(tooltip or "(no description yet)")
@@ -1033,8 +1037,9 @@ class _ServicesTab(QWidget):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 8, 0, 0)
+        _tm4 = current_palette().text_muted
         info = QLabel(
-            "<span style='color:#787b86;'>NSSM service lifecycle for the active channel  ·  "
+            f"<span style='color:{_tm4};'>NSSM service lifecycle for the active channel  ·  "
             "stop/start may need admin privileges</span>"
         )
         info.setTextFormat(Qt.TextFormat.RichText)
@@ -1089,8 +1094,9 @@ class _ServicesTab(QWidget):
         )
         self._v2_install_all_btn.clicked.connect(self._on_install_v2_all)
         v2_row.addWidget(self._v2_install_all_btn)
+        _tm5 = current_palette().text_muted
         v2_hint = QLabel(
-            "<span style='color:#787b86;font-size:11px;'>"
+            f"<span style='color:{_tm5};font-size:11px;'>"
             "Replaces per-channel install for v2 configs. Each entity → 1 service. "
             "Open Services.msc to verify after."
             "</span>"

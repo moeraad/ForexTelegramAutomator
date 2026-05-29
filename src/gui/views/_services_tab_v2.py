@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from src.gui.services import nssm_client
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 # --------------------------------------------------------------------- model
@@ -164,12 +165,13 @@ class _ServiceRowWidget(QFrame):
 
         left = QVBoxLayout()
         left.setSpacing(2)
+        _tm = current_palette().text_muted
         title = QLabel(
             f"<b>{row.entity_name}</b>  "
-            f"<span style='color:#787b86;'>-  {row.service_name}</span>"
+            f"<span style='color:{_tm};'>-  {row.service_name}</span>"
         )
         title.setTextFormat(Qt.TextFormat.RichText)
-        sub = QLabel(f"<span style='color:#787b86; font-size:11px;'>{row.subtitle}</span>")
+        sub = QLabel(f"<span style='color:{_tm}; font-size:11px;'>{row.subtitle}</span>")
         sub.setTextFormat(Qt.TextFormat.RichText)
         left.addWidget(title)
         left.addWidget(sub)
@@ -209,7 +211,7 @@ class _ServiceRowWidget(QFrame):
         name = self._row.service_name
         if not nssm_client.service_exists(name):
             self._state.setText(
-                "<span style='color:#787b86; font-weight:600;'>NOT INSTALLED</span>"
+                f"<span style='color:{current_palette().text_muted}; font-weight:600;'>NOT INSTALLED</span>"
             )
             return
         if nssm_client.service_running(name):
@@ -237,9 +239,10 @@ class _SectionCard(QFrame):
             " margin-bottom: 8px;"
             "}"
         )
+        _tm_card = current_palette().text_muted
         self._title = QLabel(
             f"<span style='font-size:11px;font-weight:700;letter-spacing:1.5px;"
-            f"color:#787b86;'>{title.upper()}</span>"
+            f"color:{_tm_card};'>{title.upper()}</span>"
         )
         self._title.setTextFormat(Qt.TextFormat.RichText)
         self._layout = QVBoxLayout(self)
@@ -257,8 +260,9 @@ class _SectionCard(QFrame):
             if w is not None:
                 w.deleteLater()
         if not widgets:
+            _tm_empty = current_palette().text_muted
             empty = QLabel(
-                "<span style='color:#787b86; font-style:italic;'>"
+                f"<span style='color:{_tm_empty}; font-style:italic;'>"
                 "(no entities in this group yet - add one via V2 Config)"
                 "</span>"
             )
@@ -369,8 +373,9 @@ class ServicesTabV2(QWidget):
         else:
             self._error_label.setText("")
 
+        _tm_top = current_palette().text_muted
         self._topology.setText(
-            "<span style='color:#787b86;'>"
+            f"<span style='color:{_tm_top};'>"
             f"<b>{len(accounts)}</b> account(s)  -  "
             f"<b>{len(destinations)}</b> destination(s)  -  "
             f"<b>{len(bots)}</b> bot(s)  ::  "

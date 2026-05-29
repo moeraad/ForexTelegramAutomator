@@ -15,7 +15,6 @@ from src.bot_loops.orphan_recovery import (
 from src.db import connect, init_schema, get_setting, set_setting
 from src.logging_setup import configure_logging
 from src.telegram_format import render_action_notification
-from src.promoter import promote_due_actions, release_stale_claims
 
 log = configure_logging("bot")
 

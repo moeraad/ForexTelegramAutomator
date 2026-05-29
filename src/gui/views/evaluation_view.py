@@ -48,6 +48,7 @@ from src.gui.services.evaluation_data import (
     regime_buckets,
 )
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 _RANGES: list[tuple[str, int | None]] = [
@@ -126,7 +127,7 @@ class EvaluationView(QWidget):
         top.addWidget(self._range_combo)
         top.addStretch()
         self._stats_label = QLabel("")
-        self._stats_label.setStyleSheet("color: #787b86;")
+        self._stats_label.setStyleSheet(f"color: {current_palette().text_muted};")
         top.addWidget(self._stats_label)
         top.addSpacing(8)
         from src.gui._button_helpers import make_refresh_button
@@ -609,8 +610,11 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
     verdict = e.get("verdict", "—")
     score_color = _verdict_color(verdict)
 
+    _pal = current_palette()
+    _tm = _pal.text_muted
+    _tx = _pal.text
     pnl_color = "#26a69a" if t.realized_pnl > 0 else (
-        "#ef5350" if t.realized_pnl < 0 else "#787b86"
+        "#ef5350" if t.realized_pnl < 0 else _tm
     )
 
     parts: list[str] = []
@@ -618,11 +622,11 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
     # 1. Header
     parts.append(
         f"<div style='font-family: -apple-system, Segoe UI, sans-serif;'>"
-        f"<div style='color:#787b86; font-size:11px;'>"
+        f"<div style='color:{_tm}; font-size:11px;'>"
         f"ticket {_html_escape(t.ticket)} · action #{_html_escape(t.action_id)} "
         f"· {_html_escape(t.action_type)} {_html_escape(t.side)}"
         f"</div>"
-        f"<div style='color:#787b86; font-size:11px; margin-top:2px;'>"
+        f"<div style='color:{_tm}; font-size:11px; margin-top:2px;'>"
         f"opened {_html_escape(t.opened_at[:19].replace('T',' '))} · "
         f"closed {_html_escape(t.closed_at[:19].replace('T',' '))} · "
         f"hold {t.hold_minutes if t.hold_minutes is not None else '—'} min · "
@@ -646,7 +650,7 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
     parts.append(
         f"<div style='margin-top:14px; padding:8px 0 8px 14px; "
         f"border-left:4px solid {score_color};'>"
-        f"<span style='font-size:11px; color:#787b86; letter-spacing:1px;'>SCORE</span>"
+        f"<span style='font-size:11px; color:{_tm}; letter-spacing:1px;'>SCORE</span>"
         f"<div style='font-size:28px; font-weight:700; color:{score_color}; "
         f"line-height:1.1;'>"
         f"{_html_escape(score)} <span style='font-size:13px; font-weight:500;'>"
@@ -654,15 +658,15 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
     )
     if key_factor:
         parts.append(
-            f"<div style='margin-top:8px; font-size:13px; color:#d1d4dc;'>"
-            f"<span style='color:#787b86; font-size:11px; letter-spacing:1px;'>"
+            f"<div style='margin-top:8px; font-size:13px; color:{_tx};'>"
+            f"<span style='color:{_tm}; font-size:11px; letter-spacing:1px;'>"
             f"KEY FACTOR</span><br>"
             f"{_html_escape(key_factor)}"
             f"</div>"
         )
     if summary:
         parts.append(
-            f"<div style='margin-top:8px; font-size:12px; color:#787b86; "
+            f"<div style='margin-top:8px; font-size:12px; color:{_tm}; "
             f"font-family: Consolas, monospace; line-height:1.5;'>"
             f"{_html_escape(summary)}"
             f"</div>"
@@ -679,21 +683,21 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
     direction = e.get("direction") or t.side
     ver = e.get("evaluator_version", "v1")
     style_rows = [
-        f"<tr><td style='color:#787b86;'>Direction</td><td>{_html_escape(direction)}</td></tr>",
-        f"<tr><td style='color:#787b86;'>Effective style</td><td>{_html_escape(effective_style)}</td></tr>",
+        f"<tr><td style='color:{_tm};'>Direction</td><td>{_html_escape(direction)}</td></tr>",
+        f"<tr><td style='color:{_tm};'>Effective style</td><td>{_html_escape(effective_style)}</td></tr>",
     ]
     # Only print the bare style row when it differs from effective_style
     # — typically only when style_source starts with `ai_override:`.
     if bare_style and bare_style != effective_style:
         style_rows.append(
-            f"<tr><td style='color:#787b86;'>Composer style</td>"
+            f"<tr><td style='color:{_tm};'>Composer style</td>"
             f"<td>{_html_escape(bare_style)}</td></tr>"
         )
     style_rows.append(
-        f"<tr><td style='color:#787b86;'>Style source</td><td>{_html_escape(style_src)}</td></tr>"
+        f"<tr><td style='color:{_tm};'>Style source</td><td>{_html_escape(style_src)}</td></tr>"
     )
     style_rows.append(
-        f"<tr><td style='color:#787b86;'>Evaluator</td><td>{_html_escape(ver)}</td></tr>"
+        f"<tr><td style='color:{_tm};'>Evaluator</td><td>{_html_escape(ver)}</td></tr>"
     )
     parts.append(
         "<h4 style='margin-top:18px; margin-bottom:6px;'>Direction &amp; style</h4>"
@@ -716,7 +720,7 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
         ):
             v = regime.get(key, "—")
             rows.append(
-                f"<tr><td style='color:#787b86;'>{label}</td>"
+                f"<tr><td style='color:{_tm};'>{label}</td>"
                 f"<td>{_html_escape(v)}</td></tr>"
             )
         parts.append("<table cellspacing='0' cellpadding='4'>" + "".join(rows) + "</table>")
@@ -756,21 +760,21 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
                 col = (
                     "#26a69a" if sv > 0.1
                     else "#ef5350" if sv < -0.1
-                    else "#787b86"
+                    else _tm
                 )
             except ValueError:
                 # v1 sometimes uses "data_quality_limited: ..." as the
                 # whole string — no numeric score to render.
-                col = "#787b86"
+                col = _tm
                 score_str = "—"
                 rationale = raw
             rows.append(
                 f"<tr>"
-                f"<td style='color:#787b86; padding-right:10px; "
+                f"<td style='color:{_tm}; padding-right:10px; "
                 f"font-family: Consolas, monospace;'>"
                 f"{_html_escape(key)}</td>"
                 f"<td style='color:{col}; font-weight:600;'>{_html_escape(score_str)}</td>"
-                f"<td style='color:#d1d4dc; padding-left:10px;'>{_html_escape(rationale)}</td>"
+                f"<td style='color:{_tx}; padding-left:10px;'>{_html_escape(rationale)}</td>"
                 f"</tr>"
             )
         parts.append(
@@ -803,7 +807,7 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
         rows_html = "".join(
             f"<tr>"
             f"<td style='color:#f6c453; font-weight:600; padding:2px 10px 2px 0;'>{_html_escape(ax)}</td>"
-            f"<td style='color:#d1d4dc; font-size:11px;'>{_html_escape(', '.join(fields))}</td>"
+            f"<td style='color:{_tx}; font-size:11px;'>{_html_escape(', '.join(fields))}</td>"
             f"</tr>"
             for ax, fields in grouped.items()
         )
@@ -813,7 +817,7 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
             "<table cellspacing='0' cellpadding='2'>"
             + rows_html
             + "</table>"
-            "<div style='color:#787b86; font-size:10px; margin-top:4px;'>"
+            f"<div style='color:{_tm}; font-size:10px; margin-top:4px;'>"
             "Axes with missing inputs scored on partial data — verdict may be inflated.</div>"
         )
 
@@ -828,23 +832,23 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
         status_colors = {
             "ok": "#26a69a",
             "failed": "#ef5350",
-            "unavailable": "#787b86",
+            "unavailable": _tm,
         }
-        status_col = status_colors.get(str(syn_status).lower(), "#787b86")
+        status_col = status_colors.get(str(syn_status).lower(), _tm)
         parts.append(
             "<h4 style='margin-top:14px; margin-bottom:6px;'>Synthesizer</h4>"
             "<table cellspacing='0' cellpadding='4'>"
         )
         if syn_status:
             parts.append(
-                f"<tr><td style='color:#787b86;'>Status</td>"
+                f"<tr><td style='color:{_tm};'>Status</td>"
                 f"<td style='color:{status_col}; font-weight:600;'>"
                 f"{_html_escape(syn_status)}</td></tr>"
             )
         if horizons_minutes:
             hz = ", ".join(str(int(m)) for m in horizons_minutes if isinstance(m, (int, float)))
             parts.append(
-                f"<tr><td style='color:#787b86;'>Requested horizons (min)</td>"
+                f"<tr><td style='color:{_tm};'>Requested horizons (min)</td>"
                 f"<td>{_html_escape(hz)}</td></tr>"
             )
         parts.append("</table>")
@@ -866,7 +870,7 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
             "Probabilities by horizon</h4>"
         )
         rows = [
-            "<tr style='color:#787b86;'>"
+            f"<tr style='color:{_tm};'>"
             "<th align='left'>Horizon</th>"
             "<th align='left'>P(profit)</th>"
             "<th align='left'>P(drawdown first)</th>"
@@ -885,7 +889,7 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
             pp_col = (
                 "#26a69a" if isinstance(pp, (int, float)) and pp >= 0.55
                 else "#ef5350" if isinstance(pp, (int, float)) and pp < 0.45
-                else "#d1d4dc"
+                else _tx
             )
             rows.append(
                 f"<tr>"
@@ -916,7 +920,7 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
         parts.append(
             "<h4 style='margin-top:14px; margin-bottom:6px;'>Edge thesis</h4>"
             f"<blockquote style='margin:0; padding:4px 0 4px 12px; "
-            f"border-left:3px solid #5b8def; color:#d1d4dc;'>"
+            f"border-left:3px solid #5b8def; color:{_tx};'>"
             f"{_html_escape(thesis)}</blockquote>"
         )
 
@@ -946,7 +950,7 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
             mult_col = (
                 "#26a69a" if isinstance(mult, (int, float)) and mult > 1.0
                 else "#ef5350" if isinstance(mult, (int, float)) and mult < 1.0
-                else "#d1d4dc"
+                else _tx
             )
             badge = (
                 f"<span style='color:{mult_col}; font-weight:600;'>"
@@ -957,7 +961,7 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
             f"<div>Multiplier: {badge}"
             f" · p_profit used: <b>{_format_pct(p_used, 1)}</b>"
             f" · horizon: <b>{_html_escape(horizon)} min</b></div>"
-            f"<div style='color:#787b86; font-size:11px; margin-top:4px;'>"
+            f"<div style='color:{_tm}; font-size:11px; margin-top:4px;'>"
             f"{_html_escape(reason)}</div>"
         )
 
@@ -979,14 +983,14 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
             "<h4 style='margin-top:14px; margin-bottom:6px;'>"
             "Synthesizer input (excerpt)</h4>"
             f"<pre style='font-family: Consolas, monospace; font-size:11px; "
-            f"color:#787b86; white-space:pre-wrap; "
+            f"color:{_tm}; white-space:pre-wrap; "
             f"margin:0; padding:4px 0 4px 10px; "
             f"border-left:2px solid #2a2e39;'>"
             f"{_html_escape(ctx)}</pre>"
         )
 
     parts.append(
-        f"<div style='color:#787b86; font-size:10px; margin-top:14px;'>"
+        f"<div style='color:{_tm}; font-size:10px; margin-top:14px;'>"
         f"evaluated_at: {_html_escape(e.get('evaluated_at', '—'))}"
         f"</div></div>"
     )
@@ -995,15 +999,16 @@ def _render_trade_html(t: EvaluatedTrade) -> str:
 
 def _render_no_eval_html(t: EvaluatedTrade) -> str:
     """Friendly empty-state when a trade has no evaluation block."""
+    _tm = current_palette().text_muted
     return (
         "<div style='font-family: -apple-system, Segoe UI, sans-serif;'>"
-        f"<div style='color:#787b86; font-size:11px;'>"
+        f"<div style='color:{_tm}; font-size:11px;'>"
         f"ticket {t.ticket} · action #{t.action_id} · "
         f"{_html_escape(t.action_type)} {_html_escape(t.side)}"
         "</div>"
         "<div style='margin-top:14px; padding:10px 12px; "
         "background:rgba(120,123,134,0.08); border-radius:6px; "
-        "color:#787b86;'>"
+        f"color:{_tm};'>"
         "No evaluation recorded for this trade.<br><br>"
         "This usually means the trade fired before the v2 evaluator "
         "was wired, or the evaluator worker crashed.<br>"
@@ -1071,8 +1076,9 @@ class _CalibrationTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
 
+        _tm_cal = current_palette().text_muted
         hint = QLabel(
-            "<span style='color:#787b86;'>Bars: actual win rate per "
+            f"<span style='color:{_tm_cal};'>Bars: actual win rate per "
             "evaluator score band. Solid = realized, hatched = "
             "synthesizer's claimed p_profit (when available). Sample "
             "counts shown below each band — under ~10 trades per "
@@ -1106,7 +1112,7 @@ class _CalibrationTab(QWidget):
         layout.addWidget(self._plot, 1)
 
         self._summary = QLabel("")
-        self._summary.setStyleSheet("color: #787b86; font-family: Consolas, monospace;")
+        self._summary.setStyleSheet(f"color: {current_palette().text_muted}; font-family: Consolas, monospace;")
         layout.addWidget(self._summary)
 
     def populate(self, buckets: list[CalibrationBucket]) -> None:
@@ -1203,8 +1209,9 @@ class _RegimeTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
 
+        _tm_reg = current_palette().text_muted
         hint = QLabel(
-            "<span style='color:#787b86;'>Regimes with fewer than 3 "
+            f"<span style='color:{_tm_reg};'>Regimes with fewer than 3 "
             "trades are hidden — too small a sample to interpret. "
             "Look for high win-rate regimes (lean into) and low ones "
             "(downgrade / skip).</span>"

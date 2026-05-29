@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 from src.gui.panels.channel_switcher import ChannelSwitcher
 from src.gui.services.halt_controller import HaltController
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 _HALT_STYLE = (
@@ -53,7 +54,7 @@ class HeaderBar(QWidget):
         layout.addWidget(self.switcher)
 
         self.summary = QLabel("Today  +$0.00  ·  Signals 0  ·  Wins 0/0")
-        self.summary.setStyleSheet("color: #787b86; padding-left: 16px;")
+        self.summary.setStyleSheet(f"color: {current_palette().text_muted}; padding-left: 16px;")
         layout.addWidget(self.summary)
         layout.addStretch()
 

@@ -61,6 +61,7 @@ from src.config_v2 import (
     Route,
 )
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 class V2ConfigView(QWidget):
@@ -90,8 +91,9 @@ class V2ConfigView(QWidget):
         )
         title.setTextFormat(Qt.TextFormat.RichText)
         header.addWidget(title)
+        _tm = current_palette().text_muted
         hint = QLabel(
-            "<span style='color:#787b86;'>multi-channel routing entities  ·  "
+            f"<span style='color:{_tm};'>multi-channel routing entities  ·  "
             "edit stacks_config.json directly for full control</span>"
         )
         hint.setTextFormat(Qt.TextFormat.RichText)
@@ -104,7 +106,7 @@ class V2ConfigView(QWidget):
         layout.addLayout(header)
 
         self._summary = QLabel("")
-        self._summary.setStyleSheet("color: #787b86;")
+        self._summary.setStyleSheet(f"color: {current_palette().text_muted};")
         layout.addWidget(self._summary)
 
         self._tabs = QTabWidget()
@@ -188,8 +190,9 @@ class V2ConfigView(QWidget):
             # than blocking the operator behind an error banner.
             cfg = config_v2.ConfigV2()
             self._cfg = cfg
+            _tm2 = current_palette().text_muted
             self._summary.setText(
-                "<span style='color:#787b86;'>"
+                f"<span style='color:{_tm2};'>"
                 "Empty v2 config — start by adding an Account, then a "
                 "Profile, then a Channel/Destination/Bot/Route. "
                 f"File: {cfg_path}</span>"
@@ -202,8 +205,9 @@ class V2ConfigView(QWidget):
             self._tab_channels.set_known_account_ids(set())
             return
         self._cfg = cfg
+        _tm3 = current_palette().text_muted
         self._summary.setText(
-            f"<span style='color:#787b86;'>"
+            f"<span style='color:{_tm3};'>"
             f"{len(cfg.accounts)} account(s) · "
             f"{len(cfg.profiles)} profile(s) · "
             f"{len(cfg.channels)} channel(s) · "
@@ -583,8 +587,9 @@ class _EditEntityFormDialog(QDialog):
         from typing import get_type_hints
 
         outer = QVBoxLayout(self)
+        _tm_e = current_palette().text_muted
         outer.addWidget(QLabel(
-            f"<span style='color:#787b86;'>"
+            f"<span style='color:{_tm_e};'>"
             f"Edit the {entity_label} fields below. The "
             "<code>id</code> is locked — references to it from other "
             "entities would break.</span>",
@@ -1038,7 +1043,7 @@ class _AddChannelDialog(QDialog):
 
         # Status / load-state indicator next to the channel combo.
         self._channel_status = QLabel("")
-        self._channel_status.setStyleSheet("color: #787b86;")
+        self._channel_status.setStyleSheet(f"color: {current_palette().text_muted};")
         self._channel_status.setWordWrap(True)
         form.addRow("", self._channel_status)
 
@@ -1148,8 +1153,9 @@ class _AddChannelDialog(QDialog):
             self._channel_status.setTextFormat(Qt.TextFormat.RichText)
             self._form.setRowVisible(self._manual_chat_id, True)
             return
+        _tm_ch = current_palette().text_muted
         self._channel_status.setText(
-            "<span style='color:#787b86;'>loading channels…</span>"
+            f"<span style='color:{_tm_ch};'>loading channels…</span>"
         )
         self._channel_status.setTextFormat(Qt.TextFormat.RichText)
         if self._service is None:
@@ -1187,8 +1193,9 @@ class _AddChannelDialog(QDialog):
             tag = "channel" if d.is_broadcast else "supergroup"
             self._channel.addItem(f"{d.title}  ·  {tag}", int(d.id))
         self._channel.blockSignals(False)
+        _tm_ch2 = current_palette().text_muted
         self._channel_status.setText(
-            f"<span style='color:#787b86;'>{len(channels)} channel(s) loaded.</span>"
+            f"<span style='color:{_tm_ch2};'>{len(channels)} channel(s) loaded.</span>"
         )
         self._on_channel_changed(self._channel.currentIndex())
 
@@ -1415,8 +1422,9 @@ class _AddAccountDialog(QDialog):
         outer.addLayout(actions)
 
         # Status text — single label, role changes with phase.
+        _tm_st = current_palette().text_muted
         self._status = QLabel(
-            "<span style='color:#787b86;'>Fill credentials and click Connect.</span>"
+            f"<span style='color:{_tm_st};'>Fill credentials and click Connect.</span>"
         )
         self._status.setTextFormat(Qt.TextFormat.RichText)
         self._status.setWordWrap(True)
@@ -1936,8 +1944,9 @@ class _AddDestinationDialog(QDialog):
         outer = QVBoxLayout(self)
 
         # ---- Field-meaning legend (operator-friendly) -----------------
+        _tm_dest = current_palette().text_muted
         legend = QLabel(
-            "<span style='color:#787b86;font-size:11px;'>"
+            f"<span style='color:{_tm_dest};font-size:11px;'>"
             "<b>Display name</b> — shown in the GUI &amp; used to derive the "
             "internal id and service name.<br>"
             "<b>MT5 label</b> — free-form tag for your own reference (e.g. "
@@ -2004,8 +2013,9 @@ class _AddDestinationDialog(QDialog):
         self._form.addRow("MT5 label:", self._mt5_label)
 
         # Service-name reminder
+        _tm_svc = current_palette().text_muted
         self._form.addRow(QLabel(
-            "<span style='color:#787b86;font-size:11px;'>"
+            f"<span style='color:{_tm_svc};font-size:11px;'>"
             "Service name auto-derived as CT-Api-&lt;id&gt;. Install NSSM "
             "services via Settings after save.</span>"
         ))
@@ -2087,8 +2097,9 @@ class _AddBotDialog(QDialog):
         self._token_key.setText("tg_bot_token")
         self._token_key.setPlaceholderText("tg_bot_token")
         form.addRow("Token-storage key:", self._token_key)
+        _tm_bot = current_palette().text_muted
         form.addRow(QLabel(
-            "<span style='color:#787b86;font-size:11px;'>"
+            f"<span style='color:{_tm_bot};font-size:11px;'>"
             "<b>Token-storage key</b> is the NAME of the setting that "
             "holds the real Telegram bot token in each destination's DB "
             "— NOT the token itself. Leave as <code>tg_bot_token</code> "

@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.gui.theme import current_palette
+
 
 class CollapsibleSection(QWidget):
     """Header-controlled show/hide container. Header is a flat button so
@@ -59,17 +61,18 @@ class CollapsibleSection(QWidget):
         self._header = QPushButton()
         self._header.setFlat(True)
         self._header.setCursor(Qt.CursorShape.PointingHandCursor)
+        _pal = current_palette()
         self._header.setStyleSheet(
-            "QPushButton { "
-            "  text-align: left; "
-            "  padding: 6px 4px; "
-            "  border: none; "
-            "  font-size: 11px; "
-            "  font-weight: 700; "
-            "  letter-spacing: 1px; "
-            "  color: #d1d4dc; "
-            "}"
-            "QPushButton:hover { color: #ffffff; }"
+            f"QPushButton {{ "
+            f"  text-align: left; "
+            f"  padding: 6px 4px; "
+            f"  border: none; "
+            f"  font-size: 11px; "
+            f"  font-weight: 700; "
+            f"  letter-spacing: 1px; "
+            f"  color: {_pal.text}; "
+            f"}}"
+            f"QPushButton:hover {{ color: {_pal.text}; }}"
         )
         self._header.clicked.connect(self.toggle)
         outer.addWidget(self._header)

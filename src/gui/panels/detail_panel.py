@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from src.gui.models.actions_model import ActionRow, _age_text
 from src.gui.services.db_subscriber import DBSubscriber
+from src.gui.theme import current_palette
 
 
 _VERDICT_COLOR = {
@@ -28,19 +29,21 @@ _VERDICT_COLOR = {
 
 
 def _section_title(text: str) -> QLabel:
+    pal = current_palette()
     lbl = QLabel(text)
     lbl.setStyleSheet(
-        "color: #787b86; font-size: 11px; font-weight: 700; "
+        f"color: {pal.text_muted}; font-size: 11px; font-weight: 700; "
         "letter-spacing: 1px; padding-top: 12px;"
     )
     return lbl
 
 
 def _body(text: str, css: str = "") -> QLabel:
+    pal = current_palette()
     lbl = QLabel(text)
     lbl.setWordWrap(True)
     lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-    lbl.setStyleSheet(f"color: #d1d4dc; padding: 4px 0; {css}")
+    lbl.setStyleSheet(f"color: {pal.text}; padding: 4px 0; {css}")
     lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
     return lbl
 
@@ -138,9 +141,10 @@ class DetailPanel(QWidget):
         h.setContentsMargins(0, 2, 0, 2)
         h.setSpacing(0)
         k = QLabel(key.upper())
-        k.setStyleSheet("color: #787b86; font-size: 10px; letter-spacing: 1px;")
+        _pal = current_palette()
+        k.setStyleSheet(f"color: {_pal.text_muted}; font-size: 10px; letter-spacing: 1px;")
         v = QLabel(value)
-        v.setStyleSheet("color: #d1d4dc;")
+        v.setStyleSheet(f"color: {_pal.text};")
         v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         v.setWordWrap(True)
         h.addWidget(k)
@@ -154,24 +158,26 @@ class DetailPanel(QWidget):
         if action.is_open and action.quality_score is not None:
             verdict = action.quality_verdict or ""
             color = _VERDICT_COLOR.get(verdict, "#787b86")
+            _pal2 = current_palette()
             score_text = (
                 f"<span style='color:{color}; font-weight:700; font-size:18px;'>"
                 f"{action.quality_score}</span>"
-                f"<span style='color:#787b86;'>/100</span>"
+                f"<span style='color:{_pal2.text_muted};'>/100</span>"
                 f"&nbsp;<span style='color:{color};'>{verdict}</span>"
             )
 
+        _pal3 = current_palette()
         title = QLabel(
-            f"<span style='font-size:14px; font-weight:700; color:#d1d4dc;'>"
+            f"<span style='font-size:14px; font-weight:700; color:{_pal3.text};'>"
             f"#{action.id}  ·  {action.type_display}</span>"
-            f"&nbsp;&nbsp;<span style='color:#787b86;'>{action.status}</span>"
+            f"&nbsp;&nbsp;<span style='color:{_pal3.text_muted};'>{action.status}</span>"
             + (f"&nbsp;&nbsp;{score_text}" if score_text else "")
         )
         title.setTextFormat(Qt.TextFormat.RichText)
         self._add(title)
 
         meta = QLabel(
-            f"<span style='color:#787b86;'>{action.created_at}  ·  age {_age_text(action.created_at)}</span>"
+            f"<span style='color:{_pal3.text_muted};'>{action.created_at}  ·  age {_age_text(action.created_at)}</span>"
         )
         meta.setTextFormat(Qt.TextFormat.RichText)
         self._add(meta)
@@ -213,7 +219,7 @@ class DetailPanel(QWidget):
                     self._add(_body(
                         f"(parent message #{reply_to_tg_id} not in local "
                         "archive — may be older than backfill)",
-                        "color: #787b86; font-style: italic;",
+                        f"color: {current_palette().text_muted}; font-style: italic;",
                     ))
 
             self._add(_section_title("SOURCE MESSAGE"))
@@ -349,16 +355,17 @@ class DetailPanel(QWidget):
 
     def _render_synth_state(self) -> None:
         self._clear()
+        _pal4 = current_palette()
         title = QLabel(
-            "<span style='font-size:14px; font-weight:700; color:#d1d4dc;'>LIVE STATE</span>"
+            f"<span style='font-size:14px; font-weight:700; color:{_pal4.text};'>LIVE STATE</span>"
         )
         title.setTextFormat(Qt.TextFormat.RichText)
         self._add(title)
-        self._add(_body("Select an action on the left for full detail.", "color: #787b86;"))
+        self._add(_body("Select an action on the left for full detail.", f"color: {_pal4.text_muted};"))
 
         self._add(_section_title("OPEN POSITIONS"))
         if not self._open_positions:
-            self._add(_body("(none)", "color: #787b86;"))
+            self._add(_body("(none)", f"color: {_pal4.text_muted};"))
         else:
             for p in self._open_positions:
                 line = (
@@ -374,7 +381,7 @@ class DetailPanel(QWidget):
 
         self._add(_section_title("LAST EXECUTED OPEN"))
         if self._last_open is None:
-            self._add(_body("(none in this DB)", "color: #787b86;"))
+            self._add(_body("(none in this DB)", f"color: {current_palette().text_muted};"))
         else:
             try:
                 p = json.loads(self._last_open["payload_json"] or "{}")
@@ -394,7 +401,7 @@ class DetailPanel(QWidget):
 
         self._add(_section_title("OPEN WATCHING (pending limits)"))
         if not self._watching:
-            self._add(_body("(none)", "color: #787b86;"))
+            self._add(_body("(none)", f"color: {current_palette().text_muted};"))
         else:
             for w in self._watching:
                 try:

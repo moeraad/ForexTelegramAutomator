@@ -30,6 +30,7 @@ from src.gui.services.backup_io import (
     make_backup,
     restore_backup,
 )
+from src.gui.theme import current_palette
 
 
 def _fmt_size(n: int) -> str:
@@ -51,8 +52,9 @@ class BackupTab(QWidget):
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(10)
 
+        _tm = current_palette().text_muted
         info = QLabel(
-            "<span style='color:#787b86;'>Backs up every channel's DB, "
+            f"<span style='color:{_tm};'>Backs up every channel's DB, "
             "channel profile, and trades log to a single zip. Restoring "
             "requires an app restart afterwards. Secrets (bot token, AI "
             "keys) are DPAPI-encrypted to this Windows account — restore "

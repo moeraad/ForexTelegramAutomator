@@ -41,6 +41,7 @@ from src.gui.services.telegram_session import (
     save_remembered_credentials,
     session_path,
 )
+from src.gui.theme import current_palette
 
 
 @dataclass
@@ -470,10 +471,11 @@ class _DialogsPage(_BasePage):
         self._list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._model = QStandardItemModel()
         self._list.setModel(self._model)
+        _tm = current_palette().text_muted
         self._me_label = QLabel("")
-        self._me_label.setStyleSheet("color: #787b86;")
+        self._me_label.setStyleSheet(f"color: {_tm};")
         self._busy = QLabel("loading dialogs…")
-        self._busy.setStyleSheet("color: #787b86;")
+        self._busy.setStyleSheet(f"color: {_tm};")
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._me_label)
@@ -869,7 +871,7 @@ class _WelcomePage(_BasePage):
             "Bot, Channel) one at a time and wire any topology you want — "
             "mirror routing, aggregate routing, multi-account, etc."
             "</div>"
-            "<p style='color:#787b86;'>Anything you enter can be changed later "
+            f"<p style='color:{current_palette().text_muted};'>Anything you enter can be changed later "
             "from Settings → Setup wizard, or from V2 Config.</p>"
         )
         body.setTextFormat(Qt.TextFormat.RichText)
@@ -921,8 +923,9 @@ class _StackIdentityPage(_BasePage):
         self._symbol.setText("XAUUSD")
         self._symbol.setPlaceholderText("XAUUSD")
 
+        _tm2 = current_palette().text_muted
         info = QLabel(
-            "<span style='color:#787b86;'>The channel folder will be created at "
+            f"<span style='color:{_tm2};'>The channel folder will be created at "
             "<code>%APPDATA%/CopyTrades/&lt;name&gt;/</code> with its own DB "
             "and logs. A blank channel profile will be created at "
             "<code>channels/&lt;name&gt;.json</code> — fill in the AI prompt "
@@ -1164,7 +1167,7 @@ class _DonePage(_BasePage):
             "<li>Watch the EA's Experts tab — first GET on "
             f"<code>{self._api_url}/actions?status=sent</code> means it's wired up.</li>"
             "</ol>"
-            "<p style='color:#787b86;'>You can re-open this wizard anytime from "
+            f"<p style='color:{current_palette().text_muted};'>You can re-open this wizard anytime from "
             "Settings → Setup wizard.</p>"
             "<div style='background:#1e2a3a;border-left:3px solid #2962ff;"
             "padding:8px 12px;border-radius:4px;margin-top:10px;'>"

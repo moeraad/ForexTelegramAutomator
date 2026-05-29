@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 from src.prompt_inspector import PROMPT_IDS, estimate_tokens, render
 
 
@@ -51,14 +52,15 @@ class _PromptSection(QWidget):
         layout.setSpacing(4)
 
         top = QHBoxLayout()
+        _tm = current_palette().text_muted
         self._heading = QLabel(
             f"<span style='font-size:11px; font-weight:700; "
-            f"letter-spacing:1px; color:#787b86;'>{heading.upper()}</span>"
+            f"letter-spacing:1px; color:{_tm};'>{heading.upper()}</span>"
         )
         self._heading.setTextFormat(Qt.TextFormat.RichText)
         top.addWidget(self._heading)
         self._counter = QLabel("")
-        self._counter.setStyleSheet("color: #787b86; font-size: 11px;")
+        self._counter.setStyleSheet(f"color: {_tm}; font-size: 11px;")
         top.addWidget(self._counter)
         top.addStretch()
         self._copy_btn = QPushButton("Copy")
@@ -121,8 +123,9 @@ class PromptsView(QWidget):
         from src.gui.panels._a11y import mark_heading
         mark_heading(title, "Prompts")
         title_row.addWidget(title)
+        _tm2 = current_palette().text_muted
         hint = QLabel(
-            "<span style='color:#787b86;'>read-only inspection of every AI prompt</span>"
+            f"<span style='color:{_tm2};'>read-only inspection of every AI prompt</span>"
         )
         hint.setTextFormat(Qt.TextFormat.RichText)
         title_row.addWidget(hint)

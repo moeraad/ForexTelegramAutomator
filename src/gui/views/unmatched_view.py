@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 from src import unmatched_store
 from src.gui.services import profile_io
 from src.gui.services.stack_registry import Stack
+from src.gui.theme import current_palette
 
 
 _REFRESH_MS = 15_000
@@ -89,7 +90,7 @@ class UnmatchedView(QWidget):
         title.setTextFormat(Qt.TextFormat.RichText)
         header.addWidget(title)
         self._count_label = QLabel("(0)")
-        self._count_label.setStyleSheet("color: #787b86;")
+        self._count_label.setStyleSheet(f"color: {current_palette().text_muted};")
         header.addWidget(self._count_label)
         header.addStretch()
         from src.gui._button_helpers import make_refresh_button
@@ -98,8 +99,9 @@ class UnmatchedView(QWidget):
         header.addWidget(self._refresh_btn)
         layout.addLayout(header)
 
+        _tm = current_palette().text_muted
         hint = QLabel(
-            "<span style='color:#787b86;'>Messages the trigger matcher "
+            f"<span style='color:{_tm};'>Messages the trigger matcher "
             "missed but the AI classified as a deterministic-emittable "
             "action. Promote a row to add it as a real trigger, or "
             "dismiss to drop it from the queue.</span>"
