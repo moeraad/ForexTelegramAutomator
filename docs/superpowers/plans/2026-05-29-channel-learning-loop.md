@@ -2055,13 +2055,14 @@ git commit -m "docs(cll): document the Channel Learning Loop"
   gate (Tasks 8,11); per-channel isolation (everywhere, keyed by
   source_channel_id); supersede unmatched_store (Task 6); expiry (Task 7); shadow
   re-eval correctly OUT of scope (v2).
-- **Note on the 4th target (profile refinement):** v1 ships the data path
-  (`rule_kind` is open; `target_layer='profile'` is allowed) but does NOT yet
-  synthesize vocabulary/worked-example drafts — `channel_learner.learn` emits the
-  three triage/matcher kinds plus context_drop. Generating profile-refinement
-  drafts is a small follow-up that adds one more branch to `learn` + one more
-  case to `profile_writer`; flagged here so it isn't mistaken for a gap. If full
-  v1 coverage is required, add it as Task 8b mirroring the keep_trigger branch.
+- **Scope decision (4th target = fast-follow, confirmed by operator
+  2026-05-29):** v1 ships the cost-cutting three targets — noise suppression,
+  action triggers, triage keep/context tuning — which is where ~all the savings
+  are. **Continuous profile refinement** (auto-suggesting
+  `vocabulary_table`/`worked_examples`) is intentionally OUT of v1 and becomes a
+  separate small follow-up plan (alongside shadow re-evaluation). The data path
+  is already open (`target_layer='profile'` allowed), so the follow-up adds one
+  branch to `channel_learner.learn` + one case to `profile_writer` — no rework.
 - **Placeholder scan:** none — every code step has complete code.
 - **Type consistency:** `Sample`, `Suggestion`, `SuggestionDraft`, `LearnParams`
   signatures match across Tasks 4/7/8/9/10/11; `capture(...)` kwargs identical in
