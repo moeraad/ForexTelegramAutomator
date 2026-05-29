@@ -24,6 +24,11 @@ input int    HttpPostTimeoutMs       = 3000;
 // (always fetch — legacy behaviour). Fail-closed semantics are unchanged:
 // a cold start and any read failure still default to halted / last-known.
 input int    KillSwitchCacheSec      = 3;
+// Skip ReconcileClosedPositions for this many seconds after attach (L3).
+// On a fresh OnInit the in-memory recent-opens grace set is empty and MT5's
+// local position cache may not be warm, so a reconcile racing OnInit could
+// false-close a genuinely-open restored position. 0 = no warm-up.
+input int    ReconcileWarmupSec      = 5;
 // Position sizing: balance-based. lots = (ACCOUNT_BALANCE / 100) * LotsPer100Balance.
 // Default 0.01 means "0.01 lot per $100 of balance" -> $1000 balance = 0.10 lot,
 // $10000 balance = 1.0 lot. Independent of SL distance, so dollar risk per trade
@@ -1923,6 +1928,37 @@ void LoadPersistedPlans() {
       p.tps[1]    = GlobalVariableGet(PlanKey(ticket, "tp2"));
       p.tps[2]    = GlobalVariableGet(PlanKey(ticket, "tp3"));
 
+      // (M4) Restart safety: a hard crash between a stage's partial close and
+      // the persist of its new `stage` value would restore stage=0 and
+      // re-fire that partial on the next ManagePlans tick — over-closing the
+      // position. The live volume is ground truth, so reconcile the persisted
+      // stage against how much of origLots is actually still open and bump
+      // the stage UP to match (never down — a legitimately-ahead persisted
+      // stage is preserved). Thresholds sit at the midpoint between adjacent
+      // stages' cumulative close fractions, tolerant of broker fill noise.
+      double liveVol = PositionGetDouble(POSITION_VOLUME);
+      int inferred = p.stage;
+      if(p.origLots > 0.0 && liveVol > 0.0) {
+         double closedFrac = (p.origLots - liveVol) / p.origLots;
+         if(p.tpCount == 2) {
+            // stage 0 closes 50%; midpoint 0.25 separates "none" from "done".
+            if(closedFrac >= 0.25) inferred = 1;
+         } else if(p.tpCount == 3) {
+            // stage 0 closes 25%, stage 1 another 25% (50% cumulative).
+            if(closedFrac >= 0.375)      inferred = 2;
+            else if(closedFrac >= 0.125) inferred = 1;
+         }
+      }
+      if(inferred > p.stage) {
+         Print("CT plan restore stage BUMPED ticket=", ticket,
+               " persisted=", p.stage, " inferred=", inferred,
+               " (liveVol=", DoubleToString(liveVol, 2),
+               " origLots=", DoubleToString(p.origLots, 2),
+               ") — avoids re-firing an already-taken partial");
+         p.stage = inferred;
+         GlobalVariableSet(PlanKey(ticket, "stage"), (double)p.stage);
+      }
+
       int n = ArraySize(g_plans);
       ArrayResize(g_plans, n + 1);
       g_plans[n] = p;
@@ -3137,6 +3173,13 @@ void DoTightenSl(long id, string payload) {
 void ReconcileClosedPositions() {
    // Runs every OnTimer tick (PollIntervalSec, default 1s).
    //
+   // (L3) Warm-up guard: skip reconciliation for the first ReconcileWarmupSec
+   // after attach. On a fresh OnInit the in-memory recent-opens grace set is
+   // empty and MT5's local position cache may not be warm, so a reconcile
+   // racing OnInit could PositionSelectByTicket -> false on a genuinely-open
+   // restored position and false-close it. g_ea_start is stamped in OnInit.
+   if(g_ea_start > 0 && (TimeCurrent() - g_ea_start) < ReconcileWarmupSec) return;
+   //
    // Authoritative pass: ask the API which tickets it still thinks are
    // open, then for any ticket MT5 cannot select as a live position,
    // POST /positions/{t}/close with reason=mt5_not_found. This single
@@ -3169,6 +3212,10 @@ void ReconcileClosedPositions() {
    // mt5_not_found. ---
    string openBody;
    if(!HttpGet(ApiBaseUrl + "/positions?status=open&limit=500", openBody)) return;
+   // Collect every ticket the DB believes is open as we parse — the reverse
+   // pass below needs the full set to detect broker positions the DB never
+   // recorded.
+   long dbOpen[];
    int pos = 0;
    while(true) {
       int p = StringFind(openBody, "\"mt5_ticket\":", pos);
@@ -3183,6 +3230,9 @@ void ReconcileClosedPositions() {
       pos = end;
       long ticket = StringToInteger(StringSubstr(openBody, p, end - p));
       if(ticket <= 0) continue;
+      int dn = ArraySize(dbOpen);
+      ArrayResize(dbOpen, dn + 1);
+      dbOpen[dn] = ticket;
       // Skip tickets we just opened — there's a brief window after the
       // broker fill where MT5's local position cache hasn't refreshed
       // and PositionSelectByTicket returns false even though the
@@ -3203,6 +3253,47 @@ void ReconcileClosedPositions() {
          Print("CT reconcile: ticket=", ticket,
                " absent from MT5 → POSTed close (", reason, ")");
       }
+   }
+
+   // (M3) Reverse pass: MT5 -> DB. Any of OUR positions (our magic number +
+   // symbol) that the DB has no open row for is an orphan — almost always a
+   // lost OPEN result POST (transport blip, or a hard crash between the
+   // broker fill and the result enqueue). POST /positions/recover so the DB,
+   // AI SYSTEM STATE, and dashboard regain visibility and the operator is
+   // DM'd. The endpoint is idempotent (INSERT OR IGNORE on the unique
+   // ticket), so re-POSTing every tick until the row exists is harmless.
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong tk = PositionGetTicket(i);   // also selects the position
+      if(tk == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+      if(PositionGetString(POSITION_SYMBOL) != Symbol_Override) continue;
+      // Just-opened: the OPEN result POST may still be in flight / queued.
+      // Don't race it with a recover — that would double-insert nothing
+      // (OR IGNORE) but would fire a spurious operator alert.
+      if(IsRecentlyOpened((long)tk)) continue;
+      bool known = false;
+      for(int j = 0; j < ArraySize(dbOpen); j++)
+         if(dbOpen[j] == (long)tk) { known = true; break; }
+      if(known) continue;
+
+      string side = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+                    ? "BUY" : "SELL";
+      double vol   = PositionGetDouble(POSITION_VOLUME);
+      double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+      double slv   = PositionGetDouble(POSITION_SL);
+      double tpv   = PositionGetDouble(POSITION_TP);
+      string rbody = StringFormat(
+         "{\"mt5_ticket\":%I64d,\"symbol\":\"%s\",\"side\":\"%s\","
+         "\"volume\":%.2f,\"entry_price\":%.2f",
+         (long)tk, Symbol_Override, side, vol, entry);
+      if(slv > 0.0) rbody += StringFormat(",\"sl\":%.2f", slv);
+      if(tpv > 0.0) rbody += StringFormat(",\"tp\":%.2f", tpv);
+      rbody += "}";
+      string rresp;
+      HttpPostJson(ApiBaseUrl + "/positions/recover", rbody, rresp);
+      Print("CT reconcile: orphan ticket=", tk,
+            " present in MT5 but not DB → POSTed recover (", side,
+            " vol=", DoubleToString(vol, 2), ")");
    }
 }
 
