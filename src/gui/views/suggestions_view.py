@@ -35,7 +35,7 @@ from src.gui.views.suggestions_logic import (
     accept_suggestion,
     dismiss_suggestion,
     rank_suggestions,
-    resolve_profile_path,
+    resolve_channel_profile_path,
 )
 
 
@@ -102,11 +102,6 @@ class SuggestionsView(QWidget):
         """Called by MainWindow when the header switcher changes stack."""
         self._stack = stack
         self._refresh()
-
-    def _active_profile_path(self) -> Path:
-        """Resolve the LIVE profile.json the stack's matcher/triage actually read
-        (db-adjacent), not the registry's legacy bundled path."""
-        return resolve_profile_path(self._stack.db_path, self._stack.profile_path)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -255,7 +250,21 @@ class SuggestionsView(QWidget):
             )
             return
         try:
-            profile_path = self._active_profile_path()
+            s = suggestion_store.get(conn, sid)
+            if s is None:
+                QMessageBox.warning(
+                    self, "Not found",
+                    "This suggestion no longer exists (already decided?).",
+                )
+                return
+            # Resolve the LIVE profile this suggestion's channel actually uses
+            # (channel -> route -> destination -> db-adjacent profile.json),
+            # with the active stack as fallback. Not the legacy registry path.
+            profile_path = resolve_channel_profile_path(
+                s.source_channel_id,
+                fallback_db_path=self._stack.db_path,
+                fallback_legacy=self._stack.profile_path,
+            )
             if not profile_path.exists():
                 QMessageBox.warning(
                     self, "Profile not found",

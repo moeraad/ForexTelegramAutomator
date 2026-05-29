@@ -2,13 +2,38 @@ from __future__ import annotations
 
 import json
 
+from types import SimpleNamespace
+
 from src import suggestion_store
 from src.db import connect, init_schema
 from src.gui.views.suggestions_logic import (
     accept_suggestion,
     rank_suggestions,
+    resolve_channel_profile_path,
     resolve_profile_path,
 )
+
+
+class _FakeCfg:
+    """Minimal duck-typed stand-in for ConfigV2 (channel/profile/route/destination)."""
+
+    def __init__(self, *, channels=(), profiles=(), routes=(), destinations=()):
+        self._channels = list(channels)
+        self._profiles = list(profiles)
+        self._routes = list(routes)
+        self._destinations = list(destinations)
+
+    def channel(self, cid):
+        return next((c for c in self._channels if c.id == cid), None)
+
+    def profile(self, pid):
+        return next((p for p in self._profiles if p.id == pid), None)
+
+    def destination(self, did):
+        return next((d for d in self._destinations if d.id == did), None)
+
+    def routes_for_channel(self, cid):
+        return tuple(r for r in self._routes if r.channel_id == cid)
 
 
 def test_rank_puts_accuracy_gains_and_one_tap_first(tmp_path):
@@ -64,3 +89,44 @@ def test_resolve_profile_path_defaults_to_live_location_when_neither_exists(tmp_
     # Neither exists → return the live (db-adjacent) location so a write targets
     # where the matcher will look.
     assert resolve_profile_path(db_path, None) == db_dir / "profile.json"
+
+
+def test_resolve_channel_profile_via_v2_uses_destination_db_dir(tmp_path):
+    # v2: channel -> route -> destination(db_path) -> db-adjacent profile.json,
+    # NOT the (often stale) Profile.path.
+    dest_dir = tmp_path / "Forex Engineer"; dest_dir.mkdir()
+    db_path = dest_dir / "copytrades.db"
+    live = dest_dir / "profile.json"; live.write_text("{}", encoding="utf-8")
+    stale_legacy = tmp_path / "_internal" / "channels" / "fe.json"
+    stale_legacy.parent.mkdir(parents=True)  # exists but must be ignored in favour of live
+    stale_legacy.write_text("{}", encoding="utf-8")
+    cfg = _FakeCfg(
+        channels=[SimpleNamespace(id="ch_fe", profile_id="prof_fe")],
+        profiles=[SimpleNamespace(id="prof_fe", path=str(stale_legacy))],
+        routes=[SimpleNamespace(channel_id="ch_fe", destination_id="dest_fe")],
+        destinations=[SimpleNamespace(id="dest_fe", db_path=str(db_path))],
+    )
+    assert resolve_channel_profile_path("ch_fe", config=cfg) == live
+
+
+def test_resolve_channel_profile_falls_back_when_channel_unknown(tmp_path):
+    # Unknown channel in config -> fall back to the active-stack db hint.
+    stack_dir = tmp_path / "stack"; stack_dir.mkdir()
+    live = stack_dir / "profile.json"; live.write_text("{}", encoding="utf-8")
+    cfg = _FakeCfg(channels=[])  # no matching channel
+    out = resolve_channel_profile_path(
+        "ch_missing", config=cfg, fallback_db_path=stack_dir / "copytrades.db")
+    assert out == live
+
+
+def test_resolve_channel_profile_unknown_channel_uses_fallback_chain(tmp_path):
+    # An unmatched channel id falls back to resolve_profile_path(db, legacy).
+    # The db-adjacent file doesn't exist but the legacy fallback does, so the
+    # legacy path is returned (its preference order is verified independently).
+    stack_dir = tmp_path / "stack"; stack_dir.mkdir()
+    legacy = tmp_path / "legacy.json"; legacy.write_text("{}", encoding="utf-8")
+    cfg = _FakeCfg(channels=[])  # deterministic: no channel matches
+    out = resolve_channel_profile_path(
+        "whatever", config=cfg,
+        fallback_db_path=stack_dir / "copytrades.db", fallback_legacy=legacy)
+    assert out == legacy
