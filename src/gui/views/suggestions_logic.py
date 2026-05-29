@@ -12,6 +12,26 @@ from src.suggestion_store import Suggestion
 _KIND_RANK = {"keep_trigger": 0, "action_trigger": 1, "noise": 2, "context_drop": 3}
 
 
+def resolve_profile_path(db_path: Path | str, legacy_path: Path | str | None = None) -> Path:
+    """Resolve the profile.json the stack's live interpreter + matcher read.
+
+    The authoritative runtime location is ``<stack db dir>/profile.json`` — the
+    same path `trigger_matcher._resolve_profile_path` and `ai._resolve_profile_path`
+    compute from `config.DB_PATH` when the listener/bot run for this stack. The
+    stack registry's `profile_path` points instead at the legacy bundled
+    `channels/<name>.json`, which the live layers do NOT read — so writing there
+    would silently never take effect. Prefer the db-adjacent live file; fall back
+    to the legacy path only when the live one is absent, and otherwise return the
+    live location (so a write targets where the matcher will look).
+    """
+    live = Path(db_path).parent / "profile.json"
+    if live.exists():
+        return live
+    if legacy_path and Path(legacy_path).exists():
+        return Path(legacy_path)
+    return live
+
+
 def rank_suggestions(items: list[Suggestion]) -> list[Suggestion]:
     """Order: accuracy gains first; within a kind, one-tap-safe first, then by
     estimated savings (would_suppress/support) descending."""

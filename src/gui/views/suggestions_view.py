@@ -35,6 +35,7 @@ from src.gui.views.suggestions_logic import (
     accept_suggestion,
     dismiss_suggestion,
     rank_suggestions,
+    resolve_profile_path,
 )
 
 
@@ -103,8 +104,9 @@ class SuggestionsView(QWidget):
         self._refresh()
 
     def _active_profile_path(self) -> Path:
-        """Resolve the active profile.json path from the stack."""
-        return self._stack.profile_path
+        """Resolve the LIVE profile.json the stack's matcher/triage actually read
+        (db-adjacent), not the registry's legacy bundled path."""
+        return resolve_profile_path(self._stack.db_path, self._stack.profile_path)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
