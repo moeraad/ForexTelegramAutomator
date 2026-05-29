@@ -138,6 +138,14 @@ def learn(samples, *, synth_fn, params: LearnParams) -> list[SuggestionDraft]:
         ))
 
     # --- Triage keep-triggers (accuracy gain): signals triage marked ignore ---
+    # v1 LIMITATION: this branch is correct but its data precondition is rarely
+    # met in healthy operation. Capture runs only on the interpret path, and a
+    # triage="ignore" message returns BEFORE the interpreter — so a sample with
+    # triage_decision="ignore" is only recorded when triage itself errored and
+    # fell through to Sonnet. Detecting real triage false-negatives needs triage
+    # shadow-sampling (occasionally interpreting triage-dropped messages), which
+    # is a v2 fast-follow. The branch stays so it lights up automatically once
+    # that lands; until then triage_misses is normally empty.
     triage_misses = [s for s in signal if s.triage_decision == "ignore"]
     for cluster in _greedy_clusters(triage_misses, params.embed_threshold):
         if len(cluster) < params.min_cluster_size:

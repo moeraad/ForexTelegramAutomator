@@ -81,7 +81,13 @@ def _build_synth_fn(db_path):
         try:
             res = provider.triage(system_prompt=system, user_content=user,
                                   max_output_tokens=120)
-            obj = json.loads(res.raw_text.strip().strip("`"))
+            # Extract the JSON object by braces rather than stripping fence
+            # chars: str.strip("`") removes backticks but leaves a ```json
+            # language tag, which would break json.loads. Slicing first "{"
+            # to last "}" is robust to code fences and surrounding prose.
+            raw = res.raw_text.strip()
+            start, end = raw.find("{"), raw.rfind("}")
+            obj = json.loads(raw[start:end + 1]) if start != -1 and end > start else {}
             phrase = str(obj.get("phrase") or texts[0])
             return {"phrase": phrase, "rationale": str(obj.get("rationale") or "")}
         except Exception as e:  # noqa: BLE001 — fall back to representative text
