@@ -12,6 +12,23 @@ input string ApiBaseUrl              = "http://127.0.0.1:8765";
 // results in 401 on every request and the EA effectively goes silent.
 input string ApiSharedToken          = "";
 input int    PollIntervalSec         = 1;
+// WebRequest timeouts (ms). OnTimer runs on one non-reentrant thread and
+// WebRequest is blocking, so these bound how long a slow/hung API can freeze
+// a whole tick (incl. staged-close + trailing-SL management). The API is
+// localhost, so the old 5000/10000 budgets were far larger than needed; a
+// hung API now stalls a tick for a few seconds at most.
+input int    HttpGetTimeoutMs        = 2000;
+input int    HttpPostTimeoutMs       = 3000;
+// Cache the kill-switch read this long (s) so OnTimer doesn't block on a
+// GET /settings/kill_switch every single tick. <= 0 disables the cache
+// (always fetch — legacy behaviour). Fail-closed semantics are unchanged:
+// a cold start and any read failure still default to halted / last-known.
+input int    KillSwitchCacheSec      = 3;
+// Skip ReconcileClosedPositions for this many seconds after attach (L3).
+// On a fresh OnInit the in-memory recent-opens grace set is empty and MT5's
+// local position cache may not be warm, so a reconcile racing OnInit could
+// false-close a genuinely-open restored position. 0 = no warm-up.
+input int    ReconcileWarmupSec      = 5;
 // Position sizing: balance-based. lots = (ACCOUNT_BALANCE / 100) * LotsPer100Balance.
 // Default 0.01 means "0.01 lot per $100 of balance" -> $1000 balance = 0.10 lot,
 // $10000 balance = 1.0 lot. Independent of SL distance, so dollar risk per trade
@@ -331,15 +348,35 @@ void OnDeinit(const int reason) {
 void OnTimer() {
    RolloverDayIfNeeded();
    g_kill_switch_cached = KillSwitchOn();
+
+   // (H1) Manage the live position BEFORE any network pull. OnTimer is a
+   // single non-reentrant thread and WebRequest blocks, so sequencing the
+   // pulls first would freeze staged closes + trailing SL for the length of
+   // a slow/hung API call. These ops are broker-local — the SL move / close
+   // hits the broker before the bookkeeping POST that follows it.
+   //
+   // (M1) They also run UNCONDITIONALLY — the kill switch no longer gates
+   // them. /halt pauses acting on the CHANNEL (new + management actions via
+   // PollAndExecute), but an already-open position must stay protected:
+   // trailing SL keeps ratcheting, staged TP closes keep firing, naked/
+   // pending plans keep resolving, broker closes keep mirroring to the DB,
+   // and buffered POSTs keep draining. (OnTick already ran ManagePlans during
+   // a halt; this makes OnTimer consistent with that.)
+   ManagePlans();
+   TrailStage2Sls();       // post-TP trailing SL on 2/3-TP plans
+   ManageNakedPlans();     // Phase 4: OPEN_INSTANT timeout fallback + trail
+   ManagePendingOrders();  // Phase 5: broker pending-limit fill + cancel poll
+
+   // Only the channel-driven action pull is gated by the kill switch.
    if(!g_kill_switch_cached) {
       PollAndExecute();
-      ManagePlans();  // also driven by OnTick; belt-and-suspenders
-      TrailStage2Sls();  // post-TP2 trailing SL on 3-TP plans (Flavour A)
-      ManageNakedPlans();  // Phase 4: OPEN_INSTANT timeout fallback + trail
-      ManagePendingOrders();  // Phase 5: broker pending-limit fill + cancel poll
-      ReconcileClosedPositions();
-      DrainRetryQueue();  // resend any persisted POSTs from a prior outage
    }
+
+   // Reconcile + retry-drain run regardless of halt so DB state converges
+   // and persisted POSTs from a prior outage flush even while halted.
+   ReconcileClosedPositions();
+   DrainRetryQueue();
+
    // Heartbeat market price unconditionally (even when halted) — the AI
    // still needs a fresh quote to decode shorthand SL on incoming messages.
    HeartbeatMarketPrice();
@@ -817,8 +854,13 @@ void BuildStats(DashboardStats &s) {
 }
 
 void OnTick() {
-   // Price-driven: reacts faster than the 1s timer to TP crossings.
+   // Price-driven: reacts faster than the 1s timer to TP crossings and trail
+   // steps. (L2) TrailStage2Sls joins ManagePlans here so the trailing SL
+   // ratchets on price movement, not only on the 1s OnTimer — important
+   // during a fast move when the timer may also be delayed behind a slow
+   // network pull.
    ManagePlans();
+   TrailStage2Sls();
 }
 
 // File-scope cache for the kill-switch state. The previous implementation
@@ -828,6 +870,9 @@ void OnTick() {
 // until the first successful read so the failure mode is fail-closed.
 static bool g_last_kill_switch = false;
 static bool g_kill_switch_known = false;
+// GetTickCount() ms of the last SUCCESSFUL kill-switch read. Drives the
+// KillSwitchCacheSec TTL so OnTimer doesn't issue a blocking GET every tick.
+static ulong g_kill_switch_fetched_at = 0;
 
 // Cached SL-risk cap. Fetched from /settings/max_sl_loss_percent on
 // first use and every 60 seconds thereafter, so operator edits in
@@ -1015,15 +1060,29 @@ double MaxSlLossPercentLive() {
 }
 
 bool KillSwitchOn() {
+   // Serve from cache within the TTL so OnTimer isn't blocked on an HTTP GET
+   // every tick (L1). The cache only short-circuits once a successful read
+   // has warmed it, so the fail-closed default below still applies on a cold
+   // start. GetTickCount wraps ~every 49 days; a single wrapped comparison at
+   // worst forces one extra fetch — harmless.
+   ulong now = GetTickCount();
+   if(g_kill_switch_known && KillSwitchCacheSec > 0
+      && g_kill_switch_fetched_at != 0
+      && (now - g_kill_switch_fetched_at) < (ulong)KillSwitchCacheSec * 1000) {
+      return g_last_kill_switch;
+   }
    string body;
    if(!HttpGet(ApiBaseUrl + "/settings/kill_switch", body)) {
       // First-failure: assume halted (safer default than firing trades
       // blindly during an outage).
       // Subsequent failures: trust the last successfully-read value.
+      // Do NOT stamp fetched_at on failure — keep retrying every tick until
+      // the API answers, so a recovered API is picked up promptly.
       return g_kill_switch_known ? g_last_kill_switch : true;
    }
    g_last_kill_switch = (StringFind(body, "\"value\":\"on\"") >= 0);
    g_kill_switch_known = true;
+   g_kill_switch_fetched_at = now;
    return g_last_kill_switch;
 }
 
@@ -1052,7 +1111,7 @@ bool HttpGet(string url, string &outBody) {
    // which meant the Authorization header was never actually sent — any
    // endpoint that enforces auth would 401 every GET.
    char post[]; char result[]; string headers;
-   int res = WebRequest("GET", url, AuthHeader(), 5000, post, result, headers);
+   int res = WebRequest("GET", url, AuthHeader(), HttpGetTimeoutMs, post, result, headers);
    if(res == -1) {
       Print("WebRequest GET error ", GetLastError(), " url=", url);
       return false;
@@ -1089,7 +1148,7 @@ bool HttpPostJsonWithStatus(string url, string jsonBody, string &outBody, int &o
    // would mangle multibyte chars before they ever reach the API.
    int blen = StringToCharArray(jsonBody, post, 0, -1, CP_UTF8);
    if(blen > 0) ArrayResize(post, blen - 1);  // drop trailing NUL
-   int res = WebRequest("POST", url, reqHeaders, 10000, post, result, respHeaders);
+   int res = WebRequest("POST", url, reqHeaders, HttpPostTimeoutMs, post, result, respHeaders);
    if(res == -1) {
       Print("WebRequest POST error ", GetLastError(), " url=", url);
       outStatus = -1;
@@ -1868,6 +1927,37 @@ void LoadPersistedPlans() {
       p.tps[0]    = GlobalVariableGet(PlanKey(ticket, "tp1"));
       p.tps[1]    = GlobalVariableGet(PlanKey(ticket, "tp2"));
       p.tps[2]    = GlobalVariableGet(PlanKey(ticket, "tp3"));
+
+      // (M4) Restart safety: a hard crash between a stage's partial close and
+      // the persist of its new `stage` value would restore stage=0 and
+      // re-fire that partial on the next ManagePlans tick — over-closing the
+      // position. The live volume is ground truth, so reconcile the persisted
+      // stage against how much of origLots is actually still open and bump
+      // the stage UP to match (never down — a legitimately-ahead persisted
+      // stage is preserved). Thresholds sit at the midpoint between adjacent
+      // stages' cumulative close fractions, tolerant of broker fill noise.
+      double liveVol = PositionGetDouble(POSITION_VOLUME);
+      int inferred = p.stage;
+      if(p.origLots > 0.0 && liveVol > 0.0) {
+         double closedFrac = (p.origLots - liveVol) / p.origLots;
+         if(p.tpCount == 2) {
+            // stage 0 closes 50%; midpoint 0.25 separates "none" from "done".
+            if(closedFrac >= 0.25) inferred = 1;
+         } else if(p.tpCount == 3) {
+            // stage 0 closes 25%, stage 1 another 25% (50% cumulative).
+            if(closedFrac >= 0.375)      inferred = 2;
+            else if(closedFrac >= 0.125) inferred = 1;
+         }
+      }
+      if(inferred > p.stage) {
+         Print("CT plan restore stage BUMPED ticket=", ticket,
+               " persisted=", p.stage, " inferred=", inferred,
+               " (liveVol=", DoubleToString(liveVol, 2),
+               " origLots=", DoubleToString(p.origLots, 2),
+               ") — avoids re-firing an already-taken partial");
+         p.stage = inferred;
+         GlobalVariableSet(PlanKey(ticket, "stage"), (double)p.stage);
+      }
 
       int n = ArraySize(g_plans);
       ArrayResize(g_plans, n + 1);
@@ -3083,6 +3173,13 @@ void DoTightenSl(long id, string payload) {
 void ReconcileClosedPositions() {
    // Runs every OnTimer tick (PollIntervalSec, default 1s).
    //
+   // (L3) Warm-up guard: skip reconciliation for the first ReconcileWarmupSec
+   // after attach. On a fresh OnInit the in-memory recent-opens grace set is
+   // empty and MT5's local position cache may not be warm, so a reconcile
+   // racing OnInit could PositionSelectByTicket -> false on a genuinely-open
+   // restored position and false-close it. g_ea_start is stamped in OnInit.
+   if(g_ea_start > 0 && (TimeCurrent() - g_ea_start) < ReconcileWarmupSec) return;
+   //
    // Authoritative pass: ask the API which tickets it still thinks are
    // open, then for any ticket MT5 cannot select as a live position,
    // POST /positions/{t}/close with reason=mt5_not_found. This single
@@ -3115,6 +3212,10 @@ void ReconcileClosedPositions() {
    // mt5_not_found. ---
    string openBody;
    if(!HttpGet(ApiBaseUrl + "/positions?status=open&limit=500", openBody)) return;
+   // Collect every ticket the DB believes is open as we parse — the reverse
+   // pass below needs the full set to detect broker positions the DB never
+   // recorded.
+   long dbOpen[];
    int pos = 0;
    while(true) {
       int p = StringFind(openBody, "\"mt5_ticket\":", pos);
@@ -3129,6 +3230,9 @@ void ReconcileClosedPositions() {
       pos = end;
       long ticket = StringToInteger(StringSubstr(openBody, p, end - p));
       if(ticket <= 0) continue;
+      int dn = ArraySize(dbOpen);
+      ArrayResize(dbOpen, dn + 1);
+      dbOpen[dn] = ticket;
       // Skip tickets we just opened — there's a brief window after the
       // broker fill where MT5's local position cache hasn't refreshed
       // and PositionSelectByTicket returns false even though the
@@ -3149,6 +3253,47 @@ void ReconcileClosedPositions() {
          Print("CT reconcile: ticket=", ticket,
                " absent from MT5 → POSTed close (", reason, ")");
       }
+   }
+
+   // (M3) Reverse pass: MT5 -> DB. Any of OUR positions (our magic number +
+   // symbol) that the DB has no open row for is an orphan — almost always a
+   // lost OPEN result POST (transport blip, or a hard crash between the
+   // broker fill and the result enqueue). POST /positions/recover so the DB,
+   // AI SYSTEM STATE, and dashboard regain visibility and the operator is
+   // DM'd. The endpoint is idempotent (INSERT OR IGNORE on the unique
+   // ticket), so re-POSTing every tick until the row exists is harmless.
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong tk = PositionGetTicket(i);   // also selects the position
+      if(tk == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != Magic) continue;
+      if(PositionGetString(POSITION_SYMBOL) != Symbol_Override) continue;
+      // Just-opened: the OPEN result POST may still be in flight / queued.
+      // Don't race it with a recover — that would double-insert nothing
+      // (OR IGNORE) but would fire a spurious operator alert.
+      if(IsRecentlyOpened((long)tk)) continue;
+      bool known = false;
+      for(int j = 0; j < ArraySize(dbOpen); j++)
+         if(dbOpen[j] == (long)tk) { known = true; break; }
+      if(known) continue;
+
+      string side = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+                    ? "BUY" : "SELL";
+      double vol   = PositionGetDouble(POSITION_VOLUME);
+      double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+      double slv   = PositionGetDouble(POSITION_SL);
+      double tpv   = PositionGetDouble(POSITION_TP);
+      string rbody = StringFormat(
+         "{\"mt5_ticket\":%I64d,\"symbol\":\"%s\",\"side\":\"%s\","
+         "\"volume\":%.2f,\"entry_price\":%.2f",
+         (long)tk, Symbol_Override, side, vol, entry);
+      if(slv > 0.0) rbody += StringFormat(",\"sl\":%.2f", slv);
+      if(tpv > 0.0) rbody += StringFormat(",\"tp\":%.2f", tpv);
+      rbody += "}";
+      string rresp;
+      HttpPostJson(ApiBaseUrl + "/positions/recover", rbody, rresp);
+      Print("CT reconcile: orphan ticket=", tk,
+            " present in MT5 but not DB → POSTed recover (", side,
+            " vol=", DoubleToString(vol, 2), ")");
    }
 }
 
@@ -3495,8 +3640,25 @@ void PostResult(long id, string status, long ticket, string err) {
       body += ",\"error\":\"" + esc + "\"";
    }
    body += "}";
-   string resp;
-   HttpPostJson(ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result", body, resp);
+   // (M2) Resilient result POST — same retry path DoOpen uses. Previously a
+   // plain fire-and-forget HttpPostJson here meant a transient API blip lost
+   // a management action's terminal status: the action stranded in 'claimed'
+   // and the bot's stale-claim sweeper then marked it 'failed' even though
+   // the EA had executed it on the broker. Queue transport/5xx failures for
+   // DrainRetryQueue; a 4xx is the server's final answer (e.g. 409
+   // claim_expired once the action is already terminal) — don't retry.
+   string resp; int status_code;
+   string resultUrl = ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result";
+   if(!HttpPostJsonWithStatus(resultUrl, body, resp, status_code)) {
+      if(IsRetryableStatus(status_code)) {
+         Print("CT result POST failed id=", id, " status=", status_code,
+               " — queued for retry");
+         EnqueueRetry(resultUrl, body);
+      } else {
+         Print("CT result POST terminal ", status_code, " id=", id,
+               " — not retrying (server has final answer)");
+      }
+   }
 }
 
 // =====================================================================
