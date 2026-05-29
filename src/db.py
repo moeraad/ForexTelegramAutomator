@@ -44,6 +44,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_create_bot_outbox(conn)
     _migrate_messages_add_reply_to(conn)
     _migrate_messages_add_pipeline_columns(conn)
+    _migrate_create_learning_samples(conn)
 
 
 def _migrate_actions_add_phase2_types(conn: sqlite3.Connection) -> None:
@@ -590,6 +591,46 @@ def _migrate_actions_add_cancel_pending(conn: sqlite3.Connection) -> None:
         )
     finally:
         conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _migrate_create_learning_samples(conn: sqlite3.Connection) -> None:
+    """Labeled corpus for the Channel Learning Loop.
+
+    Captures every interpreted message + its category/action_types and the
+    triage decision, keyed by source_channel_id. Superset of the old
+    unmatched_messages queue (which only held emittable-action misses):
+    this table also holds ignore/context rows, where the cost savings live.
+
+    UNIQUE(source_channel_id, norm_text) collapses verbatim resends into
+    one row; the capture path bumps seen_count/last_seen_at on conflict.
+    embedding_json is filled lazily by the learner (NULL until then).
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS learning_samples ("
+        "  id                INTEGER PRIMARY KEY,"
+        "  source_channel_id TEXT NOT NULL,"
+        "  route_id          TEXT,"
+        "  source_msg_id     INTEGER,"
+        "  text              TEXT NOT NULL,"
+        "  norm_text         TEXT NOT NULL,"
+        "  category          TEXT NOT NULL,"
+        "  action_types      TEXT NOT NULL DEFAULT '',"
+        "  triage_decision   TEXT NOT NULL DEFAULT '',"
+        "  seen_count        INTEGER NOT NULL DEFAULT 1,"
+        "  embedding_json    TEXT,"
+        "  created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,"
+        "  last_seen_at      DATETIME DEFAULT CURRENT_TIMESTAMP,"
+        "  UNIQUE(source_channel_id, norm_text)"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_learning_samples_channel "
+        "ON learning_samples(source_channel_id, id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_learning_samples_needs_embed "
+        "ON learning_samples(source_channel_id) WHERE embedding_json IS NULL"
+    )
 
 
 def _migrate_create_unmatched_messages(conn: sqlite3.Connection) -> None:
