@@ -233,12 +233,15 @@ corpus** — the operator approves with numbers, not faith.
   consistently `context` that triage kept.
 
 ### Background safety mechanisms
-1. **Shadow re-evaluation.** After acceptance, the learner periodically samples
-   live messages the rule now suppresses/handles and asks the interpreter to
-   confirm the verdict still holds. Drift (channel changed its language) raises
-   an `ALERT` and proposes deactivating the rule. Long-term accuracy net.
-2. **Suggestion expiry.** Undecided suggestions expire so the tab reflects
+1. **Suggestion expiry (v1).** Undecided suggestions expire so the tab reflects
    current traffic, not stale clusters.
+2. **Shadow re-evaluation (v2 / fast-follow — NOT in v1).** After acceptance,
+   the learner periodically samples live messages the rule now suppresses/handles
+   and asks the interpreter to confirm the verdict still holds. Drift (channel
+   changed its language) raises an `ALERT` and proposes deactivating the rule.
+   This is the long-term accuracy net and the most complex piece; the core
+   capture → cluster → suggest → accept loop delivers most of the value without
+   it, so it ships as a fast-follow once v1 is stable.
 
 ## Error handling
 
@@ -296,10 +299,15 @@ corpus** — the operator approves with numbers, not faith.
 - No change to the live pipeline's decision logic — capture hook only.
 - No new long-running service — runs inside the existing bot process.
 
+## Scope split
+
+- **v1 (this plan):** capture hook → `learning_store` (+ `unmatched_store`
+  migration) → `channel_learner` (embed/cluster/synthesize/replay) →
+  `suggestion_store` (with expiry) → rolling `learning_loop` → GUI Suggestions
+  tab with evidence-gated Accept.
+- **v2 (fast-follow, separate plan):** shadow re-evaluation drift detection.
+
 ## Open questions for implementation plan
 
 - Exact greedy-clustering parameters and whether a second pass merges
   near-duplicate clusters.
-- Whether shadow re-evaluation is part of v1 or a fast-follow (it is the most
-  complex piece; the core capture→cluster→suggest→accept loop delivers most of
-  the value without it).
