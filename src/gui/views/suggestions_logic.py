@@ -2,6 +2,7 @@
 Kept separate from the Qt view so it is unit-testable."""
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from src import profile_writer, suggestion_store
@@ -14,7 +15,7 @@ _KIND_RANK = {"keep_trigger": 0, "action_trigger": 1, "noise": 2, "context_drop"
 def rank_suggestions(items: list[Suggestion]) -> list[Suggestion]:
     """Order: accuracy gains first; within a kind, one-tap-safe first, then by
     estimated savings (would_suppress/support) descending."""
-    def key(s: Suggestion):
+    def key(s: Suggestion) -> tuple[int, int, int]:
         safe = 0 if s.evidence.get("one_tap_safe") else 1
         savings = -(s.evidence.get("would_suppress")
                     or s.evidence.get("support") or 0)
@@ -22,7 +23,7 @@ def rank_suggestions(items: list[Suggestion]) -> list[Suggestion]:
     return sorted(items, key=key)
 
 
-def accept_suggestion(conn, sid: int, *, profile_path: Path) -> None:
+def accept_suggestion(conn: sqlite3.Connection, sid: int, *, profile_path: Path) -> None:
     """Write the rule into profile.json then mark the suggestion accepted.
     Order matters: only flip status if the profile write succeeds."""
     s = suggestion_store.get(conn, sid)
@@ -32,5 +33,5 @@ def accept_suggestion(conn, sid: int, *, profile_path: Path) -> None:
     suggestion_store.set_status(conn, sid, "accepted")
 
 
-def dismiss_suggestion(conn, sid: int) -> None:
+def dismiss_suggestion(conn: sqlite3.Connection, sid: int) -> None:
     suggestion_store.set_status(conn, sid, "dismissed")
