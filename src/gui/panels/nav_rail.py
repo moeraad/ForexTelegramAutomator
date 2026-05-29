@@ -36,6 +36,7 @@ _ITEMS = [
     ("routes",     FluentIcon.SHARE,             "Routes"),
     ("audit",      FluentIcon.ZOOM,              "Audit"),
     ("bindings",   FluentIcon.LINK,              "Bindings"),
+    ("suggestions", FluentIcon.TILES,            "Suggestions"),
     ("settings",   FluentIcon.SETTING,           "Settings"),
 ]
 

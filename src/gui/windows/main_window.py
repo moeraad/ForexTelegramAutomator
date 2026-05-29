@@ -36,13 +36,14 @@ from src.gui.views.settings_view import SettingsView
 from src.gui.views.audit_view import AuditView
 from src.gui.views.bot_bindings_view import BotBindingsView
 from src.gui.views.routes_matrix_view import RoutesMatrixView
+from src.gui.views.suggestions_view import SuggestionsView
 from src.gui.views.v2_config_view import V2ConfigView
 
 
 _VIEW_KEYS = (
     "live", "journal", "pipeline", "evaluation", "cost", "risk",
     "replay", "profile", "prompts", "v2_config", "routes", "audit",
-    "bindings", "settings",
+    "bindings", "suggestions", "settings",
 )
 
 
@@ -213,6 +214,7 @@ class MainWindow(QMainWindow):
             "routes": RoutesMatrixView(self._stack),
             "audit": AuditView(self._stack),
             "bindings": BotBindingsView(self._stack),
+            "suggestions": SuggestionsView(self._stack),
             "settings": settings_view,
         }
         self._stack_widget = QStackedWidget()
