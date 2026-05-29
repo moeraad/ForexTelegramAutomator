@@ -304,8 +304,21 @@ corpus** — the operator approves with numbers, not faith.
 - **v1 (this plan):** capture hook → `learning_store` (+ `unmatched_store`
   migration) → `channel_learner` (embed/cluster/synthesize/replay) →
   `suggestion_store` (with expiry) → rolling `learning_loop` → GUI Suggestions
-  tab with evidence-gated Accept.
-- **v2 (fast-follow, separate plan):** shadow re-evaluation drift detection.
+  tab with evidence-gated Accept. Operable learning targets: **noise
+  suppression**, **action triggers**, **context-drop** (the three that reduce
+  interpreter cost — the stated goal).
+- **v2 (fast-follow, separate plan):**
+  - **Triage shadow-sampling → keep-trigger learning.** The `keep_trigger`
+    code path ships in v1 and is correct, but its data precondition can't be
+    met in healthy operation: capture only runs on the interpret path, and
+    triage-`ignore` messages return before the interpreter, so a
+    `triage_decision="ignore"` signal is only ever recorded when triage itself
+    errors. Detecting genuine triage false-negatives requires occasionally
+    running the interpreter on triage-dropped messages (shadow-sampling) and
+    feeding those verdicts into the corpus. Until that lands, keep-trigger
+    suggestions effectively don't fire from real traffic.
+  - **Continuous profile-vocabulary refinement** (`target_layer='profile'`).
+  - **Shadow re-evaluation** drift detection on accepted rules.
 
 ## Open questions for implementation plan
 
