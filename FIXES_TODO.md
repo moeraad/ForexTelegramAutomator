@@ -148,6 +148,59 @@ To reopen the review or add new items, run the review again
   9 tests added (`tests/test_promoter.py`). Python-only — restart
   `bot.py` to activate, no EA recompile.
 
+### EA lifecycle hardening (plan: docs/plans/2026-05-29-ea-lifecycle-hardening.md)
+
+Eight issues found in an EA run-loop review (`OnInit` → `OnTimer`/`OnTick`),
+fixed across four branches merged to `main`. Phases 1–3 are `ea/CopyTrades.mq5`
+and ship in **one** MetaEditor F7 recompile. **Deploy order: merge + restart
+`api.py` (for #29's endpoint) BEFORE recompiling/attaching the EA.**
+
+- **#24 (HIGH) Blocking I/O starved trade management** — `ea/CopyTrades.mq5`.
+  `OnTimer` ran the blocking `WebRequest` pulls before `ManagePlans`/
+  `TrailStage2Sls`, so a slow/hung API froze staged closes + trailing SL for
+  the length of the call. Reordered: management runs first, then the pulls.
+  `WebRequest` timeouts moved to inputs and lowered for localhost
+  (`HttpGetTimeoutMs=2000`, `HttpPostTimeoutMs=3000`). Requires EA recompile.
+- **#25 (MED) `/halt` froze management of the open position** —
+  `ea/CopyTrades.mq5`. The kill switch gated the whole `OnTimer` trading
+  block. Now it gates **only** `PollAndExecute`; management + reconcile +
+  retry-drain run unconditionally so a halted position stays protected.
+  `CLAUDE.md` operational note corrected. Requires EA recompile.
+- **#26 (LOW) `KillSwitchOn` blocking GET every tick** — `ea/CopyTrades.mq5`.
+  Cached for `KillSwitchCacheSec` (3s) via a `GetTickCount` TTL; fail-closed
+  preserved (cold start / failures default halted; no `fetched_at` stamp on
+  failure). Requires EA recompile.
+- **#27 (LOW) Trailing SL only evaluated on `OnTimer`** — `ea/CopyTrades.mq5`.
+  `OnTick` now also calls `TrailStage2Sls()` so the trail ratchets on price.
+  Requires EA recompile.
+- **#28 (MED) Management-action results bypassed the retry queue** —
+  `ea/CopyTrades.mq5`. `PostResult` was fire-and-forget, so a transient API
+  blip lost a management action's terminal status and #23's sweeper then
+  failed it though the EA had executed it. `PostResult` now uses
+  `HttpPostJsonWithStatus` + `EnqueueRetry` on retryable failures, mirroring
+  `DoOpen` (#5). Requires EA recompile.
+- **#29 (MED) Reconciliation was one-directional (orphan positions invisible)**
+  — `src/api.py` + `src/api_models.py` + `src/db.py` + `src/schema.sql` +
+  `ea/CopyTrades.mq5`. New `POST /positions/recover` (INSERT OR IGNORE,
+  never resurrects a `closed` row, DMs the operator on a genuine insert) +
+  `positions.recovered` column/migration. The EA's `ReconcileClosedPositions`
+  gained an MT5→DB reverse pass that recovers any of our broker positions the
+  DB has no open row for. 6 API tests added. Restart `api.py` THEN recompile EA.
+- **#30 (MED) Double partial close on restart** — `ea/CopyTrades.mq5`.
+  `LoadPersistedPlans` now infers the staged-close stage from live volume vs
+  `origLots` (bump up only) so a crash between a partial close and its stage
+  persist can't re-fire the partial. Requires EA recompile.
+- **#31 (LOW) Reconcile could false-close a restored position after attach** —
+  `ea/CopyTrades.mq5`. `ReconcileClosedPositions` skips the first
+  `ReconcileWarmupSec` (5s) after `g_ea_start` so it can't race OnInit before
+  MT5's local cache is warm. Requires EA recompile.
+
+Known limitations (accepted v1): a prolonged (>10s) API outage spanning a
+fresh fill can recover a position with `action_id=NULL`/`recovered=1` + a
+spurious alert (action still resolves terminally — cosmetic); and a channel
+`CLOSE_PARTIAL` on a plan-managed position before a restart can mis-bump the
+inferred stage (rare, non-catastrophic, logged via "stage BUMPED").
+
 ---
 
 ## Test count progression

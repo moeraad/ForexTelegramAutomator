@@ -197,6 +197,8 @@ The interpreter prompt is the central piece of IP. Key sections inside `SYSTEM_P
 - **EA-side: management actions never carry `mt5_ticket`** — `FindSingletonOpenTicket(Symbol_Override)` resolves it. If no open position, the handler POSTs `rejected` with reason `no_open_position`.
 - **EA-side: `RegisterPlan` dedupes by ticket** — replace-in-place if a plan already exists for that ticket. Without this guard, `ManagePlans` fired each stage twice and over-closed.
 - **EA-side: `HeartbeatMarketPrice` runs unconditionally** in OnTimer (even when kill switch is on) so the AI's price context stays fresh while halted.
+- **EA-side: the kill switch gates ONLY `PollAndExecute`** (the channel-action pull). Management of an already-open position (`ManagePlans`, `TrailStage2Sls`, `ManageNakedPlans`, `ManagePendingOrders`), `ReconcileClosedPositions`, and `DrainRetryQueue` run **unconditionally** in `OnTimer` — `/halt` pauses acting on the channel but never freezes protection of a live position (trailing SL keeps ratcheting, staged TP closes keep firing, broker closes keep mirroring). They also run **before** `PollAndExecute` so a slow/hung API can't starve stop management; the broker-local SL move / close happens before its own bookkeeping POST.
+- **EA-side: `KillSwitchOn()` is cached** for `KillSwitchCacheSec` (default 3s) via a `GetTickCount` TTL so OnTimer doesn't issue a blocking GET every tick. Fail-closed is preserved: a cold start and any read failure default to halted / last-known, and `fetched_at` is not stamped on failure (so a recovered API is picked up on the next tick).
 - **`configure_logging(name)` is idempotent** — tests re-import entrypoints and must not duplicate handlers.
 - **No `logging.basicConfig(...)` in entrypoints**. Always `from src.logging_setup import configure_logging`.
 - **422 handler in `api.py`** persists the raw body and parsed errors, because EA-side JSON bugs at 3 AM are otherwise un-debuggable.
@@ -214,7 +216,7 @@ The interpreter prompt is the central piece of IP. Key sections inside `SYSTEM_P
 ## Operational gotchas
 
 - Console windows closing does not lose logs — everything rotates into `logs/`. Grep `logs/listener.log`, `logs/bot.log`, `logs/api.log`, `logs/api_http.log` when something is wrong.
-- Kill switch (`/halt`) only stops promotion. Already-sent actions will still execute. Use `/cancel <id>` for in-flight ones.
+- Kill switch (`/halt`) stops the bot's promoter (`pending`→`sent`) and the EA's channel-action pull (`PollAndExecute`), so no new or channel-driven management actions fire while halted (a `sent` action waits until resume — it does NOT execute mid-halt). It does **not** freeze management of an already-open position: the EA keeps trailing SL, firing staged TP closes, reconciling broker closes, and draining the retry queue. Use `/cancel <id>` for an in-flight pending action. (Note: the bot's `/halt` reply text "Already-sent actions will still run" predates this and is now misleading — a doc/string nit, not behavior.)
 - `MaxLotsPerSignal=0.01` in EA inputs for first 2 weeks live. Demo account ≥2 weeks first.
 - `ChaseMinRewardRatio=0.5` is the default. Raise to 0.6+ if you want stricter "must have most of the move ahead" behavior.
 - `MarketPriceHeartbeatSec=15` is the default heartbeat. The prompt treats anything older than 60s as STALE and refuses to decode shorthand SL.
