@@ -46,6 +46,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_messages_add_pipeline_columns(conn)
     _migrate_create_learning_samples(conn)
     _migrate_create_learning_suggestions(conn)
+    _migrate_unmatched_into_learning(conn)
 
 
 def _migrate_actions_add_phase2_types(conn: sqlite3.Connection) -> None:
@@ -702,6 +703,46 @@ def _migrate_create_unmatched_messages(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_unmatched_created "
         "ON unmatched_messages(created_at)"
     )
+
+
+def _migrate_unmatched_into_learning(
+    conn: sqlite3.Connection, fallback_channel_id: str = "legacy"
+) -> int:
+    """One-time fold of the old unmatched_messages queue into learning_samples.
+
+    unmatched_messages only held emittable-action misses (suggested_action_type
+    set), so each becomes a 'signal'-category learning sample carrying that
+    action type. Dedups on (source_channel_id, norm_text) via INSERT OR IGNORE,
+    so re-running is a no-op. Returns rows migrated. Safe when the source table
+    is absent (returns 0).
+
+    norm_text is set to the STRIPPED RAW text (matching learning_store.capture's
+    convention), NOT the old normalize()-d unmatched_messages.norm_text — so the
+    corpus dedup key is consistent across live captures and migrated rows.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT text, suggested_action_type, source_msg_id "
+            "FROM unmatched_messages"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    migrated = 0
+    for r in rows:
+        text = r["text"] or ""
+        norm = text.strip()
+        if not norm:
+            continue
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO learning_samples("
+            "  source_channel_id, source_msg_id, text, norm_text, "
+            "  category, action_types, triage_decision) "
+            "VALUES(?,?,?,?, 'signal', ?, '')",
+            (fallback_channel_id, r["source_msg_id"], text, norm,
+             r["suggested_action_type"] or ""),
+        )
+        migrated += cur.rowcount or 0
+    return migrated
 
 
 def get_setting(conn: sqlite3.Connection, key: str) -> str | None:
