@@ -45,6 +45,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_messages_add_reply_to(conn)
     _migrate_messages_add_pipeline_columns(conn)
     _migrate_create_learning_samples(conn)
+    _migrate_create_learning_suggestions(conn)
 
 
 def _migrate_actions_add_phase2_types(conn: sqlite3.Connection) -> None:
@@ -630,6 +631,42 @@ def _migrate_create_learning_samples(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_learning_samples_needs_embed "
         "ON learning_samples(source_channel_id) WHERE embedding_json IS NULL"
+    )
+
+
+def _migrate_create_learning_suggestions(conn: sqlite3.Connection) -> None:
+    """Proposed cheap-layer rules awaiting operator approval.
+
+    payload_json is the concrete rule to write into profile.json on Accept;
+    evidence_json holds the replay stats the GUI renders. dedupe_key is a
+    stable hash of (rule_kind, normalized payload) so the same suggestion
+    isn't re-proposed while still pending. Nothing here ever executes — the
+    GUI Accept handler is the sole writer into profile.json.
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS learning_suggestions ("
+        "  id                INTEGER PRIMARY KEY,"
+        "  source_channel_id TEXT NOT NULL,"
+        "  rule_kind         TEXT NOT NULL,"
+        "  target_layer      TEXT NOT NULL,"
+        "  payload_json      TEXT NOT NULL,"
+        "  evidence_json     TEXT NOT NULL,"
+        "  dedupe_key        TEXT NOT NULL,"
+        "  status            TEXT NOT NULL DEFAULT 'proposed'"
+        "                    CHECK(status IN ('proposed','accepted','dismissed','expired')),"
+        "  created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,"
+        "  decided_at        DATETIME"
+        ")"
+    )
+    # One live proposal per dedupe_key per channel.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_sugg_dedupe "
+        "ON learning_suggestions(source_channel_id, dedupe_key) "
+        "WHERE status='proposed'"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_learning_sugg_proposed "
+        "ON learning_suggestions(source_channel_id, status, created_at)"
     )
 
 

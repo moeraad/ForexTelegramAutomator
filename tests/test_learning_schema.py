@@ -30,3 +30,14 @@ def test_learning_samples_table_shape(tmp_path):
         "VALUES('c','n','t2','ignore','','keep',1)"
     )
     assert cur.rowcount == 0  # duplicate (c,n) ignored
+
+
+def test_learning_suggestions_table_shape(tmp_path):
+    conn = connect(str(tmp_path / "s.db"))
+    init_schema(conn)
+    cols = _cols(conn, "learning_suggestions")
+    assert {
+        "id", "source_channel_id", "rule_kind", "target_layer",
+        "payload_json", "evidence_json", "dedupe_key", "status",
+        "created_at", "decided_at",
+    } <= cols
