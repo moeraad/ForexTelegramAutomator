@@ -500,8 +500,12 @@ class ActionsTable(QWidget):
             active_count += 1
             text = f"{dim}:{key}"
             tag = QLabel(text)
+            # Text over a faint accent tint: use the palette body color so it
+            # stays legible in BOTH themes (the 15%-alpha tint reads as the
+            # themed background, so hardcoded light-grey text vanished on light).
+            _pal = current_palette()
             tag.setStyleSheet(
-                "color: #d1d4dc; font-size: 10px; font-weight: 600; "
+                f"color: {_pal.text}; font-size: 10px; font-weight: 600; "
                 "padding: 2px 8px; border-radius: 8px; "
                 "background: rgba(91,141,239,0.15);"
             )
