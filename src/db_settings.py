@@ -140,6 +140,15 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # every signal from this stack uses the stack default regardless of
     # what the message says.
     "trading_style_ai_override": "1",
+    # --- Channel Learning Loop (CLL) ---
+    "learning_enabled": "1",
+    "learning_batch_n": "50",
+    "learning_corpus_max": "2000",
+    "learning_min_cluster_size": "4",
+    "learning_embed_threshold": "0.82",
+    "learning_min_support": "5",
+    "learning_min_purity": "0.9",
+    "learning_suggestion_ttl_days": "14",
 }
 
 
