@@ -1,4 +1,5 @@
 """Learning-loop config defaults are seeded and typed."""
+
 from __future__ import annotations
 
 from src.db import connect, init_schema
