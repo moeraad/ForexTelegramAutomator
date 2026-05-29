@@ -4,7 +4,7 @@ import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from src import prefilter, signal_memory, trigger_matcher, unmatched_store
+from src import learning_store, prefilter, signal_memory, trigger_matcher, unmatched_store
 from src.ai import AIClient
 from src.ai_logger import log_call
 from src.ai_triage import TriageClient
@@ -539,6 +539,7 @@ def process_message(
     # false-negative a confirmed pattern. Built-in "WHEN IN DOUBT →
     # keep" bias keeps Sonnet as the safety net for anything triage
     # is unsure about.
+    triage_decision_for_capture = ""
     if triage is not None:
         try:
             tri = triage.classify(
@@ -546,6 +547,7 @@ def process_message(
                 _open_positions_count(conn),
                 system_prompt=(profile.triage_prompt if profile is not None else None),
             )
+            triage_decision_for_capture = tri.decision
             _log_with_tags({
                 "msg_id": msg_id,
                 "stage": "triage",
@@ -639,6 +641,24 @@ def process_message(
         "ai_decision msg_id=%s category=%s latency_ms=%s types=[%s]",
         msg_id, result.response.category or "-", result.latency_ms, types_summary,
     )
+
+    # CLL capture: the interpreter verdict is ground-truth training data.
+    # Swallow all errors — must never break the live path.
+    try:
+        learning_store.capture(
+            conn,
+            source_channel_id=source_channel_id,
+            route_id=route_id,
+            source_msg_id=msg_id,
+            text=text,
+            category=result.response.category or "ignore",
+            action_types=",".join(
+                _action_type(a) for a in result.response.actions
+            ),
+            triage_decision=triage_decision_for_capture,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("CLL capture failed for msg_id=%s", msg_id)
 
     if SIGNAL_MEMORY_ENABLED and result.response.category and result.response.category != "ignore":
         signal_memory.record(
