@@ -19,6 +19,7 @@ from src.api_models import (
     MarketPriceBody,
     MarketSnapshotBody,
     MarketSnapshotStateBody,
+    PositionRecoverBody,
     PositionUpdateBody,
     ResultBody,
     TimeframeOhlcBody,
@@ -807,6 +808,98 @@ def build_app(
                     "cover (when active).", ticket,
                 )
         return {"ok": True, "updated": cur.rowcount}
+
+    @app.post("/positions/recover")
+    def recover_position(body: PositionRecoverBody):
+        """Reverse-reconciliation sink. The EA's MT5->DB pass POSTs here when
+        it holds a live broker position (our magic number + symbol) that the
+        DB has no open row for — the orphan case from a lost OPEN result POST.
+        Insert it as an `open` row flagged recovered=1 and DM the operator.
+
+        Idempotency / safety:
+          - INSERT OR IGNORE on the UNIQUE mt5_ticket: a repeat POST for the
+            same ticket is a no-op, AND an existing `closed` row for that
+            ticket is never resurrected (first-insert-wins, same rule the
+            post_result OR IGNORE relies on). Only a genuinely new ticket
+            inserts a row and fires the alert.
+          - original_volume snapshots volume (mirrors post_result) so the
+            AI's partial-close reasoning has a baseline.
+        """
+        if body.symbol.upper() not in config.SUPPORTED_SYMBOLS:
+            raise HTTPException(400, f"unsupported symbol: {body.symbol}")
+        now = datetime.now(timezone.utc).isoformat()
+        alert_text = (
+            f"Recovered orphan position ticket={body.mt5_ticket} "
+            f"{body.side} {body.symbol.upper()} vol={body.volume:g} "
+            f"entry={body.entry_price:g} — broker had it open but the DB did "
+            f"not (likely a lost OPEN result POST). Review."
+        )
+        # Atomic: the recovered position row and the operator-alert row must
+        # commit together. Under isolation_level=None (autocommit) each
+        # statement is its own transaction, so without this BEGIN/COMMIT a
+        # crash between the two INSERTs could leave a recovered position with
+        # no alert — the divergence would never surface to the operator.
+        # Mirrors post_result's atomicity guard.
+        alert_id: int | None = None
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO positions(action_id, mt5_ticket, symbol, side, "
+                "volume, original_volume, entry_price, sl, tp, status, opened_at, recovered) "
+                "VALUES(NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, 1)",
+                (body.mt5_ticket, body.symbol.upper(), body.side, body.volume,
+                 body.volume, body.entry_price, body.sl, body.tp, now),
+            )
+            inserted = cur.rowcount > 0
+            if inserted:
+                # DM the operator: a recovered position means an OPEN result
+                # POST was lost. Insert an ALERT terminal row (the
+                # notification_dispatcher DMs executed ALERTs), mirroring
+                # post_alert.
+                alert_payload = json.dumps({"level": "warning", "text": alert_text})
+                alert_cur = conn.execute(
+                    "INSERT INTO actions(source_msg_id, action_type, payload_json, "
+                    "status, executed_at) VALUES(NULL, 'ALERT', ?, 'executed', ?)",
+                    (alert_payload, now),
+                )
+                alert_id = alert_cur.lastrowid
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+        if not inserted:
+            # Ticket already known (open OR closed) — no-op, no alert. This is
+            # the guard that stops the EA's per-tick reverse pass from
+            # re-recovering a position the DB already tracks or has closed.
+            return {"ok": True, "recovered": False, "mt5_ticket": body.mt5_ticket}
+
+        # Log + fire the v2 per-bot dispatch AFTER commit so a rolled-back
+        # transaction leaves no phantom lifecycle lines (same discipline as
+        # post_result).
+        trades.info(
+            "position_recovered ticket=%s side=%s vol=%s entry=%s sl=%s tp=%s",
+            body.mt5_ticket, body.side, body.volume, body.entry_price,
+            body.sl if body.sl is not None else "-",
+            body.tp if body.tp is not None else "-",
+        )
+        trades.info("alert_posted id=%s level=warning (position_recovered)", alert_id)
+        try:
+            from src.notification_dispatcher import dispatch_notification
+            dispatch_notification(
+                conn,
+                event_type="alert",
+                action_id=alert_id,
+                extra_payload={"level": "warning", "text": alert_text},
+            )
+        except Exception:
+            log.exception("dispatch_notification(alert) failed for recovered "
+                          "position ticket=%s; legacy notification_dispatcher "
+                          "will still cover", body.mt5_ticket)
+        return {
+            "ok": True, "recovered": True,
+            "mt5_ticket": body.mt5_ticket, "alert_id": alert_id,
+        }
 
     @app.get("/positions/last_closed")
     def last_closed_position(symbol: str = "XAUUSD", within_hours: int = 24):
