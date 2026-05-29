@@ -127,4 +127,4 @@ class HeaderBar(QWidget):
         else:
             self.halt_btn.setText("● RUNNING — click to HALT")
             self.halt_btn.setStyleSheet(_RUN_STYLE)
-        self.halt_btn.setToolTip("Ctrl+H  ·  flips settings.kill_switch for the active stack")
+        self.halt_btn.setToolTip("Ctrl+H  ·  flips settings.kill_switch for the active channel")

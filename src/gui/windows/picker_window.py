@@ -28,13 +28,13 @@ from src.gui.services.stack_registry import Stack, discover_stacks
 class PickerWindow(QDialog):
     def __init__(self, stacks: list[Stack]) -> None:
         super().__init__()
-        self.setWindowTitle("CopyTrades - Choose stack")
+        self.setWindowTitle("CopyTrades - Choose channel")
         self.resize(460, 360)
         self._stacks: list[Stack] = list(stacks)
         self.selected_stack: Stack | None = None
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Pick an existing stack, or add a new one."))
+        layout.addWidget(QLabel("Pick an existing channel, or add a new one."))
 
         self.list_widget = QListWidget()
         self._refresh_list()
@@ -42,10 +42,10 @@ class PickerWindow(QDialog):
 
         add_row = QHBoxLayout()
         add_row.addStretch()
-        self._add_btn = QPushButton("+ New stack…")
+        self._add_btn = QPushButton("+ New channel…")
         self._add_btn.setProperty("variant", "success")
         self._add_btn.setToolTip(
-            "Open the full setup wizard to create and configure a new stack."
+            "Open the full setup wizard to create and configure a new channel."
         )
         self._add_btn.clicked.connect(self._on_add_stack)
         add_row.addWidget(self._add_btn)
@@ -92,8 +92,8 @@ class PickerWindow(QDialog):
         item = self.list_widget.currentItem()
         if item is None:
             QMessageBox.information(
-                self, "Select a stack",
-                "Pick a stack from the list or click + New stack first.",
+                self, "Select a channel",
+                "Pick a channel from the list or click + New channel first.",
             )
             return
         self.selected_stack = item.data(Qt.ItemDataRole.UserRole)

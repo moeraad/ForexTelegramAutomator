@@ -460,7 +460,7 @@ class _DialogsPage(_BasePage):
     def __init__(self) -> None:
         super().__init__()
         self.setTitle("Pick a channel")
-        self.setSubTitle("Choose the channel this stack should watch.")
+        self.setSubTitle("Choose the Telegram channel to watch.")
 
         self._search = QLineEdit()
         self._search.setPlaceholderText("search title")
@@ -909,20 +909,20 @@ class _WelcomePage(_BasePage):
 class _StackIdentityPage(_BasePage):
     def __init__(self) -> None:
         super().__init__()
-        self.setTitle("Stack identity")
+        self.setTitle("Channel identity")
         self.setSubTitle(
-            "A stack is one running instance (one Telegram channel + one EA). "
+            "This sets up one running instance — one Telegram channel feeding one EA. "
             "Give it a name and pick the symbol the channel trades."
         )
 
         self._name = QLineEdit()
-        self._name.setPlaceholderText("e.g. my-gold-stack")
+        self._name.setPlaceholderText("e.g. my-gold-channel")
         self._symbol = QLineEdit()
         self._symbol.setText("XAUUSD")
         self._symbol.setPlaceholderText("XAUUSD")
 
         info = QLabel(
-            "<span style='color:#787b86;'>The stack folder will be created at "
+            "<span style='color:#787b86;'>The channel folder will be created at "
             "<code>%APPDATA%/CopyTrades/&lt;name&gt;/</code> with its own DB "
             "and logs. A blank channel profile will be created at "
             "<code>channels/&lt;name&gt;.json</code> — fill in the AI prompt "

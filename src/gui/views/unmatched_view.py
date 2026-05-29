@@ -193,7 +193,7 @@ class UnmatchedView(QWidget):
         if conn is None:
             QMessageBox.warning(
                 self, "DB unavailable",
-                "Stack DB is not present. Start the listener once to "
+                "Channel DB is not present. Start the listener once to "
                 "initialize it.",
             )
             return

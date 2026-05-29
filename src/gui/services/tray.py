@@ -41,7 +41,7 @@ class TrayController(QObject):
         self._tray.activated.connect(self._on_activated)
 
         menu = QMenu()
-        self._stack_label = menu.addAction("(no stack)")
+        self._stack_label = menu.addAction("(no channel)")
         self._stack_label.setEnabled(False)
         menu.addSeparator()
         self._show_action = menu.addAction("Show window")
@@ -68,7 +68,7 @@ class TrayController(QObject):
         if today_pnl_text:
             tooltip += f"\nToday: {today_pnl_text}"
         self._tray.setToolTip(tooltip)
-        self._stack_label.setText(f"Stack: {stack_name}")
+        self._stack_label.setText(f"Channel: {stack_name}")
         self._halt_action.setText("Resume (clear halt)" if halted else "Halt")
 
     def notify(self, title: str, body: str, severity: str = "info") -> None:

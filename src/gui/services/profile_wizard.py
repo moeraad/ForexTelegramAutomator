@@ -146,7 +146,7 @@ def _resolve_telethon_credentials(
     except Exception:
         pass
     raise RuntimeError(
-        "Telegram credentials missing — finish Add Account for this stack "
+        "Telegram credentials missing — finish Add Account for this channel "
         "(or run the Setup wizard) before generating from channel history."
     )
 

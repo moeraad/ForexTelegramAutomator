@@ -94,7 +94,7 @@ class DiagnosticsExportDialog(QDialog):
 
         intro = QLabel(
             "<span style='color:#787b86;'>Bundles CopyTrades logs, the "
-            "stack DB (sanitized), service crash logs, and optionally "
+            "channel DB (sanitized), service crash logs, and optionally "
             "MT5 terminal/experts logs into a single ZIP. Secrets are "
             "blanked. Filter by time window to keep the bundle small.</span>"
         )

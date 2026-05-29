@@ -314,7 +314,7 @@ def install_v2_services_all() -> tuple[bool, str]:
     cfg_path = config_v2.config_path()
     if not config_v2.is_v2(cfg_path):
         return False, (
-            "v2 config not found — open Settings → Add Stack to migrate."
+            "v2 config not found — open Settings → Add Channel to migrate."
         )
     cfg = config_v2.load_v2(cfg_path)
     if cfg is None:

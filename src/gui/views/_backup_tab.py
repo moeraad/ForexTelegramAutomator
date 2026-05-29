@@ -52,7 +52,7 @@ class BackupTab(QWidget):
         layout.setSpacing(10)
 
         info = QLabel(
-            "<span style='color:#787b86;'>Backs up every stack's DB, "
+            "<span style='color:#787b86;'>Backs up every channel's DB, "
             "channel profile, and trades log to a single zip. Restoring "
             "requires an app restart afterwards. Secrets (bot token, AI "
             "keys) are DPAPI-encrypted to this Windows account — restore "
@@ -110,7 +110,7 @@ class BackupTab(QWidget):
         QMessageBox.information(
             self, "Backup complete",
             f"Wrote {result.zip_path}\n\n"
-            f"{result.stack_count} stack(s)  ·  {_fmt_size(result.total_bytes)}",
+            f"{result.stack_count} channel(s)  ·  {_fmt_size(result.total_bytes)}",
         )
         self._refresh_list()
 
@@ -128,7 +128,7 @@ class BackupTab(QWidget):
         QMessageBox.information(
             self, "Backup complete",
             f"Wrote {result.zip_path}\n\n"
-            f"{result.stack_count} stack(s)  ·  {_fmt_size(result.total_bytes)}",
+            f"{result.stack_count} channel(s)  ·  {_fmt_size(result.total_bytes)}",
         )
         self._refresh_list()
 
@@ -153,7 +153,7 @@ class BackupTab(QWidget):
         if not result.success:
             QMessageBox.critical(self, "Restore failed", result.error)
             return
-        msg = f"Restored {result.stack_count} stack(s)."
+        msg = f"Restored {result.stack_count} channel(s)."
         if result.warnings:
             msg += "\n\nWarnings:\n  · " + "\n  · ".join(result.warnings[:6])
         msg += "\n\nRestart the app to load the restored files."

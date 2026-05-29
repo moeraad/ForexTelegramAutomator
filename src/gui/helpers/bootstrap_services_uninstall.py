@@ -93,7 +93,7 @@ def main(argv: list[str]) -> int:
         if argv:
             msg = (
                 "no usable service names to remove — every name passed was "
-                "blank. This usually means the stack's Account / Destination "
+                "blank. This usually means the channel's Account / Destination "
                 "/ Bot v2 entries have empty service_name fields. Open "
                 "stacks_config.json and fill them in (e.g. CT-MyApi, "
                 "CT-MyBot, CT-Listener-myacct), then retry.\n\n"

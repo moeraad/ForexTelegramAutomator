@@ -201,7 +201,7 @@ class _ChannelsTab(QWidget):
         if row < 0:
             return
         ans = QMessageBox.question(
-            self, "Remove stack",
+            self, "Remove channel",
             f"Remove '{self._entries[row].name}' from stacks_config.json?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
@@ -213,14 +213,14 @@ class _ChannelsTab(QWidget):
         save_entries(self._entries)
         QMessageBox.information(
             self, "Saved",
-            "Stacks saved. Restart the app for changes to take full effect.",
+            "Channels saved. Restart the app for changes to take full effect.",
         )
 
 
 class _StackEntryDialog(QDialog):
     def __init__(self, parent: QWidget, existing: StackEntry | None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Stack entry")
+        self.setWindowTitle("Channel entry")
         self.entry: StackEntry | None = None
         self.resize(560, 320)
 
@@ -716,7 +716,7 @@ _TUNING_SECTIONS: list[tuple[str, list[_Field]]] = [
                tooltip=(
                    "TCP port the API listens on. Default 8765. The EA's "
                    "ApiBaseUrl input must match (e.g. http://127.0.0.1:8765). "
-                   "Pick a different port per stack if running multiple."
+                   "Pick a different port per channel if running multiple."
                ),
                opts=(1, 65535)),
         _Field("ea_shared_token", "EA shared token", "secret",
@@ -737,7 +737,7 @@ _TUNING_SECTIONS: list[tuple[str, list[_Field]]] = [
         _Field("anthropic_api_key", "Anthropic API key", "secret",
                tooltip=(
                    "Claude API key (sk-ant-…). Stored DPAPI-encrypted in the "
-                   "stack's settings table. Leave blank to keep the existing "
+                   "channel's settings table. Leave blank to keep the existing "
                    "saved key — typing a new value replaces it. If decryption "
                    "fails (e.g. after a Windows password reset), the field "
                    "shows blank; paste the key again to re-encrypt under the "
@@ -1034,7 +1034,7 @@ class _ServicesTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 8, 0, 0)
         info = QLabel(
-            "<span style='color:#787b86;'>NSSM service lifecycle for the active stack  ·  "
+            "<span style='color:#787b86;'>NSSM service lifecycle for the active channel  ·  "
             "stop/start may need admin privileges</span>"
         )
         info.setTextFormat(Qt.TextFormat.RichText)
@@ -1050,14 +1050,14 @@ class _ServicesTab(QWidget):
         self._install_btn = QPushButton("Install services")
         self._install_btn.setProperty("variant", "success")  # neon lime — creates services
         self._install_btn.setToolTip(
-            "Register the three NSSM services for this stack (api, bot, "
+            "Register the three NSSM services for this channel (api, bot, "
             "listener). Triggers a UAC prompt."
         )
         self._install_btn.clicked.connect(self._on_install_services)
         self._uninstall_btn = QPushButton("Uninstall services")
         self._uninstall_btn.setProperty("variant", "danger")  # hot pink — destructive
         self._uninstall_btn.setToolTip(
-            "Stop and unregister all three NSSM services for this stack. "
+            "Stop and unregister all three NSSM services for this channel. "
             "Triggers a UAC prompt. Logs and the database are not touched."
         )
         self._uninstall_btn.clicked.connect(self._on_uninstall_services)
@@ -1091,7 +1091,7 @@ class _ServicesTab(QWidget):
         v2_row.addWidget(self._v2_install_all_btn)
         v2_hint = QLabel(
             "<span style='color:#787b86;font-size:11px;'>"
-            "Replaces per-stack install for v2 configs. Each entity → 1 service. "
+            "Replaces per-channel install for v2 configs. Each entity → 1 service. "
             "Open Services.msc to verify after."
             "</span>"
         )
@@ -1193,7 +1193,7 @@ class _ServicesTab(QWidget):
             self,
             "Uninstall services",
             "This will stop and unregister the following Windows services "
-            f"for stack '{stack.name}':\n\n  • "
+            f"for channel '{stack.name}':\n\n  • "
             + "\n  • ".join(stack.service_names)
             + "\n\nLogs and the database are not touched. Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,

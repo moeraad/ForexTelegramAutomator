@@ -55,7 +55,7 @@ class AuditView(QWidget):
         # Cleared results; operator triggers a fresh search after rebind.
         self._tree.clear()
         self._summary.setText(
-            "<span style='color:#787b86;'>Stack rebind — re-run search.</span>"
+            "<span style='color:#787b86;'>Channel rebind — re-run search.</span>"
         )
 
     # ---- UI scaffolding ---------------------------------------------------

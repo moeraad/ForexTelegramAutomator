@@ -803,7 +803,7 @@ class _PlaygroundTab(QWidget):
 
         notice = QLabel(
             "<span style='color:#787b86;'>"
-            "Live AI call against the active stack's state (no DB writes). "
+            "Live AI call against the active channel's state (no DB writes). "
             "Save profile changes before running so the prompt picks them up. "
             "Costs real tokens."
             "</span>"
