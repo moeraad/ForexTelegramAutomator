@@ -3549,8 +3549,25 @@ void PostResult(long id, string status, long ticket, string err) {
       body += ",\"error\":\"" + esc + "\"";
    }
    body += "}";
-   string resp;
-   HttpPostJson(ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result", body, resp);
+   // (M2) Resilient result POST — same retry path DoOpen uses. Previously a
+   // plain fire-and-forget HttpPostJson here meant a transient API blip lost
+   // a management action's terminal status: the action stranded in 'claimed'
+   // and the bot's stale-claim sweeper then marked it 'failed' even though
+   // the EA had executed it on the broker. Queue transport/5xx failures for
+   // DrainRetryQueue; a 4xx is the server's final answer (e.g. 409
+   // claim_expired once the action is already terminal) — don't retry.
+   string resp; int status_code;
+   string resultUrl = ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result";
+   if(!HttpPostJsonWithStatus(resultUrl, body, resp, status_code)) {
+      if(IsRetryableStatus(status_code)) {
+         Print("CT result POST failed id=", id, " status=", status_code,
+               " — queued for retry");
+         EnqueueRetry(resultUrl, body);
+      } else {
+         Print("CT result POST terminal ", status_code, " id=", id,
+               " — not retrying (server has final answer)");
+      }
+   }
 }
 
 // =====================================================================
