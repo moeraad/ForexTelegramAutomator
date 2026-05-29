@@ -186,6 +186,25 @@ class MarketSnapshotBody(BaseModel):
     h1_recent_closes: list[float] | None = None # last ~5 H1 closes (oldest first), for structure
 
 
+class PositionRecoverBody(BaseModel):
+    """EA-posted snapshot for POST /positions/recover.
+
+    Sent by the reverse-reconciliation pass when the EA holds a live broker
+    position (matching our magic number + symbol) that the DB has no open
+    row for. The API inserts an `open` row flagged `recovered=1` (OR IGNORE,
+    so it never resurrects a `closed` row or duplicates an existing one) and
+    DMs the operator. sl/tp are optional — a naked/just-opened position may
+    not carry them yet.
+    """
+    mt5_ticket: int
+    symbol: str = "XAUUSD"
+    side: Literal["BUY", "SELL"]
+    volume: float = Field(gt=0)
+    entry_price: float = Field(gt=0)
+    sl: float | None = None
+    tp: float | None = None
+
+
 class AlertBody(BaseModel):
     """Operator-visible alert posted by the EA when something needs human
     attention (e.g. a staged partial-close gave up after PartialMaxRetries).

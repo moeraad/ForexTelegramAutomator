@@ -1438,3 +1438,102 @@ def test_post_exec_evaluator_skipped_for_failed_status(tmp_path, monkeypatch):
     })
     assert r.status_code == 200
     assert calls == []
+
+
+# ---- POST /positions/recover (EA reverse-reconcile orphan sink) -----------
+
+def _recover_body(ticket=8851424130, **overrides):
+    body = {
+        "mt5_ticket": ticket,
+        "symbol": "XAUUSD",
+        "side": "BUY",
+        "volume": 1.25,
+        "entry_price": 4528.54,
+        "sl": 4520.56,
+        "tp": 4563.86,
+    }
+    body.update(overrides)
+    return body
+
+
+def test_recover_inserts_new_open_row(tmp_path):
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.post("/positions/recover", json=_recover_body())
+    assert r.status_code == 200
+    assert r.json()["recovered"] is True
+    row = conn.execute(
+        "SELECT status, recovered, volume, original_volume, side, action_id "
+        "FROM positions WHERE mt5_ticket=?", (8851424130,)
+    ).fetchone()
+    assert row is not None
+    assert row["status"] == "open"
+    assert row["recovered"] == 1
+    assert row["volume"] == 1.25
+    assert row["original_volume"] == 1.25  # snapshot, mirrors post_result
+    assert row["side"] == "BUY"
+    assert row["action_id"] is None        # orphan has no originating action
+
+
+def test_recover_is_idempotent(tmp_path):
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    first = client.post("/positions/recover", json=_recover_body())
+    second = client.post("/positions/recover", json=_recover_body())
+    assert first.json()["recovered"] is True
+    assert second.json()["recovered"] is False  # OR IGNORE no-op
+    n = conn.execute(
+        "SELECT COUNT(*) FROM positions WHERE mt5_ticket=?", (8851424130,)
+    ).fetchone()[0]
+    assert n == 1
+
+
+def test_recover_does_not_resurrect_closed_row(tmp_path):
+    """A ticket already recorded as closed must never be flipped back to open
+    by a recovery POST (first-insert-wins, same rule as post_result)."""
+    conn = _setup(tmp_path)
+    conn.execute(
+        "INSERT INTO positions(mt5_ticket, symbol, side, volume, status, "
+        "closed_at, close_reason) "
+        "VALUES(?, 'XAUUSD', 'BUY', 1.25, 'closed', ?, 'mt5_sl')",
+        (8851424130, datetime.now(timezone.utc).isoformat()),
+    )
+    client = TestClient(build_app(conn))
+    r = client.post("/positions/recover", json=_recover_body())
+    assert r.status_code == 200
+    assert r.json()["recovered"] is False
+    row = conn.execute(
+        "SELECT status FROM positions WHERE mt5_ticket=?", (8851424130,)
+    ).fetchone()
+    assert row["status"] == "closed"  # untouched
+
+
+def test_recover_emits_one_operator_alert(tmp_path):
+    """First recovery DMs the operator via an ALERT row; a redundant repeat
+    POST (no-op insert) must NOT emit a second alert."""
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    client.post("/positions/recover", json=_recover_body())
+    client.post("/positions/recover", json=_recover_body())  # no-op
+    alerts = conn.execute(
+        "SELECT payload_json, status FROM actions WHERE action_type='ALERT'"
+    ).fetchall()
+    assert len(alerts) == 1
+    assert alerts[0]["status"] == "executed"  # terminal so dispatcher DMs it
+    assert "Recovered orphan position" in alerts[0]["payload_json"]
+    assert "8851424130" in alerts[0]["payload_json"]
+
+
+def test_recover_rejects_unsupported_symbol(tmp_path):
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.post("/positions/recover", json=_recover_body(symbol="EURUSD"))
+    assert r.status_code == 400
+    assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 0
+
+
+def test_recover_rejects_nonpositive_volume(tmp_path):
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.post("/positions/recover", json=_recover_body(volume=0))
+    assert r.status_code == 422  # pydantic Field(gt=0)

@@ -32,6 +32,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_positions_add_pnl(conn)
     _migrate_actions_add_instant_types(conn)
     _migrate_positions_add_naked(conn)
+    _migrate_positions_add_recovered(conn)
     _migrate_actions_add_cancel_pending(conn)
     _migrate_seed_settings_defaults(conn)
     _migrate_env_to_settings(conn)
@@ -522,6 +523,22 @@ def _migrate_positions_add_naked(conn: sqlite3.Connection) -> None:
         )
     if "naked_opened_at" not in cols:
         conn.execute("ALTER TABLE positions ADD COLUMN naked_opened_at DATETIME")
+
+
+def _migrate_positions_add_recovered(conn: sqlite3.Connection) -> None:
+    """Add `recovered` to positions for the EA's reverse-reconcile pass.
+
+    A recovered row is one created by POST /positions/recover when the EA
+    found a live broker position (its magic number, our symbol) that the DB
+    had no open row for — the orphan case from a lost OPEN result POST.
+    Pre-migration rows backfill to recovered=0 (they came through the normal
+    OPEN path). Idempotent: no-op once the column exists.
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(positions)").fetchall()}
+    if "recovered" not in cols:
+        conn.execute(
+            "ALTER TABLE positions ADD COLUMN recovered INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def _migrate_actions_add_cancel_pending(conn: sqlite3.Connection) -> None:

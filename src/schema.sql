@@ -124,7 +124,14 @@ CREATE TABLE IF NOT EXISTS positions (
   -- A naked position has no signal-defined SL/TP and rides only on the
   -- emergency SL set at open. naked_opened_at is ISO-8601 UTC.
   is_naked             INTEGER NOT NULL DEFAULT 0,
-  naked_opened_at      DATETIME
+  naked_opened_at      DATETIME,
+  -- recovered: set to 1 when this row was created by the EA's reverse
+  -- reconciliation pass (POST /positions/recover) rather than a normal
+  -- OPEN result. A recovered row means the broker had a live position the
+  -- DB never recorded — almost always because the OPEN's result POST was
+  -- lost (transient API outage / hard crash before the EnqueueRetry write).
+  -- Surfaced to the operator via an ALERT so the divergence is visible.
+  recovered            INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 -- Hot path: GET /positions/last_closed?symbol=X&within_hours=N
