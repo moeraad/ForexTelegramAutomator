@@ -126,6 +126,9 @@ class AnthropicProvider:
         volatile_block = {"type": "text", "text": volatile_suffix}
         user_content: list[dict] = []
         if image_bytes is not None:
+            # Telegram photos are always delivered as JPEG; hardcoded media_type
+            # is safe for this use case. If a non-JPEG source is ever added,
+            # extend this with a media_type parameter.
             user_content.append({
                 "type": "image",
                 "source": {
@@ -261,7 +264,10 @@ class OpenAIProvider:
         # cached-prefix first so it survives the cache hit, then append the
         # volatile suffix as part of the same user turn.
         if image_bytes is not None:
-            user_content_body: str | list = [
+            # Telegram photos are always delivered as JPEG; hardcoded media_type
+            # is safe for this use case. If a non-JPEG source is ever added,
+            # extend this with a media_type parameter.
+            user_content_body: str | list[dict[str, Any]] = [
                 {
                     "type": "image_url",
                     "image_url": {

@@ -1,6 +1,6 @@
 """Tests that llm_provider.interpret() builds correct content blocks for vision."""
 import base64
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 def _fake_bytes() -> bytes:
@@ -34,6 +34,7 @@ def test_anthropic_interpret_includes_image_block_when_image_bytes_given():
     content = captured["kwargs"]["messages"][0]["content"]
     types = [b["type"] for b in content]
     assert "image" in types
+    assert types[0] == "image", "image block must come before text blocks"
     img_block = next(b for b in content if b["type"] == "image")
     assert img_block["source"]["type"] == "base64"
     assert img_block["source"]["media_type"] == "image/jpeg"
@@ -100,6 +101,37 @@ def test_openai_interpret_includes_image_url_block_when_image_bytes_given():
     assert isinstance(content, list)
     types = [b["type"] for b in content]
     assert "image_url" in types
+    assert types[0] == "image_url", "image_url block must come before text block"
     img_block = next(b for b in content if b["type"] == "image_url")
     expected_url = f"data:image/jpeg;base64,{base64.b64encode(_fake_bytes()).decode()}"
     assert img_block["image_url"]["url"] == expected_url
+
+
+def test_openai_interpret_no_image_block_when_image_bytes_none():
+    from src.llm_provider import OpenAIProvider
+    captured = {}
+    mock_client = MagicMock()
+    def fake_create(**kwargs):
+        captured["kwargs"] = kwargs
+        choice = MagicMock()
+        choice.message.content = '{"category":"signal"}'
+        choice.finish_reason = "stop"
+        resp = MagicMock()
+        resp.choices = [choice]
+        resp.usage.prompt_tokens = 10
+        resp.usage.completion_tokens = 5
+        resp.usage.prompt_tokens_details = MagicMock(cached_tokens=0)
+        return resp
+    mock_client.chat.completions.create.side_effect = fake_create
+    provider = OpenAIProvider(client=mock_client, model="gpt-5")
+    provider.interpret(
+        system_prompt="sys",
+        cached_prefix="prefix",
+        volatile_suffix="suffix",
+        max_output_tokens=256,
+        reasoning_level=None,
+        image_bytes=None,
+    )
+    user_msg = next(m for m in captured["kwargs"]["messages"] if m["role"] == "user")
+    # Non-image path: content must be a plain string, not a list
+    assert isinstance(user_msg["content"], str)
