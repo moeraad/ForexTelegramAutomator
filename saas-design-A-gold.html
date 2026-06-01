@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CopyTrades — Direction A+ (Terminal × Gold)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --sans:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',monospace;
+    /* terminal × gold tokens */
+    --bg:#0a0e14; --bg-2:#0d121b; --panel:#10161f; --panel-2:#141c27;
+    --line:#1c2734; --line-2:#26323f;
+    --text:#eaf1f8; --muted:#7d8a9c; --faint:#566270;
+    --gold:#d4af37; --gold-hi:#e8c66a; --gold-deep:#b8932c;
+    --gain:#2ea043; --loss:#f85149;
+  }
+  body{background:#06080c;color:var(--text);font-family:var(--sans);padding:36px 24px 80px}
+  .wrap{max-width:1200px;margin:0 auto}
+  .kick{font-family:var(--mono);font-size:11px;letter-spacing:3px;text-transform:uppercase;color:var(--gold);margin-bottom:9px}
+  h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
+  h1 span{color:var(--muted);font-weight:400}
+  .lede{color:var(--muted);margin-top:8px;max-width:780px;font-size:13.5px}
+
+  .sech{font-family:var(--mono);font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin:30px 0 12px;display:flex;align-items:center;gap:10px}
+  .sech::after{content:"";flex:1;height:1px;background:var(--line)}
+
+  /* app bar */
+  .appbar{display:flex;align-items:center;gap:14px;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:12px 16px}
+  .logo{display:flex;align-items:center;gap:9px;font-weight:800;letter-spacing:-.01em}
+  .mark{width:24px;height:24px;border-radius:7px;background:linear-gradient(145deg,var(--gold-hi),var(--gold-deep));display:grid;place-items:center;color:#1a1505;font-weight:900;font-size:14px;font-family:var(--mono)}
+  .navlink{font-size:12.5px;color:var(--muted)}
+  .navlink.on{color:var(--text)}
+  .navspacer{flex:1}
+  .pill-live{font-family:var(--mono);font-size:10px;letter-spacing:1px;color:var(--gain);display:flex;align-items:center;gap:6px}
+  .pill-live i{width:7px;height:7px;border-radius:50%;background:var(--gain);box-shadow:0 0 8px var(--gain);display:inline-block}
+  .avatar{width:26px;height:26px;border-radius:50%;background:linear-gradient(145deg,#2a3543,#1a222e);border:1px solid var(--line-2)}
+
+  .grid2{display:grid;grid-template-columns:1.15fr .85fr;gap:16px}
+  @media(max-width:900px){.grid2{grid-template-columns:1fr}}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+  .panel-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  .panel-h .t{font-weight:700;font-size:13.5px}
+  .panel-h .meta{font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+
+  /* equity strip */
+  .equity{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:6px}
+  .equity .big{font-family:var(--mono);font-size:28px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+  .equity .delta{font-family:var(--mono);font-size:13px;color:var(--gain);font-weight:600}
+  .spark{width:100%;height:54px;margin:6px 0 2px}
+
+  /* position card */
+  .pos{background:var(--panel-2);border:1px solid var(--line);border-radius:12px;padding:13px;margin-top:12px}
+  .row{display:flex;align-items:center;justify-content:space-between}
+  .side-buy{color:var(--gain);font-weight:700}
+  .pl{font-family:var(--mono);font-weight:700;font-size:15px;font-variant-numeric:tabular-nums}
+  .pl.up{color:var(--gain)}
+  .statrow{display:flex;justify-content:space-between;margin-top:11px}
+  .stat .k{font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--muted)}
+  .stat .v{font-family:var(--mono);font-size:13.5px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px}
+  .gold-edge{border-left:2px solid var(--gold)}
+
+  /* kill switch + actions */
+  .ksw{display:flex;align-items:center;justify-content:space-between;background:var(--panel-2);border:1px solid var(--line);border-radius:11px;padding:12px 14px;margin-top:12px}
+  .ksw .lab{font-size:12.5px}
+  .ksw .lab b{display:block;font-weight:600}
+  .ksw .lab span{font-size:11px;color:var(--muted)}
+  .toggle{width:42px;height:24px;border-radius:20px;background:#3a2e12;border:1px solid #4a3a16;position:relative;flex:none}
+  .toggle::after{content:"";position:absolute;top:2px;left:20px;width:18px;height:18px;border-radius:50%;background:linear-gradient(145deg,#e8c66a,#cda13c);transition:.2s}
+
+  .gbtn{border:0;border-radius:9px;padding:10px 16px;font-family:var(--sans);font-weight:700;font-size:12.5px;cursor:pointer;background:linear-gradient(180deg,var(--gold-hi),var(--gold-deep));color:#1a1505}
+  .gbtn.ghost{background:transparent;border:1px solid var(--gold);color:var(--gold-hi)}
+
+  /* chips */
+  .chip{font-size:9.5px;font-family:var(--mono);letter-spacing:1px;text-transform:uppercase;padding:3px 8px;border-radius:20px}
+  .chip.asset{background:#1f1808;color:var(--gold-hi)}
+  .chip.risk{background:#2a1d0c;color:#e0a23a}
+  .chip.verified{background:#0f1620;color:var(--gold);border:1px solid #2a2412}
+
+  /* ===== light catalog register ===== */
+  .light{background:#f6f7f9;border:1px solid #e6e9ef;border-radius:14px;padding:18px;color:#16202f}
+  .light .lh{font-family:var(--mono);font-size:10px;letter-spacing:2px;text-transform:uppercase;color:#8a93a3;margin-bottom:14px}
+  .ccard{background:#fff;border:1px solid #eceff3;border-radius:13px;padding:15px;box-shadow:0 8px 26px -16px rgba(20,30,60,.4)}
+  .ccard .row{align-items:flex-start}
+  .ccard .nm{font-weight:800;font-size:15px;color:#0d1424}
+  .ccard .vr{font-family:var(--mono);font-size:9.5px;color:var(--gold-deep);font-weight:700;margin-top:4px;letter-spacing:.5px}
+  .ccard .chip.asset{background:#fbf3dd;color:#9a7b1e}
+  .ccard .chip.risk{background:#fdeee0;color:#c47a1e}
+  .ccard .statrow .k{color:#8590a0}
+  .ccard .statrow .v{color:#0d1424}
+  .ccard .price{font-family:var(--mono);font-weight:700;font-size:18px;color:#0d1424;font-variant-numeric:tabular-nums}
+  .ccard .price small{font-size:11px;color:#8590a0;font-weight:400}
+  .ccard .gbtn{width:100%;margin-top:13px}
+  .ccard .micro{font-size:9.5px;color:#9aa3b2;margin-top:8px;line-height:1.4}
+
+  .pal{display:flex;gap:7px;margin-top:6px}
+  .sw{flex:1;height:40px;border-radius:8px;display:flex;align-items:flex-end;justify-content:center;padding-bottom:4px;font-family:var(--mono);font-size:8px}
+
+  .notes{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:14px}
+  .note{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;font-size:12px;color:var(--muted);line-height:1.5}
+  .note b{color:var(--text);display:block;margin-bottom:5px;font-size:12.5px}
+  @media(max-width:900px){.notes{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="kick">CopyTrades · Direction A+ · the finalist</div>
+  <h1>Terminal × Gold <span>— one token system, dual register</span></h1>
+  <p class="lede">Direction A's precision (Inter + tabular mono, tight grid, semantic P&L) with <b>gold as the brand accent</b> instead of cool blue. Shown in both registers: dark for the data-dense app, light for the trust-building catalog — same tokens, same gold.</p>
+
+  <!-- ===== APP (dark register) ===== -->
+  <div class="sech">App register · dark · data-dense</div>
+
+  <div class="appbar">
+    <div class="logo"><span class="mark">C</span> CopyTrades</div>
+    <span class="navlink on">Positions</span>
+    <span class="navlink">Channels</span>
+    <span class="navlink">Account</span>
+    <div class="navspacer"></div>
+    <span class="pill-live"><i></i> LIVE · MT5 CONNECTED</span>
+    <div class="avatar"></div>
+  </div>
+
+  <div class="grid2" style="margin-top:16px">
+    <div class="panel">
+      <div class="panel-h"><div class="t">Open positions</div><div class="meta">XAUUSD · 1 open</div></div>
+      <div class="equity">
+        <div>
+          <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--muted)">Account equity</div>
+          <div class="big">$10,184.20</div>
+        </div>
+        <div class="delta">▲ +1.84% today</div>
+      </div>
+      <svg class="spark" viewBox="0 0 600 54" preserveAspectRatio="none">
+        <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2ea043" stop-opacity=".25"/><stop offset="1" stop-color="#2ea043" stop-opacity="0"/></linearGradient></defs>
+        <polyline fill="none" stroke="#2ea043" stroke-width="1.6" points="0,42 60,40 120,44 180,30 240,33 300,22 360,26 420,14 480,18 540,8 600,11"/>
+        <polygon fill="url(#g)" points="0,42 60,40 120,44 180,30 240,33 300,22 360,26 420,14 480,18 540,8 600,11 600,54 0,54"/>
+      </svg>
+
+      <div class="pos gold-edge">
+        <div class="row">
+          <div><span class="side-buy">▲ BUY</span> &nbsp;<span style="font-weight:700">XAUUSD</span> &nbsp;<span class="chip asset">Gold Sniper FX</span></div>
+          <div class="pl up">+$184.20</div>
+        </div>
+        <div class="statrow">
+          <div class="stat"><div class="k">Lots</div><div class="v">0.04</div></div>
+          <div class="stat"><div class="k">Entry</div><div class="v">4,812.50</div></div>
+          <div class="stat"><div class="k">SL</div><div class="v">4,798.00</div></div>
+          <div class="stat"><div class="k">TP1</div><div class="v">4,840.0</div></div>
+          <div class="stat"><div class="k">TP2</div><div class="v">4,868.0</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h"><div class="t">Controls</div><div class="meta">this account</div></div>
+      <div class="ksw">
+        <div class="lab"><b>Auto-copy</b><span>Executing new signals</span></div>
+        <div class="toggle"></div>
+      </div>
+      <div class="ksw" style="border-color:#3a2416">
+        <div class="lab"><b style="color:var(--loss)">Kill switch</b><span>Halt all my executions</span></div>
+        <button class="gbtn ghost" style="border-color:var(--loss);color:#ff8b84">Halt</button>
+      </div>
+      <div style="display:flex;gap:9px;margin-top:12px">
+        <button class="gbtn" style="flex:1">Connect account</button>
+        <button class="gbtn ghost" style="flex:1">Manage subs</button>
+      </div>
+      <div style="margin-top:13px;font-family:var(--mono);font-size:10.5px;color:var(--muted);line-height:1.7">
+        QUOTA — interpreter: n/a (provider-borne)<br>
+        EXECUTION — MetaApi · G2 · 18ms<br>
+        NATIVE SL/TP — <span style="color:var(--gain)">✓ armed at broker</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== CATALOG (light register) ===== -->
+  <div class="sech">Catalog register · light · trust + conversion</div>
+  <div class="light">
+    <div class="lh">Public channel listing · same tokens, light surface, same gold accent</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px">
+      <div class="ccard">
+        <div class="row"><div><div class="nm">Gold Sniper FX</div><div class="vr">✦ INDEPENDENTLY TRACKED · 94d</div></div><span class="chip asset">XAUUSD</span></div>
+        <div class="statrow"><div class="stat"><div class="k">Win</div><div class="v">68.4%</div></div><div class="stat"><div class="k">R:R</div><div class="v">1:2.3</div></div><div class="stat"><div class="k">/day</div><div class="v">3.1</div></div></div>
+        <div class="row" style="margin-top:13px;align-items:flex-end"><div class="price">$49<small>/mo</small></div><span class="chip risk">Med risk</span></div>
+        <button class="gbtn">Subscribe</button>
+        <div class="micro">Hypothetical signal performance. Not advice. Past ≠ future.</div>
+      </div>
+      <div class="ccard">
+        <div class="row"><div><div class="nm">EUR/USD Swing</div><div class="vr">✦ INDEPENDENTLY TRACKED · 210d</div></div><span class="chip asset">EURUSD</span></div>
+        <div class="statrow"><div class="stat"><div class="k">Win</div><div class="v">61.0%</div></div><div class="stat"><div class="k">R:R</div><div class="v">1:1.9</div></div><div class="stat"><div class="k">/day</div><div class="v">0.8</div></div></div>
+        <div class="row" style="margin-top:13px;align-items:flex-end"><div class="price">$29<small>/mo</small></div><span class="chip risk" style="background:#e6f4ea;color:#2f8f4e">Low risk</span></div>
+        <button class="gbtn ghost" style="border-color:var(--gold-deep);color:var(--gold-deep)">Subscribe</button>
+        <div class="micro">Hypothetical signal performance. Not advice. Past ≠ future.</div>
+      </div>
+      <div class="ccard">
+        <div class="row"><div><div class="nm">Index Scalper Pro</div><div class="vr">✦ INDEPENDENTLY TRACKED · 41d</div></div><span class="chip asset">US30</span></div>
+        <div class="statrow"><div class="stat"><div class="k">Win</div><div class="v">73.2%</div></div><div class="stat"><div class="k">R:R</div><div class="v">1:1.4</div></div><div class="stat"><div class="k">/day</div><div class="v">9.4</div></div></div>
+        <div class="row" style="margin-top:13px;align-items:flex-end"><div class="price">$79<small>/mo</small></div><span class="chip risk" style="background:#fde8e6;color:#c0392b">High risk</span></div>
+        <button class="gbtn ghost" style="border-color:var(--gold-deep);color:var(--gold-deep)">Subscribe</button>
+        <div class="micro">Hypothetical signal performance. Not advice. Past ≠ future.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== system notes ===== -->
+  <div class="sech">The system</div>
+  <div>
+    <div style="font-family:var(--mono);font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Palette — gold accent, semantic P&L, neutral slate</div>
+    <div class="pal">
+      <div class="sw" style="background:#0a0e14;color:#9fb0c4">#0A0E14 bg</div>
+      <div class="sw" style="background:#10161f;color:#9fb0c4">#10161F panel</div>
+      <div class="sw" style="background:#d4af37;color:#1a1505">#D4AF37 gold</div>
+      <div class="sw" style="background:#e8c66a;color:#1a1505">#E8C66A gold-hi</div>
+      <div class="sw" style="background:#2ea043;color:#06190c">#2EA043 gain</div>
+      <div class="sw" style="background:#f85149;color:#2a0806">#F85149 loss</div>
+      <div class="sw" style="background:#f6f7f9;color:#56616f">#F6F7F9 light</div>
+    </div>
+  </div>
+  <div class="notes">
+    <div class="note"><b>Typography</b>Inter (400–900) for UI; <span style="font-family:var(--mono)">JetBrains Mono</span> for every price, lot, %, and ID. Tabular numerics so money never shifts width. No serif — precision over flourish.</div>
+    <div class="note"><b>Gold, used with discipline</b>Accent only: primary CTAs, the logo mark, the "tracked" mark, a single position edge-stripe. Never gold fills or gradients everywhere. Green/red stay strictly semantic for P&L.</div>
+    <div class="note"><b>Dual register, one system</b>Identical tokens. App = dark (long sessions, data focus). Catalog = light (trust, SEO, conversion). Gold + semantic colors + type are constant across both, so it reads as one product.</div>
+  </div>
+</div>
+</body>
+</html>

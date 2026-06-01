@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CopyTrades — MVP Scope Cut</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2330;
+    --line: #2d3748;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --green: #3fb950;
+    --blue: #58a6ff;
+    --amber: #d29922;
+    --purple: #bc8cff;
+    --red: #f85149;
+    --radius: 14px;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(1200px 600px at 75% -10%, #16203a 0%, var(--bg) 55%);
+    color: var(--text); font-family: var(--sans); line-height: 1.5;
+    padding: 48px 32px 80px; min-height: 100vh;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; }
+  header { margin-bottom: 40px; }
+  .kicker { font-family: var(--mono); font-size: 12px; letter-spacing: 3px; text-transform: uppercase; color: var(--blue); margin-bottom: 10px; }
+  h1 { font-size: 34px; font-weight: 700; letter-spacing: -0.02em; }
+  h1 span { color: var(--muted); font-weight: 400; }
+  .sub { color: var(--muted); margin-top: 8px; max-width: 760px; }
+
+  h2 { font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); margin: 44px 0 18px; font-family: var(--mono); display: flex; align-items: center; gap: 12px; }
+  h2::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+  /* decisive cut banner */
+  .decisive { background: linear-gradient(135deg,#13251a,#161b22); border: 1px solid #2f6b3a; border-radius: var(--radius); padding: 22px 24px; display: grid; grid-template-columns: auto 1fr; gap: 20px; align-items: center; }
+  .decisive .mark { font-size: 40px; line-height: 1; }
+  .decisive h3 { font-size: 19px; margin-bottom: 6px; }
+  .decisive p { color: var(--muted); font-size: 13.5px; }
+  .decisive b { color: var(--text); }
+  .chips { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 7px; }
+  .chip { font-family: var(--mono); font-size: 11px; padding: 3px 9px; border-radius: 20px; background: #2a1416; color: #f7a39b; border: 1px solid #5a2a2a; }
+  .chip::before { content: "✕ "; opacity: .7; }
+
+  /* in/out lanes */
+  .lanes { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .lane { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; }
+  .lane.in { border-top: 3px solid var(--green); }
+  .lane.out { border-top: 3px solid var(--muted); }
+  .lane h3 { font-size: 15px; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+  .lane .cnt { font-family: var(--mono); font-size: 12px; color: var(--muted); font-weight: 400; }
+  .lane .hint { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+  .item { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; align-items: baseline; }
+  .item:last-child { border-bottom: 0; }
+  .item .name { font-weight: 600; }
+  .item .desc { color: var(--muted); font-weight: 400; font-size: 12px; display:block; margin-top:1px; }
+  .item .meta { font-family: var(--mono); font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+  .item.in .name::before { content: "✓ "; color: var(--green); }
+  .pill { font-family: var(--mono); font-size: 10px; padding: 2px 7px; border-radius: 12px; white-space: nowrap; }
+  .pill.v11 { background: #102a44; color: var(--blue); }
+  .pill.v1x { background: #2a2410; color: var(--amber); }
+  .pill.v2 { background: #241c33; color: var(--purple); }
+  .pill.cond { background: #1c2330; color: var(--muted); }
+  .flag { border-color: var(--amber) !important; }
+  .flag .name::after { content: " ⚠"; color: var(--amber); }
+
+  .nonneg { margin-top: 14px; padding: 12px 14px; background: #2a1416; border: 1px solid #5a2a2a; border-radius: 10px; font-size: 12.5px; }
+  .nonneg b { color: #f7a39b; }
+
+  /* build order */
+  .timeline { display: grid; gap: 0; position: relative; }
+  .phase { display: grid; grid-template-columns: 44px 1fr; gap: 16px; padding-bottom: 18px; position: relative; }
+  .phase:not(:last-child)::before { content: ""; position: absolute; left: 21px; top: 32px; bottom: -2px; width: 2px; background: var(--line); }
+  .phase .num { width: 44px; height: 44px; border-radius: 50%; background: var(--panel-2); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-weight: 700; font-size: 15px; color: var(--blue); z-index: 1; }
+  .phase .body { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 13px 16px; }
+  .phase .t { font-weight: 650; font-size: 14px; }
+  .phase .d { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+  .phase.gate .num { background: #2a1416; border-color: #5a2a2a; color: #f7a39b; }
+  .phase.gate .body { border-color: #5a2a2a; }
+  .phase.launch .num { background: #13251a; border-color: #2f6b3a; color: var(--green); }
+  .phase.launch .body { border-color: #2f6b3a; }
+
+  .foot { margin-top: 40px; font-size: 12px; color: var(--muted); font-family: var(--mono); text-align: center; }
+  @media (max-width: 920px) { .lanes { grid-template-columns: 1fr; } .decisive { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="kicker">CopyTrades SaaS · Point 18</div>
+    <h1>MVP Scope Cut <span>— what ships v1</span></h1>
+    <p class="sub">Thinnest end-to-end loop: a subscriber pays, connects a broker account with zero install, and a curated channel's signals are auto-traded with safe management. Everything operator-assisted, one execution path.</p>
+  </header>
+
+  <h2>The decisive cut</h2>
+  <div class="decisive">
+    <div class="mark">✂️</div>
+    <div>
+      <h3>MetaApi-managed ONLY for v1 — defer the self-hosted EA to v1.1</h3>
+      <p>Zero-install onboarding, server-side Python (testable, no MetaEditor), per-account COGS trivial at beta scale (~<b>$11 × 20 ≈ $220/mo</b>). Shipping one execution path — the managed one — is what makes the MVP small. It <b>deletes whole subsystems</b> from v1:</p>
+      <div class="chips">
+        <span class="chip">EA multi-tenant rework</span>
+        <span class="chip">EA token auth</span>
+        <span class="chip">WebSocket doorbell layer</span>
+        <span class="chip">EA versioning</span>
+        <span class="chip">Install guide</span>
+        <span class="chip">EA-local caps</span>
+      </div>
+    </div>
+  </div>
+
+  <h2>In v1  ·  vs  ·  Deferred</h2>
+  <div class="lanes">
+    <div class="lane in">
+      <h3>✅ In scope <span class="cnt">— v1</span></h3>
+      <div class="hint">The core loop + what's legally required to take money.</div>
+
+      <div class="item in"><div><span class="name">Listener</span><span class="desc">Single Telethon account, multi-channel (pool abstraction kept, not built)</span></div><span class="meta">pt 1</span></div>
+      <div class="item in"><div><span class="name">AI pipeline</span><span class="desc">Triage + interpret once-per-channel; 1–2 launched profiles + hand-authored overlays</span></div><span class="meta">pt 2</span></div>
+      <div class="item in"><div><span class="name">Action types</span><span class="desc">Core 9 (OPEN + management + ALERT)</span></div><span class="meta">pt 3</span></div>
+      <div class="item in"><div><span class="name">Symbol model</span><span class="desc">Multi-symbol; one position per (subscriber, symbol)</span></div><span class="meta">pt 2</span></div>
+      <div class="item in"><div><span class="name">Execution</span><span class="desc">MetaApi managed; native SL/TP always + staged partial closes</span></div><span class="meta">pt 8</span></div>
+      <div class="item in"><div><span class="name">Data</span><span class="desc">Postgres + RLS, Redis — no WebSocket layer</span></div><span class="meta">pt 5</span></div>
+      <div class="item in"><div><span class="name">State machine</span><span class="desc">Two-tier, core states + skipped_filter/kill_switch</span></div><span class="meta">pt 6</span></div>
+      <div class="item in"><div><span class="name">API / auth</span><span class="desc">Monolith FastAPI; hosted identity; no EA endpoints</span></div><span class="meta">pt 7</span></div>
+      <div class="item in"><div><span class="name">Provisioning</span><span class="desc">MetaApi cred capture, custody-by-MetaApi, consent, server hard caps</span></div><span class="meta">pt 12</span></div>
+      <div class="item in"><div><span class="name">Billing</span><span class="desc">Stripe subscriptions (platform fee + channel sub)</span></div><span class="meta">pt 11</span></div>
+      <div class="item in"><div><span class="name">Catalog</span><span class="desc">Minimal list + subscribe</span></div><span class="meta">pt 14</span></div>
+      <div class="item in"><div><span class="name">Onboarding</span><span class="desc">Operator-assisted, invite-only; minimal provider dashboard</span></div><span class="meta">pt 13</span></div>
+      <div class="item in"><div><span class="name">Subscriber dashboard</span><span class="desc">Connect, positions, kill switch, subscriptions, status</span></div><span class="meta">pt 9</span></div>
+      <div class="item in"><div><span class="name">Notifications</span><span class="desc">Email + Telegram critical only</span></div><span class="meta">pt 9</span></div>
+      <div class="item in"><div><span class="name">Admin</span><span class="desc">Low-code (Retool/Supabase), operator-only, kill switches</span></div><span class="meta">pt 17</span></div>
+
+      <div class="nonneg"><b>⛔ Non-negotiable, v1-blocking:</b> ToS + Risk + Privacy + disclaimers + geo-gating + a fintech lawyer before real money. Demo-account beta can precede it; real money cannot. <span style="color:var(--muted)">(pt 15)</span></div>
+    </div>
+
+    <div class="lane out">
+      <h3>🕒 Deferred</h3>
+      <div class="hint">Safe to defer — none of these are in the core loop.</div>
+
+      <div class="item"><div><span class="name">Self-hosted EA path</span><span class="desc">+ token auth, WebSocket, versioning, install guide</span></div><span class="pill v11">v1.1</span></div>
+      <div class="item flag"><div><span class="name">Chase-price + ATR trailing</span><span class="desc">MVP ships native SL/TP + staged closes; chase/ATR = edge, deferred to cut launch risk</span></div><span class="pill v11">v1.1</span></div>
+      <div class="item"><div><span class="name">Telethon account pool</span><span class="desc">Single account fine at beta scale</span></div><span class="pill cond">&gt;50 ch / 1st ban</span></div>
+      <div class="item"><div><span class="name">Vocab/example extraction tool</span><span class="desc">Operator hand-authors overlays for launch channels</span></div><span class="pill v2">v2</span></div>
+      <div class="item"><div><span class="name">Channel Learning Loop (all)</span><span class="desc">Pure cost-optimization</span></div><span class="pill v2">v2</span></div>
+      <div class="item"><div><span class="name">Per-action approval mode</span><span class="desc">MVP = auto-execute + kill switch</span></div><span class="pill v1x">v1.x</span></div>
+      <div class="item"><div><span class="name">Stripe Connect auto-payouts</span><span class="desc">Manual payouts to few launch providers</span></div><span class="pill v1x">v1.x</span></div>
+      <div class="item"><div><span class="name">Catalog discovery</span><span class="desc">Ranking, quality score, risk labels, reviews, filters</span></div><span class="pill v1x">v1.x+</span></div>
+      <div class="item"><div><span class="name">Multi-channel notifications</span><span class="desc">Web/mobile push, SMS</span></div><span class="pill v2">v2</span></div>
+      <div class="item"><div><span class="name">Full RBAC + break-glass</span><span class="desc">Operator-only console at beta</span></div><span class="pill v1x">v1.x</span></div>
+      <div class="item"><div><span class="name">PENDING_ORDER / CANCEL_PENDING</span><span class="desc">Only if a launch channel uses explicit pendings</span></div><span class="pill cond">on demand</span></div>
+      <div class="item"><div><span class="name">Drift detection · white-label bots · multi-region</span><span class="desc">Enhancements</span></div><span class="pill v2">v2+</span></div>
+    </div>
+  </div>
+
+  <h2>Build order — critical path</h2>
+  <div class="timeline">
+    <div class="phase"><div class="num">1</div><div class="body"><div class="t">Foundations</div><div class="d">Postgres + RLS, hosted auth, core entities: providers, channels, subscribers, subscriptions, signal_actions, subscriber_executions, overlays.</div></div></div>
+    <div class="phase"><div class="num">2</div><div class="body"><div class="t">Listener + AI pipeline</div><div class="d">Heaviest reuse of desktop code — orchestrator, validators, ai, triage, state_summary → channel-canonical.</div></div></div>
+    <div class="phase"><div class="num">3</div><div class="body"><div class="t">Managed execution engine</div><div class="d">MetaApi adapter + plan interpreter: native SL/TP always + staged partial closes.</div></div></div>
+    <div class="phase"><div class="num">4</div><div class="body"><div class="t">Provisioning flow</div><div class="d">Credential capture + MetaApi account lifecycle (provisioning → connected → deployed).</div></div></div>
+    <div class="phase"><div class="num">5</div><div class="body"><div class="t">Billing</div><div class="d">Stripe subscriptions + access gating (tier/channel → feature flags).</div></div></div>
+    <div class="phase"><div class="num">6</div><div class="body"><div class="t">Subscriber dashboard + minimal catalog</div><div class="d">Connect account, positions, kill switch, subscribe flow.</div></div></div>
+    <div class="phase"><div class="num">7</div><div class="body"><div class="t">Operator onboarding + low-code admin</div><div class="d">Channel approval, overlay authoring, kill switches.</div></div></div>
+    <div class="phase gate"><div class="num">8</div><div class="body"><div class="t">Legal docs + disclaimers + geo-gating ⛔ gate</div><div class="d">ToS, Risk, Privacy; in-app disclaimers; jurisdiction blocking. Blocks paid launch.</div></div></div>
+    <div class="phase launch"><div class="num">9</div><div class="body"><div class="t">Closed beta (demo) → paid launch</div><div class="d">Friends-and-family on demo accounts first; real money only after legal clears.</div></div></div>
+  </div>
+
+  <div class="foot">CopyTrades SaaS — MVP scope cut · chase-price + ATR trailing locked to v1.1 · 2026-05-31</div>
+</div>
+</body>
+</html>

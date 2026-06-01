@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CopyTrades — System Architecture</title>
+<style>
+  :root {
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#2d3748;
+    --text:#e6edf3; --muted:#8b949e;
+    --green:#3fb950; --blue:#58a6ff; --amber:#d29922; --purple:#bc8cff; --red:#f85149; --teal:#39c5cf;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Menlo,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:radial-gradient(1300px 700px at 70% -10%,#16203a 0%,var(--bg) 55%);color:var(--text);font-family:var(--sans);line-height:1.45;padding:44px 30px 80px}
+  .wrap{max-width:1280px;margin:0 auto}
+  header{margin-bottom:34px}
+  .kicker{font-family:var(--mono);font-size:12px;letter-spacing:3px;text-transform:uppercase;color:var(--blue);margin-bottom:10px}
+  h1{font-size:32px;font-weight:700;letter-spacing:-.02em}
+  h1 span{color:var(--muted);font-weight:400}
+  .sub{color:var(--muted);margin-top:8px;max-width:760px}
+
+  .grid{display:grid;grid-template-columns:1fr 296px;gap:18px;align-items:start}
+
+  /* flow column */
+  .flow{display:grid;gap:0}
+  .layer{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px;position:relative}
+  .layer .lh{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .layer .lh .tag{font-family:var(--mono);font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted)}
+  .layer .lh .pt{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--muted)}
+  .layer .lh .ic{width:24px;height:24px;border-radius:7px;display:grid;place-items:center;font-size:13px}
+  .nodes{display:flex;gap:10px;flex-wrap:wrap}
+  .node{flex:1;min-width:120px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:11px 12px}
+  .node .n{font-weight:650;font-size:13px}
+  .node .d{color:var(--muted);font-size:11.5px;margin-top:3px}
+  .node.full{flex-basis:100%}
+
+  .conn{display:flex;justify-content:center;padding:5px 0}
+  .conn svg{height:26px;width:30px}
+  .conn .cl{font-family:var(--mono);font-size:10px;color:var(--muted);align-self:center;margin-left:8px}
+  .connrow{display:flex;justify-content:center;align-items:center}
+
+  /* accents per layer */
+  .l-ext .ic{background:#2a2410;color:var(--amber)}
+  .l-ing .ic{background:#102a44;color:var(--blue)}
+  .l-ai  .ic{background:#241c33;color:var(--purple)}
+  .l-fan .ic{background:#102a2c;color:var(--teal)}
+  .l-exec .ic{background:#13251a;color:var(--green)}
+  .l-broker .ic{background:#2a1416;color:var(--red)}
+  .l-ext{border-left:3px solid var(--amber)}
+  .l-ing{border-left:3px solid var(--blue)}
+  .l-ai{border-left:3px solid var(--purple)}
+  .l-fan{border-left:3px solid var(--teal)}
+  .l-exec{border-left:3px solid var(--green)}
+  .l-broker{border-left:3px solid var(--red)}
+
+  .badge{font-family:var(--mono);font-size:9.5px;padding:2px 6px;border-radius:10px;margin-left:6px}
+  .b-v1{background:#13251a;color:var(--green)}
+  .b-v11{background:#102a44;color:var(--blue)}
+  .b-v2{background:#241c33;color:var(--purple)}
+
+  /* side column */
+  .side{display:grid;gap:14px;position:sticky;top:20px}
+  .sidecard{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 15px}
+  .sidecard h3{font-size:11px;font-family:var(--mono);letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:11px}
+  .srow{display:flex;gap:9px;align-items:flex-start;padding:6px 0;font-size:12.5px;border-bottom:1px solid var(--line)}
+  .srow:last-child{border-bottom:0}
+  .srow .si{flex:none;width:16px;text-align:center}
+  .srow .st{font-weight:600}
+  .srow .sd{color:var(--muted);font-size:11px;display:block}
+
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:22px;font-size:11.5px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:9px;height:9px;border-radius:2px;display:inline-block}
+  .foot{margin-top:30px;font-size:12px;color:var(--muted);font-family:var(--mono);text-align:center}
+  @media(max-width:980px){.grid{grid-template-columns:1fr}.side{position:static}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="kicker">CopyTrades SaaS · System architecture</div>
+    <h1>Telegram → AI → MT5 <span>copy-trading platform</span></h1>
+    <p class="sub">Signals flow top→bottom: ingested once per channel, interpreted by AI, fanned out per subscriber, executed on each broker account. Surfaces &amp; cross-cutting services run alongside. Badges mark v1 / v1.1 / v2.</p>
+  </header>
+
+  <div class="grid">
+    <!-- ===== FLOW COLUMN ===== -->
+    <div class="flow">
+
+      <div class="layer l-ext">
+        <div class="lh"><span class="ic">📡</span><span class="tag">External · signal source</span><span class="pt">pt 1</span></div>
+        <div class="nodes">
+          <div class="node full"><div class="n">Provider Telegram channels</div><div class="d">Natural-language signals (multilingual, noisy). Provider owns the channel; operator's reader account is a member.</div></div>
+        </div>
+      </div>
+
+      <div class="conn"><div class="connrow"><svg viewBox="0 0 30 26"><defs><marker id="a" markerWidth="7" markerHeight="7" refX="3.5" refY="6" orient="auto"><path d="M0,0 L3.5,6 L7,0 Z" fill="#8b949e"/></marker></defs><line x1="15" y1="2" x2="15" y2="20" stroke="#8b949e" stroke-width="2" marker-end="url(#a)"/></svg></div></div>
+
+      <div class="layer l-ing">
+        <div class="lh"><span class="ic">🎧</span><span class="tag">Ingestion</span><span class="pt">pt 1</span></div>
+        <div class="nodes">
+          <div class="node"><div class="n">Listener — Telethon<span class="badge b-v1">v1 single</span></div><div class="d">One account, multi-channel over one event loop. Pool-ready.<span class="badge b-v2">v2 pool</span></div></div>
+          <div class="node"><div class="n">Dedup / signal memory</div><div class="d">Fingerprint band; per-channel context buffer.</div></div>
+        </div>
+      </div>
+
+      <div class="conn"><div class="connrow"><svg viewBox="0 0 30 26"><line x1="15" y1="2" x2="15" y2="20" stroke="#8b949e" stroke-width="2" marker-end="url(#a)"/></svg></div></div>
+
+      <div class="layer l-ai">
+        <div class="lh"><span class="ic">🧠</span><span class="tag">Intelligence · once per channel msg</span><span class="pt">pt 2</span></div>
+        <div class="nodes">
+          <div class="node"><div class="n">Triage</div><div class="d">Cheap keep|ignore (Haiku/nano).</div></div>
+          <div class="node"><div class="n">Interpreter</div><div class="d">Structured actions. Full quality, never degraded.</div></div>
+          <div class="node"><div class="n">Layered prompt</div><div class="d">scaffold + profile + channel overlay.</div></div>
+        </div>
+        <div class="nodes" style="margin-top:10px">
+          <div class="node full"><div class="n">→ signal_actions (channel-level, 1 row)</div><div class="d">+ channel-canonical position state for idempotency &amp; shorthand decoding (pt 10).</div></div>
+        </div>
+      </div>
+
+      <div class="conn"><div class="connrow"><svg viewBox="0 0 30 26"><line x1="15" y1="2" x2="15" y2="20" stroke="#8b949e" stroke-width="2" marker-end="url(#a)"/></svg><span class="cl">fan-out</span></div></div>
+
+      <div class="layer l-fan">
+        <div class="lh"><span class="ic">🔀</span><span class="tag">Fan-out · per subscriber</span><span class="pt">pts 3·4·10</span></div>
+        <div class="nodes">
+          <div class="node"><div class="n">Declarative filters</div><div class="d">enable/disable type, lot cap (pt 3).</div></div>
+          <div class="node"><div class="n">Idempotency guards</div><div class="d">already_partialed, at_BE, no_history.</div></div>
+          <div class="node"><div class="n">Symbol + lot resolve</div><div class="d">broker symbol; fixed / risk-%.</div></div>
+        </div>
+        <div class="nodes" style="margin-top:10px">
+          <div class="node full"><div class="n">→ subscriber_executions (N rows)</div><div class="d">UNIQUE(signal_action, subscriber) = no double fire. Lifecycle: pending→sent→claimed→executed/… (pt 6).</div></div>
+        </div>
+      </div>
+
+      <div class="conn"><div class="connrow"><svg viewBox="0 0 30 26"><line x1="15" y1="2" x2="15" y2="20" stroke="#8b949e" stroke-width="2" marker-end="url(#a)"/></svg></div></div>
+
+      <div class="layer l-exec">
+        <div class="lh"><span class="ic">⚙️</span><span class="tag">Execution engine · broker-primitive interface</span><span class="pt">pts 8·12·18</span></div>
+        <div class="nodes">
+          <div class="node"><div class="n">MetaApi adapter<span class="badge b-v1">v1</span></div><div class="d">Cloud, zero-install. Server-side brain on MetaApi price stream.</div></div>
+          <div class="node"><div class="n">Self-hosted EA adapter<span class="badge b-v11">v1.1</span></div><div class="d">Local MQL5 brain; offline-resilient.</div></div>
+        </div>
+        <div class="nodes" style="margin-top:10px">
+          <div class="node"><div class="n">Shared plan interpreter</div><div class="d">Staged closes <span class="badge b-v1">v1</span> · chase + ATR trail <span class="badge b-v11">v1.1</span></div></div>
+          <div class="node"><div class="n">Safety</div><div class="d">Native broker SL/TP always · server-side hard caps.</div></div>
+        </div>
+      </div>
+
+      <div class="conn"><div class="connrow"><svg viewBox="0 0 30 26"><line x1="15" y1="2" x2="15" y2="20" stroke="#8b949e" stroke-width="2" marker-end="url(#a)"/></svg></div></div>
+
+      <div class="layer l-broker">
+        <div class="lh"><span class="ic">🏦</span><span class="tag">Broker</span><span class="pt">pt 12</span></div>
+        <div class="nodes">
+          <div class="node full"><div class="n">Subscriber's MT5 account (via broker)</div><div class="d">MetaApi holds broker credentials — platform never does. Continuous position/account reconciliation back up the stack.</div></div>
+        </div>
+      </div>
+
+    </div><!-- /flow -->
+
+    <!-- ===== SIDE COLUMN ===== -->
+    <div class="side">
+      <div class="sidecard">
+        <h3>Surfaces</h3>
+        <div class="srow"><span class="si">👤</span><span><span class="st">Subscriber dashboard</span><span class="sd">Connect account, positions, kill switch, subs · pt 9</span></span></div>
+        <div class="srow"><span class="si">📣</span><span><span class="st">Provider dashboard</span><span class="sd">Channel, price, aggregate stats, payouts · pt 13</span></span></div>
+        <div class="srow"><span class="si">🛍️</span><span><span class="st">Public catalog</span><span class="sd">Discover + subscribe; tracked stats · pt 14</span></span></div>
+        <div class="srow"><span class="si">🛠️</span><span><span class="st">Admin console</span><span class="sd">Low-code; controls; audit · pt 17</span></span></div>
+        <div class="srow"><span class="si">🤖</span><span><span class="st">Telegram bot</span><span class="sd">Notify + quick-actions · pt 9</span></span></div>
+      </div>
+
+      <div class="sidecard">
+        <h3>Cross-cutting</h3>
+        <div class="srow"><span class="si">🗄️</span><span><span class="st">Postgres + RLS</span><span class="sd">Durable state, tenant isolation · pt 5</span></span></div>
+        <div class="srow"><span class="si">⚡</span><span><span class="st">Redis</span><span class="sd">Rate limits, presence, idempotency, counters · pt 5</span></span></div>
+        <div class="srow"><span class="si">💳</span><span><span class="st">Stripe + Connect</span><span class="sd">Subs + provider payouts · pt 11</span></span></div>
+        <div class="srow"><span class="si">🔐</span><span><span class="st">KMS</span><span class="sd">Envelope-encrypt tokens/sessions · pt 12</span></span></div>
+        <div class="srow"><span class="si">⏲️</span><span><span class="st">Workers</span><span class="sd">Promoter, sweepers, CLL(v2) · pt 9/16</span></span></div>
+        <div class="srow"><span class="si">📨</span><span><span class="st">Notifications</span><span class="sd">Email + Telegram critical · pt 9</span></span></div>
+        <div class="srow"><span class="si">📜</span><span><span class="st">Audit (append-only)</span><span class="sd">execution/signal/admin events · pt 6/17</span></span></div>
+        <div class="srow"><span class="si">📈</span><span><span class="st">OTel</span><span class="sd">Traces, metrics, logs · pt 7</span></span></div>
+      </div>
+
+      <div class="sidecard">
+        <h3>Money / cost</h3>
+        <div class="srow"><span class="si">💰</span><span><span class="st">~75 / 25 split</span><span class="sd">Provider price − platform commission · pt 11</span></span></div>
+        <div class="srow"><span class="si">🧾</span><span><span class="st">AI cost → provider</span><span class="sd">Metered per channel, payout-deducted · pt 11</span></span></div>
+        <div class="srow"><span class="si">☁️</span><span><span class="st">MetaApi COGS</span><span class="sd">~$11–14 / managed acct / mo (G2) · pt 8</span></span></div>
+      </div>
+
+      <div class="sidecard">
+        <h3>Posture</h3>
+        <div class="srow"><span class="si">⚖️</span><span><span class="st">Tech-tool, not adviser</span><span class="sd">No fund/password custody; geo-gated; counsel before $ · pt 15</span></span></div>
+      </div>
+    </div>
+
+  </div><!-- /grid -->
+
+  <div class="legend">
+    <span><i class="dot" style="background:var(--green)"></i> v1 (MVP)</span>
+    <span><i class="dot" style="background:var(--blue)"></i> v1.1</span>
+    <span><i class="dot" style="background:var(--purple)"></i> v2</span>
+    <span><i class="dot" style="background:var(--muted)"></i> signal flow ↓</span>
+  </div>
+
+  <div class="foot">CopyTrades SaaS — system architecture · companion to PRD.md · 2026-05-31</div>
+</div>
+</body>
+</html>
