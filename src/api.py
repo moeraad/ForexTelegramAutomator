@@ -1147,11 +1147,16 @@ def build_app(
             )
         payload["pending_lot_override"] = body.lots
         payload["resize_seq"] = int(payload.get("resize_seq", 0)) + 1
-        conn.execute(
-            "UPDATE actions SET payload_json=? WHERE id=?",
-            (json.dumps(payload), action_id),
-        )
-        conn.commit()
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "UPDATE actions SET payload_json=? WHERE id=?",
+                (json.dumps(payload), action_id),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
         entry = (float(payload.get("entry_low", 0)) + float(payload.get("entry_high", 0))) / 2.0
         dollars, pct = _pending_risk(body.lots, entry, float(payload.get("sl", 0)),
                                      _fresh_balance())
@@ -1341,10 +1346,9 @@ def build_app(
             (f"market_{sym}_ask", str(body.ask)),
             (f"market_{sym}_at", now),
         ]
-        if body.account_balance is not None or body.account_equity is not None:
-            rows_to_write.append(("account_at", now))
         if body.account_balance is not None:
             rows_to_write.append(("account_balance", str(body.account_balance)))
+            rows_to_write.append(("account_at", now))
         if body.account_equity is not None:
             rows_to_write.append(("account_equity", str(body.account_equity)))
         conn.execute("BEGIN")
