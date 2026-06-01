@@ -1745,7 +1745,7 @@ def test_resize_pending_pct_none_when_balance_stale(tmp_path):
     assert r.json()["risk_pct_estimate"] is None
 
 
-def test_incoming_message_body_image_b64_optional(tmp_path):
+def test_incoming_message_body_image_b64_optional():
     """Old callers that don't send image_b64 must still parse cleanly."""
     from src.api_models import IncomingMessageBody
     body = IncomingMessageBody(
@@ -1758,7 +1758,7 @@ def test_incoming_message_body_image_b64_optional(tmp_path):
     assert body.image_b64 is None
 
 
-def test_incoming_message_body_accepts_image_b64(tmp_path):
+def test_incoming_message_body_accepts_image_b64():
     import base64
     from src.api_models import IncomingMessageBody
     b64 = base64.b64encode(b"fake_jpeg_bytes").decode()
