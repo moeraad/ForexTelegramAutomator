@@ -790,13 +790,13 @@ def process_message(
             _orig_alert = next(
                 (a.get("text", "") for a in _raw_action_dicts if a.get("type") == "ALERT"), ""
             )
-            # Replicate the cached_prefix / volatile_suffix that ai.call() builds.
-            _recent = _recent_chat_text(conn, chat_id,
-                                        int(_get_setting(conn, "recent_chat_window") or "20"))
+            # Reuse context_block (already computed above) to replicate
+            # exactly the cached_prefix ai.call() received, avoiding a
+            # redundant DB read and any possible mismatch.
             _cached_prefix = (
                 "RECENT CHAT (last messages, oldest first):\n"
                 "[BEGIN UNTRUSTED CHANNEL CONTENT]\n"
-                f"{_recent}\n"
+                f"{context_block}\n"
                 "[END UNTRUSTED CHANNEL CONTENT]"
             )
             # open_positions_block is already computed above — use it directly.
@@ -822,24 +822,28 @@ def process_message(
             )
             if fb is not None:
                 fb_category, fb_actions = fb
-                has_open = any(isinstance(a, OpenAction) for a in fb_actions)
-                if has_open and fb_category in ("signal", "partial_signal"):
+                fb_actions_filtered = _apply_route_rules(fb_actions)
+                has_open_filtered = any(isinstance(a, OpenAction) for a in fb_actions_filtered)
+                if has_open_filtered and fb_category in ("signal", "partial_signal"):
                     _fb_extras = {
                         "image_corrected": True,
                         "image_fallback_reason": _orig_alert,
+                        **_route_payload_extras(),
                     }
                     log.info(
                         "image_fallback succeeded for msg_id=%s — corrected OPEN",
                         msg_id,
                     )
                     ids = _persist_actions(
-                        conn, msg_id, fb_actions, ai_log_path,
+                        conn, msg_id, fb_actions_filtered, ai_log_path,
                         auto_execute_delay_sec, is_backfill=is_backfill,
                         payload_extras=_fb_extras,
                     )
                     _tag_inserted_actions(conn, ids,
                                           source_channel_id=source_channel_id,
                                           route_id=route_id)
+                    if SIGNAL_MEMORY_ENABLED:
+                        signal_memory.clear_on_open(conn, chat_id)
                     return ids
     # (fallback did not fire or did not produce a usable OPEN — fall through)
 
