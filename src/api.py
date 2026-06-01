@@ -21,6 +21,7 @@ from src.api_models import (
     MarketSnapshotStateBody,
     PositionRecoverBody,
     PositionUpdateBody,
+    ResizePendingBody,
     ResultBody,
     TimeframeOhlcBody,
 )
@@ -1070,6 +1071,88 @@ def build_app(
             "ea_response": row["ea_response"] or "",
             "created_at": row["created_at"],
             "executed_at": row["executed_at"],
+        }
+
+    # Max lots accepted from the operator override. Pulled from
+    # settings.risk_budget.max_open_lots when present; otherwise a sane
+    # absolute ceiling so a fat-finger can't request 500 lots.
+    _RESIZE_MAX_LOTS_FALLBACK = 100.0
+    _BALANCE_STALE_SEC = 60
+
+    def _max_open_lots() -> float:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key='risk_budget'"
+        ).fetchone()
+        if row and row["value"]:
+            try:
+                return float(json.loads(row["value"]).get("max_open_lots")
+                             or _RESIZE_MAX_LOTS_FALLBACK)
+            except (ValueError, TypeError):
+                pass
+        return _RESIZE_MAX_LOTS_FALLBACK
+
+    def _fresh_balance() -> float | None:
+        rows = {
+            r["key"]: r["value"]
+            for r in conn.execute(
+                "SELECT key, value FROM settings WHERE key IN "
+                "('account_balance','account_at')"
+            ).fetchall()
+        }
+        bal, at = rows.get("account_balance"), rows.get("account_at")
+        if bal is None or at is None:
+            return None
+        try:
+            age = (datetime.now(timezone.utc)
+                   - datetime.fromisoformat(at)).total_seconds()
+        except ValueError:
+            return None
+        if age > _BALANCE_STALE_SEC:
+            return None
+        try:
+            return float(bal)
+        except ValueError:
+            return None
+
+    @app.post("/actions/{action_id}/resize_pending")
+    def resize_pending(action_id: int, body: ResizePendingBody):
+        """Set an explicit new lot on a pending (watching) OPEN. Writes
+        `pending_lot_override` + a monotonic `resize_seq` into the action
+        payload; the EA picks it up on its next /actions/{id} poll, deletes
+        the broker order, and re-places at the new lot. Status is unchanged.
+        """
+        if body.lots <= 0 or body.lots > _max_open_lots():
+            raise HTTPException(422, f"lots out of range: {body.lots}")
+        row = conn.execute(
+            "SELECT action_type, payload_json, status FROM actions WHERE id=?",
+            (action_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404)
+        payload = parse_payload(row["payload_json"]) or {}
+        if (row["status"] != "watching" or row["action_type"] != "OPEN"
+                or payload.get("pending") is not True):
+            raise HTTPException(
+                409,
+                f"action {action_id} is not a pending watching OPEN "
+                f"(status={row['status']}, type={row['action_type']}, "
+                f"pending={payload.get('pending')})",
+            )
+        payload["pending_lot_override"] = body.lots
+        payload["resize_seq"] = int(payload.get("resize_seq", 0)) + 1
+        conn.execute(
+            "UPDATE actions SET payload_json=? WHERE id=?",
+            (json.dumps(payload), action_id),
+        )
+        conn.commit()
+        entry = (float(payload.get("entry_low", 0)) + float(payload.get("entry_high", 0))) / 2.0
+        dollars, pct = _pending_risk(body.lots, entry, float(payload.get("sl", 0)),
+                                     _fresh_balance())
+        return {
+            "lots": body.lots,
+            "resize_seq": payload["resize_seq"],
+            "risk_dollars": dollars,
+            "risk_pct_estimate": pct,
         }
 
     @app.get("/events/recent")

@@ -1580,3 +1580,97 @@ def test_pending_risk_pct_none_when_no_balance():
     dollars, pct = _pending_risk(lots=0.06, entry=4501.49, sl=4494.26, balance=None)
     assert round(dollars, 2) == round(7.23 * 100 * 0.06, 2)
     assert pct is None
+
+
+def _insert_watching_open(conn, lots_entry=4501.49, sl=4494.26):
+    payload = {
+        "symbol": "XAUUSD", "side": "BUY",
+        "entry_low": lots_entry, "entry_high": lots_entry,
+        "tps": [4544.0], "sl": sl, "pending": True, "pending_type": "limit",
+    }
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'watching')",
+        (json.dumps(payload),),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def test_resize_pending_writes_override_and_bumps_seq(tmp_path):
+    conn = _setup(tmp_path)
+    conn.execute("INSERT INTO settings(key,value) VALUES('account_balance','4340.0')")
+    conn.execute(
+        "INSERT INTO settings(key,value) VALUES('account_at', ?)",
+        (datetime.now(timezone.utc).isoformat(),),
+    )
+    aid = _insert_watching_open(conn)
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{aid}/resize_pending", json={"lots": 0.43})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["lots"] == 0.43
+    assert body["resize_seq"] == 1
+    assert round(body["risk_dollars"], 2) == 310.89
+    assert body["risk_pct_estimate"] is not None
+    row = conn.execute("SELECT payload_json, status FROM actions WHERE id=?", (aid,)).fetchone()
+    payload = json.loads(row["payload_json"])
+    assert payload["pending_lot_override"] == 0.43
+    assert payload["resize_seq"] == 1
+    assert row["status"] == "watching"  # unchanged
+    r2 = client.post(f"/actions/{aid}/resize_pending", json={"lots": 0.30})
+    assert r2.json()["resize_seq"] == 2
+
+
+def test_resize_pending_rejects_non_watching(tmp_path):
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'executed')",
+        (json.dumps({"pending": True, "entry_low": 1, "entry_high": 1, "sl": 1}),),
+    )
+    conn.commit()
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{cur.lastrowid}/resize_pending", json={"lots": 0.1})
+    assert r.status_code == 409
+
+
+def test_resize_pending_rejects_non_pending_open(tmp_path):
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'watching')",
+        (json.dumps({"entry_low": 1, "entry_high": 1, "sl": 1}),),  # no "pending"
+    )
+    conn.commit()
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{cur.lastrowid}/resize_pending", json={"lots": 0.1})
+    assert r.status_code == 409
+
+
+def test_resize_pending_unknown_id_404(tmp_path):
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.post("/actions/9999/resize_pending", json={"lots": 0.1})
+    assert r.status_code == 404
+
+
+def test_resize_pending_rejects_bad_lots(tmp_path):
+    conn = _setup(tmp_path)
+    aid = _insert_watching_open(conn)
+    client = TestClient(build_app(conn))
+    assert client.post(f"/actions/{aid}/resize_pending", json={"lots": 0}).status_code == 422
+    assert client.post(f"/actions/{aid}/resize_pending", json={"lots": -1}).status_code == 422
+    assert client.post(f"/actions/{aid}/resize_pending", json={"lots": 999}).status_code == 422
+
+
+def test_resize_pending_pct_none_when_balance_stale(tmp_path):
+    conn = _setup(tmp_path)
+    stale = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
+    conn.execute("INSERT INTO settings(key,value) VALUES('account_balance','4340.0')")
+    conn.execute("INSERT INTO settings(key,value) VALUES('account_at', ?)", (stale,))
+    aid = _insert_watching_open(conn)
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{aid}/resize_pending", json={"lots": 0.43})
+    assert r.status_code == 200
+    assert r.json()["risk_pct_estimate"] is None

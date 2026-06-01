@@ -144,6 +144,14 @@ class MarketPriceBody(BaseModel):
     account_equity: float | None = None
 
 
+class ResizePendingBody(BaseModel):
+    """GUI -> API: set an explicit new lot for a pending (watching) OPEN.
+    The operator value bypasses the EA's per-trade risk cap by design; the
+    EA still clamps to broker VOLUME_MIN/STEP/MAX at placement.
+    """
+    lots: float
+
+
 class MarketSnapshotStateBody(BaseModel):
     """Posted by the EA at OnInit (and whenever ``EnableMarketSnapshot``
     flips) so the GUI's services-bar can tell "snapshot intentionally
