@@ -34,7 +34,10 @@ class LiveView(QWidget):
 
     def _build_ui(self) -> None:
         self._actions_table = ActionsTable(self._subscriber, stack=self._stack)
-        self._detail_panel = DetailPanel(self._subscriber, self._stack.db_path)
+        self._detail_panel = DetailPanel(
+            self._subscriber, self._stack.db_path,
+            api_base=self._stack.api_url,
+        )
         self._actions_table.selection_changed.connect(self._detail_panel.set_action)
 
         upper = QSplitter(Qt.Orientation.Horizontal)

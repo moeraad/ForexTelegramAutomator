@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.gui.models.actions_model import ActionRow, _age_text
+from src.gui.panels.resize_control import ResizeControl
 from src.gui.services.db_subscriber import DBSubscriber
 from src.gui.theme import current_palette
 
@@ -49,10 +50,13 @@ def _body(text: str, css: str = "") -> QLabel:
 
 
 class DetailPanel(QWidget):
-    def __init__(self, subscriber: DBSubscriber, db_path: Path) -> None:
+    def __init__(self, subscriber: DBSubscriber, db_path: Path,
+                 api_base: str = "", risk_cap_pct: float = 1.0) -> None:
         super().__init__()
         self._subscriber = subscriber
         self._db_path = db_path
+        self._api_base = api_base
+        self._risk_cap_pct = risk_cap_pct
         self._open_positions: list[sqlite3.Row] = []
         self._last_open: sqlite3.Row | None = None
         self._watching: list[sqlite3.Row] = []
@@ -252,6 +256,18 @@ class DetailPanel(QWidget):
                 self._add_kv(k, str(v))
 
         self._render_position_for_action(action)
+
+        payload = action.payload or {}
+        if (action.status == "watching" and action.action_type == "OPEN"
+                and payload.get("pending") is True and self._api_base):
+            current_lot = float(payload.get("pending_lot_override")
+                                or payload.get("volume") or 0.0)
+            self._content_layout.addWidget(_section_title("RESIZE PENDING LOT"))
+            self._content_layout.addWidget(
+                ResizeControl(self._api_base, action.id, current_lot,
+                              self._risk_cap_pct)
+            )
+
         self._content_layout.addStretch()
 
     def _render_open_specifics(self, action: ActionRow) -> None:
