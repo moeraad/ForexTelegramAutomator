@@ -47,6 +47,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "ai_thinking_enabled": "1",
     "ai_thinking_budget_tokens": "4000",
     "signal_memory_enabled": "1",
+    "image_fallback_enabled": "1",
     "signal_memory_max_entries": "10",
     "signal_memory_max_age_hours": "4",
     "fingerprint_band_price": "5.0",

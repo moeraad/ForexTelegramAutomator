@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS messages (
   decided_outcome   TEXT,
   decided_at        TIMESTAMP,
   pipeline_meta_json TEXT,
+  -- True when the original Telegram message included a photo/media.
+  -- The image bytes are NOT stored — only this flag for audit.
+  has_image INTEGER NOT NULL DEFAULT 0,
   UNIQUE(chat_id, tg_message_id)
 );
 -- idx_messages_decided_stage is created inside
