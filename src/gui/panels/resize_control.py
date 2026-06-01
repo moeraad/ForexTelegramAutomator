@@ -85,12 +85,17 @@ class ResizeControl(QWidget):
         root.addWidget(self._status)
 
     def _on_apply(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return
         lots = round(self._spin.value(), 2)
         self._apply.setEnabled(False)
         self._status.setText(f"Applying {lots:.2f}…")
         url = f"{self._api_base}/actions/{self._action_id}/resize_pending"
         self._worker = _ResizeWorker(url, lots)
         self._worker.done.connect(self._on_done)
+        self._worker.finished.connect(self._worker.deleteLater)
+        from src.gui.services.thread_registry import register
+        register(self._worker, stop_fn=self._worker.quit)
         self._worker.start()
 
     def _on_done(self, ok: bool, message: str) -> None:
@@ -102,7 +107,7 @@ class ResizeControl(QWidget):
             return
         body = json.loads(message)
         pct = body.get("risk_pct_estimate")
-        dollars = body.get("risk_dollars")
+        dollars = body.get("risk_dollars") or 0
         if pct is None:
             note = f"risks ≈ ${dollars:,.0f} if SL hits (balance unknown)"
             color = pal.text_muted
@@ -114,4 +119,7 @@ class ResizeControl(QWidget):
             note = f"~{pct:.1f}% of balance (≈ ${dollars:,.0f})"
             color = "#26a69a"
         self._status.setStyleSheet(f"color: {color}; font-size: 11px;")
-        self._status.setText(f"Resized to {body['lots']:.2f} (seq {body['resize_seq']}). {note}")
+        self._status.setText(
+            f"Resized to {body.get('lots', 0.0):.2f} "
+            f"(seq {body.get('resize_seq', '?')}). {note}"
+        )

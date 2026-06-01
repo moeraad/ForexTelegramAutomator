@@ -32,11 +32,27 @@ class LiveView(QWidget):
         self._subscriber.stop()
         super().closeEvent(event)
 
+    def _read_risk_cap_pct(self) -> float:
+        """Operator's per-trade SL-risk cap (settings.max_sl_loss_percent),
+        used for the resize warning threshold. Falls back to 1.0."""
+        try:
+            conn = sqlite3.connect(str(self._stack.db_path))
+            try:
+                row = conn.execute(
+                    "SELECT value FROM settings WHERE key='max_sl_loss_percent'"
+                ).fetchone()
+            finally:
+                conn.close()
+            return float(row[0]) if row and row[0] is not None else 1.0
+        except (sqlite3.Error, ValueError, TypeError):
+            return 1.0
+
     def _build_ui(self) -> None:
         self._actions_table = ActionsTable(self._subscriber, stack=self._stack)
         self._detail_panel = DetailPanel(
             self._subscriber, self._stack.db_path,
             api_base=self._stack.api_url,
+            risk_cap_pct=self._read_risk_cap_pct(),
         )
         self._actions_table.selection_changed.connect(self._detail_panel.set_action)
 
