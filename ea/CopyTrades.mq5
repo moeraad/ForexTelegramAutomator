@@ -417,9 +417,12 @@ void HeartbeatMarketPrice() {
    double bid = SymbolInfoDouble(Symbol_Override, SYMBOL_BID);
    double ask = SymbolInfoDouble(Symbol_Override, SYMBOL_ASK);
    if(bid <= 0.0 || ask <= 0.0) return;  // symbol not ready
+   double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+   double eq  = AccountInfoDouble(ACCOUNT_EQUITY);
    string body = StringFormat(
-      "{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f}",
-      Symbol_Override, bid, ask
+      "{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,"
+      "\"account_balance\":%.2f,\"account_equity\":%.2f}",
+      Symbol_Override, bid, ask, bal, eq
    );
    string resp; int status;
    HttpPostJsonWithStatus(ApiBaseUrl + "/market/price", body, resp, status);
