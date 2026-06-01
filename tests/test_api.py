@@ -1565,3 +1565,18 @@ def test_post_market_price_without_balance_is_backward_compatible(tmp_path):
         "SELECT COUNT(*) AS c FROM settings WHERE key='account_balance'"
     ).fetchone()["c"]
     assert n == 0  # no balance key written when EA omits the fields
+
+
+def test_pending_risk_dollars_and_pct():
+    from src.api import _pending_risk
+    # SL distance 7.23, lots 0.43, XAUUSD contract 100 -> 7.23*100*0.43 = 310.89
+    dollars, pct = _pending_risk(lots=0.43, entry=4501.49, sl=4494.26, balance=4340.0)
+    assert round(dollars, 2) == 310.89
+    assert round(pct, 2) == round(310.89 / 4340.0 * 100, 2)
+
+
+def test_pending_risk_pct_none_when_no_balance():
+    from src.api import _pending_risk
+    dollars, pct = _pending_risk(lots=0.06, entry=4501.49, sl=4494.26, balance=None)
+    assert round(dollars, 2) == round(7.23 * 100 * 0.06, 2)
+    assert pct is None

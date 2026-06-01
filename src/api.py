@@ -46,6 +46,24 @@ _payload_has_signal_fields = payload_has_signal_fields
 _resolve_signal_payload = resolve_signal_payload
 
 
+# XAUUSD contract size in ounces: a 1.00 price move on 1.0 lot = $100.
+# Used only for the GUI resize warning — the EA does the broker-precise
+# clamp/feasibility check at placement time.
+_XAUUSD_CONTRACT_SIZE = 100.0
+
+
+def _pending_risk(
+    lots: float, entry: float, sl: float, balance: float | None
+) -> tuple[float, float | None]:
+    """Estimate the dollars-at-risk if the SL hits at `lots`, and that as a
+    percent of `balance`. `pct` is None when balance is unavailable.
+    """
+    sl_distance = abs(entry - sl)
+    dollars = sl_distance * _XAUUSD_CONTRACT_SIZE * lots
+    pct = (dollars / balance * 100.0) if balance and balance > 0 else None
+    return dollars, pct
+
+
 # Action types whose execution opens a new position and therefore makes
 # sense to score after the fact. Phase-2 management types (CLOSE_PARTIAL,
 # MOVE_SL_BE, etc.) modify the existing position — there's nothing new
