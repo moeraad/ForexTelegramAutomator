@@ -176,13 +176,6 @@ input double InstantRiskPercent       = 1.0;
 input int    InstantTimeoutMinutes    = 5;
 input int    InstantTrailPoints       = 1000;
 input double InstantTpMultiplier      = 2.0;
-// OPEN_INSTANT sizes lots purely off the balance ratio (LotsFromBalance) with
-// no signal SL to risk-cap against, so an oversized naked order can be handed
-// straight to the broker and bounced with retcode 10019 (NO_MONEY) — the
-// 2026-05-31 instant-buy failure. This is the fraction of FREE MARGIN an
-// instant order is allowed to consume; the lot is shrunk to fit. 0.8 leaves a
-// 20% cushion for spread/commission/slippage. Set to 0 to disable the cap.
-input double InstantMarginUseFraction = 0.8;
 
 CTrade trade;
 
@@ -3777,52 +3770,6 @@ double LotsFromBalance() {
    return NormalizeDouble(lots, 2);
 }
 
-// Shrink `lots` to what free margin can actually hold for a market order of
-// `isBuy` side at `price`. The OPEN_INSTANT path (LotsFromBalance) has no SL
-// distance to risk-cap against, so without this an oversized naked order goes
-// straight to the broker and bounces with retcode 10019 (NO_MONEY). Margin
-// scales linearly with volume, so one OrderCalcMargin probe gives the
-// affordable size. Returns 0.0 when even minLot won't fit, signaling the
-// caller to reject cleanly instead of spamming the broker. Disabled (returns
-// lots unchanged) when InstantMarginUseFraction <= 0 or the broker hasn't
-// reported free margin / margin requirement yet.
-double CapLotsToFreeMargin(double lots, bool isBuy, double price) {
-   if(InstantMarginUseFraction <= 0) return lots;
-
-   double minLot  = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_MIN);
-   double lotStep = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_STEP);
-   if(lotStep <= 0) lotStep = 0.01;
-   if(minLot <= 0)  minLot = lotStep;
-
-   double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
-   if(freeMargin <= 0 || lots <= 0 || price <= 0) return lots;  // can't assess
-
-   ENUM_ORDER_TYPE otype = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   double margin = 0.0;
-   if(!OrderCalcMargin(otype, Symbol_Override, lots, price, margin) || margin <= 0)
-      return lots;  // broker didn't report margin; don't second-guess
-
-   double budget = freeMargin * InstantMarginUseFraction;
-   if(margin <= budget) return lots;  // already affordable
-
-   double affordable = lots * (budget / margin);
-   affordable = MathFloor(affordable / lotStep) * lotStep;
-   if(affordable < minLot) {
-      Print("CT instant margin REJECT: even minLot=", minLot,
-            " exceeds margin budget $", DoubleToString(budget, 2),
-            " (free-margin $", DoubleToString(freeMargin, 2),
-            ", req @", DoubleToString(lots, 2), " lots=$",
-            DoubleToString(margin, 2), ")");
-      return 0.0;
-   }
-   Print("CT instant margin-capped: orig ", DoubleToString(lots, 2),
-         " lots req $", DoubleToString(margin, 2), " > budget $",
-         DoubleToString(budget, 2), " (free-margin $",
-         DoubleToString(freeMargin, 2), ") -> ", DoubleToString(affordable, 2),
-         " lots");
-   return NormalizeDouble(affordable, 2);
-}
-
 // Price distance such that hitting it costs `riskPercent` of account balance
 // for `lots` size. Uses tick size/value so the result is correct on any
 // symbol the EA is configured for, not just XAUUSD.
@@ -3867,16 +3814,6 @@ void DoOpenInstant(long id, string payload) {
    }
    double price = SymbolInfoDouble(Symbol_Override, isBuy ? SYMBOL_ASK : SYMBOL_BID);
    if(price <= 0) { PostResult(id, "failed", 0, "no_price"); return; }
-   // Cap to affordable size BEFORE computing the emergency SL, so slDistance is
-   // derived from the lot we actually send (keeps the loss = riskPct invariant).
-   // Without this, a balance-ratio lot that overruns free margin is handed to
-   // the broker and bounced with 10019 (NO_MONEY).
-   lots = CapLotsToFreeMargin(lots, isBuy, price);
-   if(lots <= 0) {
-      PostResult(id, "rejected", 0, "insufficient_margin");
-      g_stats_rejected++;
-      return;
-   }
    double riskPct = InstantRiskPercentLive();
    double slDistance = EmergencySlDistance(lots, riskPct);
    if(slDistance <= 0) {
@@ -4366,7 +4303,7 @@ void ManagePendingOrders() {
          if(!OrderCalcMargin(otype, Symbol_Override, newLot, p.entry, marginNeeded)) {
             // Broker hasn't reported margin rates yet — can't assess. Defer to
             // the next tick WITHOUT burning the seq or touching the existing
-            // order (mirrors CapLotsToFreeMargin's conservative pass-through).
+            // order — conservative pass-through (don't second-guess the broker).
             Print("CT resize defer action=", p.action_id,
                   " — OrderCalcMargin not ready; retry next tick");
             continue;
