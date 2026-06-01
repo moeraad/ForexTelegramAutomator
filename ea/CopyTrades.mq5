@@ -176,6 +176,13 @@ input double InstantRiskPercent       = 1.0;
 input int    InstantTimeoutMinutes    = 5;
 input int    InstantTrailPoints       = 1000;
 input double InstantTpMultiplier      = 2.0;
+// OPEN_INSTANT sizes lots purely off the balance ratio (LotsFromBalance) with
+// no signal SL to risk-cap against, so an oversized naked order can be handed
+// straight to the broker and bounced with retcode 10019 (NO_MONEY) — the
+// 2026-05-31 instant-buy failure. This is the fraction of FREE MARGIN an
+// instant order is allowed to consume; the lot is shrunk to fit. 0.8 leaves a
+// 20% cushion for spread/commission/slippage. Set to 0 to disable the cap.
+input double InstantMarginUseFraction = 0.8;
 
 CTrade trade;
 
@@ -270,6 +277,7 @@ struct PendingOrder {
    int        tpCount;
    datetime   placedAt;
    datetime   lastStatusCheck;  // throttle GET /actions/{id} polls
+   int        appliedResizeSeq; // highest resize_seq already applied (idempotency)
 };
 
 PendingOrder g_pending_orders[];
@@ -1488,6 +1496,69 @@ double ApplyEvalSizing(long actionId, double baselineLots, string &skipReason) {
 }
 
 
+// Places a broker BuyLimit/SellLimit at `entryLimit` for `lots`, pushes a
+// PendingOrder into g_pending_orders[], persists it, and POSTs status=
+// 'watching' (retry-queued on transport failure). Returns the broker order
+// ticket, or 0 on failure (caller has already had a result POSTed for the
+// failure case). Shared by the initial open (DoOpen) and the resize path.
+ulong PlacePendingLimit(long id, bool isBuyP, double entryLimit, double sl,
+                        double &tps[], int tpCount, double lots) {
+   double tpFinalP = tps[tpCount - 1];
+   bool okP = isBuyP
+      ? trade.BuyLimit(lots, entryLimit, Symbol_Override, sl, tpFinalP,
+                       ORDER_TIME_GTC, 0, "ct-pending")
+      : trade.SellLimit(lots, entryLimit, Symbol_Override, sl, tpFinalP,
+                        ORDER_TIME_GTC, 0, "ct-pending");
+   if(!okP) {
+      PostResult(id, "failed", 0,
+         "pending_place_failed:" + IntegerToString(trade.ResultRetcode()));
+      g_stats_rejected++;
+      return 0;
+   }
+   ulong order_ticket = trade.ResultOrder();
+   if(order_ticket == 0) {
+      PostResult(id, "failed", 0, "pending_no_order_ticket");
+      g_stats_rejected++;
+      return 0;
+   }
+   PendingOrder po;
+   po.action_id = id;
+   po.order_ticket = order_ticket;
+   po.isBuy = isBuyP;
+   po.entry = entryLimit;
+   po.sl = sl;
+   for(int kp = 0; kp < 3; kp++) po.tps[kp] = 0.0;
+   for(int kp = 0; kp < tpCount; kp++) po.tps[kp] = tps[kp];
+   po.tpCount = tpCount;
+   po.placedAt = TimeCurrent();
+   po.lastStatusCheck = TimeCurrent();
+   po.appliedResizeSeq = 0;
+   int nP = ArraySize(g_pending_orders);
+   ArrayResize(g_pending_orders, nP + 1);
+   g_pending_orders[nP] = po;
+   PersistPendingOrder(po);
+
+   string watchBody = StringFormat(
+      "{\"status\":\"watching\",\"error\":\"pending_order_ticket=%I64u\"}",
+      order_ticket);
+   string watchResp; int watchStatus;
+   string watchUrl = ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result";
+   bool watchOk = HttpPostJsonWithStatus(watchUrl, watchBody, watchResp, watchStatus);
+   if(!watchOk) {
+      if(IsRetryableStatus(watchStatus)) {
+         Print("Watching POST failed for pending action ", id,
+               " status=", watchStatus, " — queued for retry");
+         EnqueueRetry(watchUrl, watchBody);
+      } else {
+         Print("Watching POST terminal ", watchStatus,
+               " for pending action ", id, " — not retrying");
+      }
+   }
+   Print("CT OPEN id=", id, " pending limit placed ticket=", order_ticket,
+         " entry=", entryLimit, " sl=", sl, " tp=", tpFinalP);
+   return order_ticket;
+}
+
 void DoOpen(long id, string payload) {
    string side = JsonField(payload, "side");
    double entryLow = StringToDouble(JsonField(payload, "entry_low"));
@@ -1577,66 +1648,8 @@ void DoOpen(long id, string payload) {
          g_stats_rejected++;
          return;
       }
-      double tpFinalP = tps[tpCount - 1];
-      bool okP = isBuyP
-         ? trade.BuyLimit(lotsP, entryLimit, Symbol_Override, sl, tpFinalP,
-                          ORDER_TIME_GTC, 0, "ct-pending")
-         : trade.SellLimit(lotsP, entryLimit, Symbol_Override, sl, tpFinalP,
-                           ORDER_TIME_GTC, 0, "ct-pending");
-      if(!okP) {
-         PostResult(id, "failed", 0,
-            "pending_place_failed:" + IntegerToString(trade.ResultRetcode()));
-         g_stats_rejected++;
-         return;
-      }
-      ulong order_ticket = trade.ResultOrder();
-      if(order_ticket == 0) {
-         PostResult(id, "failed", 0, "pending_no_order_ticket");
-         g_stats_rejected++;
-         return;
-      }
-      PendingOrder po;
-      po.action_id = id;
-      po.order_ticket = order_ticket;
-      po.isBuy = isBuyP;
-      po.entry = entryLimit;
-      po.sl = sl;
-      for(int kp = 0; kp < 3; kp++) po.tps[kp] = 0.0;
-      for(int kp = 0; kp < tpCount; kp++) po.tps[kp] = tps[kp];
-      po.tpCount = tpCount;
-      po.placedAt = TimeCurrent();
-      po.lastStatusCheck = TimeCurrent();
-      int nP = ArraySize(g_pending_orders);
-      ArrayResize(g_pending_orders, nP + 1);
-      g_pending_orders[nP] = po;
-      PersistPendingOrder(po);
-
-      // POST status='watching' — the action sits in this state until
-      // ManagePendingOrders detects a fill (-> executed) or the server
-      // CANCEL_PENDING handler flips us to rejected. If this transport-
-      // fails (HTTP 1003 etc.) the action would otherwise sit in
-      // 'claimed' until release_stale_claims (300s) flipped it back to
-      // 'sent', causing the EA to re-fire DoOpen and place a second
-      // pending order. Route through the retry queue so it resends
-      // until the API records the watching status.
-      string watchBody = StringFormat(
-         "{\"status\":\"watching\",\"error\":\"pending_order_ticket=%I64u\"}",
-         order_ticket);
-      string watchResp; int watchStatus;
-      string watchUrl = ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result";
-      bool watchOk = HttpPostJsonWithStatus(watchUrl, watchBody, watchResp, watchStatus);
-      if(!watchOk) {
-         if(IsRetryableStatus(watchStatus)) {
-            Print("Watching POST failed for pending action ", id,
-                  " status=", watchStatus, " — queued for retry");
-            EnqueueRetry(watchUrl, watchBody);
-         } else {
-            Print("Watching POST terminal ", watchStatus,
-                  " for pending action ", id, " — not retrying");
-         }
-      }
-      Print("CT OPEN id=", id, " pending limit placed ticket=", order_ticket,
-            " entry=", entryLimit, " sl=", sl, " tp=", tpFinalP);
+      if(PlacePendingLimit(id, isBuyP, entryLimit, sl, tps, tpCount, lotsP) == 0)
+         return;  // PlacePendingLimit already POSTed the failure
       return;
    }
 
@@ -3747,6 +3760,52 @@ double LotsFromBalance() {
    return NormalizeDouble(lots, 2);
 }
 
+// Shrink `lots` to what free margin can actually hold for a market order of
+// `isBuy` side at `price`. The OPEN_INSTANT path (LotsFromBalance) has no SL
+// distance to risk-cap against, so without this an oversized naked order goes
+// straight to the broker and bounces with retcode 10019 (NO_MONEY). Margin
+// scales linearly with volume, so one OrderCalcMargin probe gives the
+// affordable size. Returns 0.0 when even minLot won't fit, signaling the
+// caller to reject cleanly instead of spamming the broker. Disabled (returns
+// lots unchanged) when InstantMarginUseFraction <= 0 or the broker hasn't
+// reported free margin / margin requirement yet.
+double CapLotsToFreeMargin(double lots, bool isBuy, double price) {
+   if(InstantMarginUseFraction <= 0) return lots;
+
+   double minLot  = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_MIN);
+   double lotStep = SymbolInfoDouble(Symbol_Override, SYMBOL_VOLUME_STEP);
+   if(lotStep <= 0) lotStep = 0.01;
+   if(minLot <= 0)  minLot = lotStep;
+
+   double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+   if(freeMargin <= 0 || lots <= 0 || price <= 0) return lots;  // can't assess
+
+   ENUM_ORDER_TYPE otype = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double margin = 0.0;
+   if(!OrderCalcMargin(otype, Symbol_Override, lots, price, margin) || margin <= 0)
+      return lots;  // broker didn't report margin; don't second-guess
+
+   double budget = freeMargin * InstantMarginUseFraction;
+   if(margin <= budget) return lots;  // already affordable
+
+   double affordable = lots * (budget / margin);
+   affordable = MathFloor(affordable / lotStep) * lotStep;
+   if(affordable < minLot) {
+      Print("CT instant margin REJECT: even minLot=", minLot,
+            " exceeds margin budget $", DoubleToString(budget, 2),
+            " (free-margin $", DoubleToString(freeMargin, 2),
+            ", req @", DoubleToString(lots, 2), " lots=$",
+            DoubleToString(margin, 2), ")");
+      return 0.0;
+   }
+   Print("CT instant margin-capped: orig ", DoubleToString(lots, 2),
+         " lots req $", DoubleToString(margin, 2), " > budget $",
+         DoubleToString(budget, 2), " (free-margin $",
+         DoubleToString(freeMargin, 2), ") -> ", DoubleToString(affordable, 2),
+         " lots");
+   return NormalizeDouble(affordable, 2);
+}
+
 // Price distance such that hitting it costs `riskPercent` of account balance
 // for `lots` size. Uses tick size/value so the result is correct on any
 // symbol the EA is configured for, not just XAUUSD.
@@ -3791,6 +3850,16 @@ void DoOpenInstant(long id, string payload) {
    }
    double price = SymbolInfoDouble(Symbol_Override, isBuy ? SYMBOL_ASK : SYMBOL_BID);
    if(price <= 0) { PostResult(id, "failed", 0, "no_price"); return; }
+   // Cap to affordable size BEFORE computing the emergency SL, so slDistance is
+   // derived from the lot we actually send (keeps the loss = riskPct invariant).
+   // Without this, a balance-ratio lot that overruns free margin is handed to
+   // the broker and bounced with 10019 (NO_MONEY).
+   lots = CapLotsToFreeMargin(lots, isBuy, price);
+   if(lots <= 0) {
+      PostResult(id, "rejected", 0, "insufficient_margin");
+      g_stats_rejected++;
+      return;
+   }
    double riskPct = InstantRiskPercentLive();
    double slDistance = EmergencySlDistance(lots, riskPct);
    if(slDistance <= 0) {
@@ -4125,11 +4194,12 @@ void PersistPendingOrder(const PendingOrder &p) {
    GlobalVariableSet(PendingKey(p.order_ticket, "tp3"),      p.tps[2]);
    GlobalVariableSet(PendingKey(p.order_ticket, "tpCount"),  (double)p.tpCount);
    GlobalVariableSet(PendingKey(p.order_ticket, "placedAt"), (double)p.placedAt);
+   GlobalVariableSet(PendingKey(p.order_ticket, "resizeSeq"), (double)p.appliedResizeSeq);
 }
 
 void ErasePendingOrderState(ulong order_ticket) {
    string fields[] = {"actionId","isBuy","entry","sl","tp1","tp2","tp3",
-                      "tpCount","placedAt"};
+                      "tpCount","placedAt","resizeSeq"};
    for(int i = 0; i < ArraySize(fields); i++)
       GlobalVariableDel(PendingKey(order_ticket, fields[i]));
 }
@@ -4171,6 +4241,10 @@ void LoadPersistedPendingOrders() {
       p.tps[2]       = GlobalVariableGet(PendingKey(order_ticket, "tp3"));
       p.tpCount      = (int)GlobalVariableGet(PendingKey(order_ticket, "tpCount"));
       p.placedAt     = (datetime)GlobalVariableGet(PendingKey(order_ticket, "placedAt"));
+      // Round-trip the resize-idempotency seq. Orders persisted before this
+      // field existed have no "resizeSeq" GV; GlobalVariableGet returns 0.0
+      // for a missing name, which is the correct default (no resize applied).
+      p.appliedResizeSeq = (int)GlobalVariableGet(PendingKey(order_ticket, "resizeSeq"));
       p.lastStatusCheck = 0;  // force first OnTimer to do a status poll
       int m = ArraySize(g_pending_orders);
       ArrayResize(g_pending_orders, m + 1);
