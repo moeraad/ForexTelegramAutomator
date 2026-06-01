@@ -1048,7 +1048,7 @@ def _migrate_messages_add_has_image(conn: sqlite3.Connection) -> None:
     The image bytes are NOT stored — only this flag.
     Idempotent: ALTER is gated on PRAGMA table_info.
     """
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
     if "has_image" not in cols:
         conn.execute(
             "ALTER TABLE messages ADD COLUMN has_image INTEGER NOT NULL DEFAULT 0"
