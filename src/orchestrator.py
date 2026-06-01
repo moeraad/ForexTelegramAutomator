@@ -1,5 +1,6 @@
 import json
 import logging
+import re as _re
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -36,6 +37,89 @@ trades = trades_log()
 
 RECENT_CHAT_WINDOW = 20
 
+_INCONSISTENCY_RE = _re.compile(
+    r"\[partial\]\s+inconsistent|wrong\s+side",
+    _re.IGNORECASE,
+)
+
+_IMAGE_FALLBACK_HINT = (
+    "\n\n[CHART IMAGE ATTACHED]\n"
+    "The text signal produced a geometric inconsistency (SL on the wrong side of entry).\n"
+    "A TradingView chart image is attached showing the intended trade setup.\n"
+    "- The RED/pink shaded zone is the risk zone; its far boundary is the SL price "
+    "(labeled in a red badge on the right price axis).\n"
+    "- The PURPLE/lavender shaded zone is the profit zone; its far boundary is the TP "
+    "price (labeled in a purple badge).\n"
+    "- The boundary line between zones is the entry price.\n"
+    "Read the price badge labels from the right axis and emit the corrected OPEN action.\n"
+    "If the price labels cannot be read clearly, emit ALERT with text "
+    '"[partial] image unreadable".'
+)
+
+
+def _should_attempt_image_fallback(
+    *,
+    category: str,
+    actions: list[dict],
+    image_bytes: bytes | None,
+    fallback_enabled: bool,
+) -> bool:
+    """True only when ALL conditions for the image fallback are met."""
+    if not fallback_enabled:
+        return False
+    if image_bytes is None:
+        return False
+    if category not in ("partial_signal", "signal"):
+        return False
+    if not actions:
+        return False
+    if not all(a.get("type") == "ALERT" for a in actions):
+        return False
+    return any(
+        _INCONSISTENCY_RE.search(a.get("text", ""))
+        for a in actions
+    )
+
+
+def _image_fallback_pass(
+    ai,
+    original_alert_text: str,
+    image_bytes: bytes,
+    system_prompt: str,
+    cached_prefix: str,
+    volatile_suffix: str,
+    reasoning_level,
+    ai_log_path,
+) -> tuple[str, list] | None:
+    """Run a second provider.interpret() call with the chart image attached.
+
+    Returns (category_str, [Action, ...]) on success, or None on any error.
+    Calls the provider directly (bypasses ai.call() which has no image param).
+    """
+    try:
+        from src.validators import parse_ai_response
+        hint_suffix = volatile_suffix + _IMAGE_FALLBACK_HINT
+        result = ai._provider.interpret(
+            system_prompt=system_prompt,
+            cached_prefix=cached_prefix,
+            volatile_suffix=hint_suffix,
+            max_output_tokens=4096,
+            reasoning_level=reasoning_level,
+            image_bytes=image_bytes,
+        )
+        parsed = parse_ai_response(result.raw_text)
+        log_call(ai_log_path, {
+            "stage": "image_fallback",
+            "category": parsed.category or "",
+            "action_types": [type(a).__name__ for a in parsed.actions],
+            **result.usage,
+            "latency_ms": result.latency_ms,
+        })
+        return parsed.category or "", parsed.actions
+    except Exception:
+        log.exception("image_fallback_pass failed — falling through to original ALERT")
+        return None
+
 
 def _tag_inserted_actions(
     conn: sqlite3.Connection,
@@ -71,15 +155,17 @@ def _tag_inserted_actions(
 def _insert_message(conn: sqlite3.Connection, tg_message_id: int, chat_id: int,
                     sender: str, text: str, *, is_backfill: bool = False,
                     source_channel_id: str = "",
-                    reply_to_tg_message_id: int | None = None) -> int | None:
+                    reply_to_tg_message_id: int | None = None,
+                    has_image: bool = False) -> int | None:
     """Returns row id, or None if duplicate."""
     cur = conn.execute(
         "INSERT OR IGNORE INTO messages"
         "(tg_message_id, chat_id, sender, text, is_backfill, "
-        " source_channel_id, reply_to_tg_message_id) "
-        "VALUES(?,?,?,?,?,?,?)",
+        " source_channel_id, reply_to_tg_message_id, has_image) "
+        "VALUES(?,?,?,?,?,?,?,?)",
         (tg_message_id, chat_id, sender, text, 1 if is_backfill else 0,
-         source_channel_id or None, reply_to_tg_message_id),
+         source_channel_id or None, reply_to_tg_message_id,
+         1 if has_image else 0),
     )
     if cur.rowcount == 0:
         return None
@@ -201,6 +287,8 @@ def process_message(
     halted: bool = False,
     failover_from_destination_id: str = "",
     reply_to_tg_message_id: int | None = None,
+    image_bytes: bytes | None = None,
+    has_image: bool = False,
 ) -> list[int]:
     """Insert message, call AI, validate + persist actions. Returns inserted action IDs.
 
@@ -219,7 +307,8 @@ def process_message(
     msg_id = _insert_message(conn, tg_message_id, chat_id, sender, text,
                              is_backfill=is_backfill,
                              source_channel_id=source_channel_id,
-                             reply_to_tg_message_id=reply_to_tg_message_id)
+                             reply_to_tg_message_id=reply_to_tg_message_id,
+                             has_image=has_image)
     if msg_id is None:
         return []  # duplicate
 
@@ -682,6 +771,81 @@ def process_message(
             )
         except Exception as e:  # noqa: BLE001 — must not break live path
             log.warning("unmatched_store.record raised for msg_id=%s: %s", msg_id, e)
+
+    # Image fallback: if the AI produced a geometric-inconsistency ALERT
+    # and the message had a chart image, attempt a corrected second pass.
+    if image_bytes is not None:
+        _raw_action_dicts = [
+            {"type": _action_type(a), **_payload_for(a)}
+            for a in result.response.actions
+        ]
+        from src.db import get_setting as _get_setting
+        _fb_enabled = bool(int(_get_setting(conn, "image_fallback_enabled") or "1"))
+        if _should_attempt_image_fallback(
+            category=result.response.category or "",
+            actions=_raw_action_dicts,
+            image_bytes=image_bytes,
+            fallback_enabled=_fb_enabled,
+        ):
+            _orig_alert = next(
+                (a.get("text", "") for a in _raw_action_dicts if a.get("type") == "ALERT"), ""
+            )
+            # Reuse context_block (already computed above) to replicate
+            # exactly the cached_prefix ai.call() received, avoiding a
+            # redundant DB read and any possible mismatch.
+            _cached_prefix = (
+                "RECENT CHAT (last messages, oldest first):\n"
+                "[BEGIN UNTRUSTED CHANNEL CONTENT]\n"
+                f"{context_block}\n"
+                "[END UNTRUSTED CHANNEL CONTENT]"
+            )
+            # open_positions_block is already computed above — use it directly.
+            _volatile_suffix = (
+                f"{open_positions_block}\n\nNEW MESSAGE:\n"
+                "[BEGIN UNTRUSTED CHANNEL CONTENT]\n"
+                f"{sender}: {text}\n"
+                "[END UNTRUSTED CHANNEL CONTENT]"
+            )
+            from src.llm_provider import reasoning_level as _reasoning_level_fn
+            _level = _reasoning_level_fn(ai._thinking_enabled, ai._thinking_budget)
+            _effective_prompt = (
+                (profile.system_prompt if profile is not None else None)
+                or ai._system_prompt
+            )
+            if not _effective_prompt:
+                from src.ai import SYSTEM_PROMPT as _SYSTEM_PROMPT
+                _effective_prompt = _SYSTEM_PROMPT
+            fb = _image_fallback_pass(
+                ai, _orig_alert, image_bytes,
+                _effective_prompt, _cached_prefix, _volatile_suffix,
+                _level, ai_log_path,
+            )
+            if fb is not None:
+                fb_category, fb_actions = fb
+                fb_actions_filtered = _apply_route_rules(fb_actions)
+                has_open_filtered = any(isinstance(a, OpenAction) for a in fb_actions_filtered)
+                if has_open_filtered and fb_category in ("signal", "partial_signal"):
+                    _fb_extras = {
+                        "image_corrected": True,
+                        "image_fallback_reason": _orig_alert,
+                        **_route_payload_extras(),
+                    }
+                    log.info(
+                        "image_fallback succeeded for msg_id=%s — corrected OPEN",
+                        msg_id,
+                    )
+                    ids = _persist_actions(
+                        conn, msg_id, fb_actions_filtered, ai_log_path,
+                        auto_execute_delay_sec, is_backfill=is_backfill,
+                        payload_extras=_fb_extras,
+                    )
+                    _tag_inserted_actions(conn, ids,
+                                          source_channel_id=source_channel_id,
+                                          route_id=route_id)
+                    if SIGNAL_MEMORY_ENABLED:
+                        signal_memory.clear_on_open(conn, chat_id)
+                    return ids
+    # (fallback did not fire or did not produce a usable OPEN — fall through)
 
     # Step 20: per-route rule filter (action-type / time-of-day).
     # Applied AFTER the AI call so the operator can still see what the

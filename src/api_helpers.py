@@ -17,6 +17,7 @@ Three concerns here:
 """
 from __future__ import annotations
 
+import base64
 import logging
 import sqlite3
 
@@ -225,6 +226,26 @@ def _run_orchestrator_for_incoming(
                 "profile refresh failed for %s; using cached version",
                 profile.path,
             )
+    image_bytes: bytes | None = None
+    if body.image_b64:
+        _MAX_IMAGE_DECODE_BYTES = 10 * 1024 * 1024  # 10 MB
+        approx_decoded = len(body.image_b64) * 3 // 4
+        if approx_decoded > _MAX_IMAGE_DECODE_BYTES:
+            log.warning(
+                "image_b64 too large (~%d bytes decoded) for tg_msg_id=%s — skipping",
+                approx_decoded,
+                body.tg_message_id,
+            )
+        else:
+            try:
+                image_bytes = base64.b64decode(body.image_b64)
+            except Exception as exc:
+                log.warning(
+                    "image_b64 decode failed for tg_msg_id=%s (%s: %s) — processing without image",
+                    body.tg_message_id,
+                    type(exc).__name__,
+                    exc,
+                )
     try:
         process_message(
             conn,
@@ -246,6 +267,8 @@ def _run_orchestrator_for_incoming(
             halted=halted,
             failover_from_destination_id=body.failover_from_destination_id,
             reply_to_tg_message_id=body.reply_to_tg_message_id,
+            image_bytes=image_bytes,
+            has_image=(image_bytes is not None),
         )
     except Exception:
         log.exception(

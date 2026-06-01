@@ -70,3 +70,51 @@ def test_render_action_terminal_truncates_long_reply():
     assert "..." in text  # truncation marker
     # Reply tail itself is capped, not the whole message.
     assert text.count("x") <= 200
+
+
+# ---- image-corrected warning note (Task 5) ----------------------------------
+
+def _open_payload(image_corrected: bool = False, reason: str = "") -> dict:
+    p = {
+        "symbol": "XAUUSD", "side": "SELL",
+        "entry_low": 4471.27, "entry_high": 4471.27,
+        "sl": 4481.57, "tps": [4419.63],
+    }
+    if image_corrected:
+        p["image_corrected"] = True
+        p["image_fallback_reason"] = reason or "[partial] inconsistent SELL setup"
+    return p
+
+
+def test_open_dm_has_warning_note_when_image_corrected():
+    text = render_action_notification(
+        action_id=42,
+        action_type="OPEN",
+        payload=_open_payload(image_corrected=True),
+        source_text="Xauusd sell limit 4471.27 SL 4451.87 Tp 4419.63",
+        auto_execute_delay_sec=5,
+    )
+    assert "⚠️" in text
+    assert "corrected from chart image" in text.lower() or "chart image" in text.lower()
+    assert "4481.57" in text  # corrected SL present
+
+
+def test_open_dm_no_warning_note_when_not_image_corrected():
+    text = render_action_notification(
+        action_id=42,
+        action_type="OPEN",
+        payload=_open_payload(image_corrected=False),
+        source_text="Xauusd sell limit 4471.27 SL 4481.57 Tp 4419.63",
+        auto_execute_delay_sec=5,
+    )
+    assert "corrected from chart image" not in text.lower()
+
+
+def test_image_corrected_note_shows_original_text():
+    reason = "[partial] inconsistent SELL setup: SL 4451 is below entry 4471"
+    p = _open_payload(image_corrected=True, reason=reason)
+    text = render_action_notification(
+        action_id=1, action_type="OPEN", payload=p,
+        source_text="test", auto_execute_delay_sec=0,
+    )
+    assert "inconsistent" in text.lower() or "wrong side" in text.lower() or "below entry" in text.lower()

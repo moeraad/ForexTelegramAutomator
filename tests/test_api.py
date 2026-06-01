@@ -598,6 +598,21 @@ def test_close_passes_through_mt5_not_found_in_partial_state(tmp_path):
     assert pos["close_reason"] == "mt5_not_found"
 
 
+def test_has_image_column_exists_after_migration(tmp_path):
+    conn = _setup(tmp_path)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+    assert "has_image" in cols
+
+
+def test_image_fallback_enabled_default_is_on(tmp_path):
+    conn = _setup(tmp_path)
+    row = conn.execute(
+        "SELECT value FROM settings WHERE key='image_fallback_enabled'"
+    ).fetchone()
+    assert row is not None
+    assert row["value"] == "1"
+
+
 def test_close_passes_through_ai_close_full_in_partial_state(tmp_path):
     """AI-driven CLOSE_FULL on a partially-closed position is the operator's
     explicit intent -- pass through."""
@@ -1728,3 +1743,31 @@ def test_resize_pending_pct_none_when_balance_stale(tmp_path):
     r = client.post(f"/actions/{aid}/resize_pending", json={"lots": 0.43})
     assert r.status_code == 200
     assert r.json()["risk_pct_estimate"] is None
+
+
+def test_incoming_message_body_image_b64_optional():
+    """Old callers that don't send image_b64 must still parse cleanly."""
+    from src.api_models import IncomingMessageBody
+    body = IncomingMessageBody(
+        channel_id="ch_test",
+        tg_chat_id=-100123,
+        tg_message_id=1,
+        text="test",
+        route_id="",
+    )
+    assert body.image_b64 is None
+
+
+def test_incoming_message_body_accepts_image_b64():
+    import base64
+    from src.api_models import IncomingMessageBody
+    b64 = base64.b64encode(b"fake_jpeg_bytes").decode()
+    body = IncomingMessageBody(
+        channel_id="ch_test",
+        tg_chat_id=-100123,
+        tg_message_id=1,
+        text="test",
+        route_id="",
+        image_b64=b64,
+    )
+    assert body.image_b64 == b64

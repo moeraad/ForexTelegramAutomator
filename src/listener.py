@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 import sqlite3
@@ -141,6 +142,7 @@ def _post_incoming_message(
     base_backoff: float = 0.5,
     failover_from_destination_id: str = "",
     reply_to_tg_message_id: int | None = None,
+    image_b64: str | None = None,
 ) -> bool:
     """POST a message to the API's /incoming_message endpoint.
 
@@ -174,6 +176,9 @@ def _post_incoming_message(
         # one in the same chat). The API persists it so state_summary
         # can prepend the parent's text to the SYSTEM STATE block.
         "reply_to_tg_message_id": reply_to_tg_message_id,
+        # Chart image for image-fallback AI path (base64-encoded JPEG/PNG).
+        # None when no photo was attached or download failed.
+        "image_b64": image_b64,
     }
     data = json.dumps(body).encode("utf-8")
     headers = {"Content-Type": "application/json"}
@@ -539,6 +544,26 @@ async def main() -> None:
                         or str(DEFAULT_AUTO_EXECUTE_DELAY_SEC))
             sender_name = await _resolve_sender(event)
             text = msg.message or ""
+            # Photo download for image fallback (geometric-inconsistency correction).
+            # Download is best-effort: failures are silently swallowed so a photo
+            # download error never blocks signal processing.
+            _MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB guard
+            image_bytes_raw: bytes | None = None
+            if msg.photo or (msg.media and hasattr(msg.media, "photo")):
+                try:
+                    raw_img = await msg.download_media(bytes)
+                    if raw_img and len(raw_img) <= _MAX_IMAGE_BYTES:
+                        image_bytes_raw = raw_img
+                    elif raw_img:
+                        log.warning(
+                            "tg_msg_id=%s photo too large (%d bytes) — skipping image fallback",
+                            msg.id, len(raw_img),
+                        )
+                except Exception:
+                    log.warning(
+                        "tg_msg_id=%s photo download failed — continuing without image",
+                        msg.id, exc_info=True,
+                    )
             # Telethon exposes the parent message id on replies as
             # event.message.reply_to_msg_id (Telethon 1.x) or via
             # event.message.reply_to.reply_to_msg_id (newer schema).
@@ -552,6 +577,7 @@ async def main() -> None:
                      msg.id, reply_to_id, text[:80])
             if dispatch_target is not None:
                 received_at = datetime.now(timezone.utc).isoformat()
+                _image_b64 = base64.b64encode(image_bytes_raw).decode() if image_bytes_raw else None
                 posted = await asyncio.to_thread(
                     lambda: _post_incoming_message(
                         dispatch_target,
@@ -562,6 +588,7 @@ async def main() -> None:
                         received_at=received_at,
                         is_backfill=False,
                         reply_to_tg_message_id=reply_to_id,
+                        image_b64=_image_b64,
                     )
                 )
                 if posted:
@@ -589,6 +616,8 @@ async def main() -> None:
                         sender_name, text, ai_log_path, delay,
                         triage=triage,
                         profile=live_profile,
+                        image_bytes=image_bytes_raw,
+                        has_image=(image_bytes_raw is not None),
                     )
                 )
                 if ids:

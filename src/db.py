@@ -48,6 +48,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_create_learning_samples(conn)
     _migrate_create_learning_suggestions(conn)
     _migrate_unmatched_into_learning(conn)
+    _migrate_messages_add_has_image(conn)
 
 
 def _migrate_actions_add_phase2_types(conn: sqlite3.Connection) -> None:
@@ -1037,4 +1038,18 @@ def _migrate_messages_add_reply_to(conn: sqlite3.Connection) -> None:
     if "reply_to_tg_message_id" not in cols:
         conn.execute(
             "ALTER TABLE messages ADD COLUMN reply_to_tg_message_id INTEGER"
+        )
+
+
+def _migrate_messages_add_has_image(conn: sqlite3.Connection) -> None:
+    """Add `has_image` audit flag to messages.
+
+    Set to 1 when the original Telegram message included a photo/media.
+    The image bytes are NOT stored — only this flag.
+    Idempotent: ALTER is gated on PRAGMA table_info.
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    if "has_image" not in cols:
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN has_image INTEGER NOT NULL DEFAULT 0"
         )

@@ -13,6 +13,7 @@ OpenAI exposes no equivalent).
 """
 from __future__ import annotations
 
+import base64
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -36,6 +37,7 @@ class LLMProvider(Protocol):
         volatile_suffix: str,
         max_output_tokens: int,
         reasoning_level: str | None,
+        image_bytes: bytes | None = None,
     ) -> LLMCallResult: ...
 
     def triage(
@@ -113,6 +115,7 @@ class AnthropicProvider:
         volatile_suffix: str,
         max_output_tokens: int,
         reasoning_level: str | None,
+        image_bytes: bytes | None = None,
     ) -> LLMCallResult:
         # NOTE: cached_prefix (recent_chat) used to carry cache_control here,
         # but it changes on every new channel message — so it created a fresh
@@ -121,6 +124,20 @@ class AnthropicProvider:
         # rides in the volatile user turn.
         cached_block = {"type": "text", "text": cached_prefix}
         volatile_block = {"type": "text", "text": volatile_suffix}
+        user_content: list[dict] = []
+        if image_bytes is not None:
+            # Telegram photos are always delivered as JPEG; hardcoded media_type
+            # is safe for this use case. If a non-JPEG source is ever added,
+            # extend this with a media_type parameter.
+            user_content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": base64.b64encode(image_bytes).decode(),
+                },
+            })
+        user_content.extend([cached_block, volatile_block])
         system = [
             {
                 "type": "text",
@@ -132,7 +149,7 @@ class AnthropicProvider:
             "model": self._model,
             "system": system,
             "messages": [
-                {"role": "user", "content": [cached_block, volatile_block]}
+                {"role": "user", "content": user_content}
             ],
         }
         if reasoning_level is not None:
@@ -240,12 +257,27 @@ class OpenAIProvider:
         volatile_suffix: str,
         max_output_tokens: int,
         reasoning_level: str | None,
+        image_bytes: bytes | None = None,
     ) -> LLMCallResult:
         # OpenAI uses automatic prefix caching: identical leading tokens are
         # billed as cached without any cache_control annotation. Keep the
         # cached-prefix first so it survives the cache hit, then append the
         # volatile suffix as part of the same user turn.
-        user_content = f"{cached_prefix}\n\n{volatile_suffix}"
+        if image_bytes is not None:
+            # Telegram photos are always delivered as JPEG; hardcoded media_type
+            # is safe for this use case. If a non-JPEG source is ever added,
+            # extend this with a media_type parameter.
+            user_content_body: str | list[dict[str, Any]] = [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode()}"
+                    },
+                },
+                {"type": "text", "text": f"{cached_prefix}\n\n{volatile_suffix}"},
+            ]
+        else:
+            user_content_body = f"{cached_prefix}\n\n{volatile_suffix}"
         # For gpt-5 reasoning models, max_completion_tokens covers BOTH
         # hidden reasoning AND the visible output. Reserve a per-effort
         # budget on top of max_output_tokens so the JSON output isn't
@@ -260,7 +292,7 @@ class OpenAIProvider:
             "model": self._model,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
+                {"role": "user", "content": user_content_body},
             ],
             "max_completion_tokens": completion_budget,
         }
