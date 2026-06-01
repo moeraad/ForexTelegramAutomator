@@ -270,6 +270,7 @@ struct PendingOrder {
    int        tpCount;
    datetime   placedAt;
    datetime   lastStatusCheck;  // throttle GET /actions/{id} polls
+   int        appliedResizeSeq; // highest resize_seq already applied (idempotency)
 };
 
 PendingOrder g_pending_orders[];
@@ -409,9 +410,12 @@ void HeartbeatMarketPrice() {
    double bid = SymbolInfoDouble(Symbol_Override, SYMBOL_BID);
    double ask = SymbolInfoDouble(Symbol_Override, SYMBOL_ASK);
    if(bid <= 0.0 || ask <= 0.0) return;  // symbol not ready
+   double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+   double eq  = AccountInfoDouble(ACCOUNT_EQUITY);
    string body = StringFormat(
-      "{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f}",
-      Symbol_Override, bid, ask
+      "{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,"
+      "\"account_balance\":%.2f,\"account_equity\":%.2f}",
+      Symbol_Override, bid, ask, bal, eq
    );
    string resp; int status;
    HttpPostJsonWithStatus(ApiBaseUrl + "/market/price", body, resp, status);
@@ -1289,6 +1293,20 @@ string ExtractPayload(string obj) {
    return StringSubstr(obj, start, end - start + 1);
 }
 
+// Snap an arbitrary lot value to the symbol's volume step and clamp it to
+// the broker's min/max bounds. Used by the resize path before re-placing a
+// pending order at a new lot.
+double NormalizeVolume(string sym, double lots) {
+   double mn = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+   double mx = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
+   double st = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+   if(st <= 0) st = 0.01;
+   double v = MathFloor(lots / st) * st;
+   if(v < mn) v = mn;
+   if(v > mx) v = mx;
+   return NormalizeDouble(v, 2);
+}
+
 // Balance-based position sizing with optional risk-percentage cap.
 //
 //   lots = (ACCOUNT_BALANCE / 100) * LotsPer100Balance
@@ -1488,6 +1506,69 @@ double ApplyEvalSizing(long actionId, double baselineLots, string &skipReason) {
 }
 
 
+// Places a broker BuyLimit/SellLimit at `entryLimit` for `lots`, pushes a
+// PendingOrder into g_pending_orders[], persists it, and POSTs status=
+// 'watching' (retry-queued on transport failure). Returns the broker order
+// ticket, or 0 on failure (caller has already had a result POSTed for the
+// failure case). Shared by the initial open (DoOpen) and the resize path.
+ulong PlacePendingLimit(long id, bool isBuyP, double entryLimit, double sl,
+                        double &tps[], int tpCount, double lots, int resizeSeq) {
+   double tpFinalP = tps[tpCount - 1];
+   bool okP = isBuyP
+      ? trade.BuyLimit(lots, entryLimit, Symbol_Override, sl, tpFinalP,
+                       ORDER_TIME_GTC, 0, "ct-pending")
+      : trade.SellLimit(lots, entryLimit, Symbol_Override, sl, tpFinalP,
+                        ORDER_TIME_GTC, 0, "ct-pending");
+   if(!okP) {
+      PostResult(id, "failed", 0,
+         "pending_place_failed:" + IntegerToString(trade.ResultRetcode()));
+      g_stats_rejected++;
+      return 0;
+   }
+   ulong order_ticket = trade.ResultOrder();
+   if(order_ticket == 0) {
+      PostResult(id, "failed", 0, "pending_no_order_ticket");
+      g_stats_rejected++;
+      return 0;
+   }
+   PendingOrder po;
+   po.action_id = id;
+   po.order_ticket = order_ticket;
+   po.isBuy = isBuyP;
+   po.entry = entryLimit;
+   po.sl = sl;
+   for(int kp = 0; kp < 3; kp++) po.tps[kp] = 0.0;
+   for(int kp = 0; kp < tpCount; kp++) po.tps[kp] = tps[kp];
+   po.tpCount = tpCount;
+   po.placedAt = TimeCurrent();
+   po.lastStatusCheck = TimeCurrent();
+   po.appliedResizeSeq = resizeSeq;
+   int nP = ArraySize(g_pending_orders);
+   ArrayResize(g_pending_orders, nP + 1);
+   g_pending_orders[nP] = po;
+   PersistPendingOrder(po);
+
+   string watchBody = StringFormat(
+      "{\"status\":\"watching\",\"error\":\"pending_order_ticket=%I64u\"}",
+      order_ticket);
+   string watchResp; int watchStatus;
+   string watchUrl = ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result";
+   bool watchOk = HttpPostJsonWithStatus(watchUrl, watchBody, watchResp, watchStatus);
+   if(!watchOk) {
+      if(IsRetryableStatus(watchStatus)) {
+         Print("Watching POST failed for pending action ", id,
+               " status=", watchStatus, " — queued for retry");
+         EnqueueRetry(watchUrl, watchBody);
+      } else {
+         Print("Watching POST terminal ", watchStatus,
+               " for pending action ", id, " — not retrying");
+      }
+   }
+   Print("CT OPEN id=", id, " pending limit placed ticket=", order_ticket,
+         " entry=", entryLimit, " sl=", sl, " tp=", tpFinalP);
+   return order_ticket;
+}
+
 void DoOpen(long id, string payload) {
    string side = JsonField(payload, "side");
    double entryLow = StringToDouble(JsonField(payload, "entry_low"));
@@ -1577,66 +1658,8 @@ void DoOpen(long id, string payload) {
          g_stats_rejected++;
          return;
       }
-      double tpFinalP = tps[tpCount - 1];
-      bool okP = isBuyP
-         ? trade.BuyLimit(lotsP, entryLimit, Symbol_Override, sl, tpFinalP,
-                          ORDER_TIME_GTC, 0, "ct-pending")
-         : trade.SellLimit(lotsP, entryLimit, Symbol_Override, sl, tpFinalP,
-                           ORDER_TIME_GTC, 0, "ct-pending");
-      if(!okP) {
-         PostResult(id, "failed", 0,
-            "pending_place_failed:" + IntegerToString(trade.ResultRetcode()));
-         g_stats_rejected++;
-         return;
-      }
-      ulong order_ticket = trade.ResultOrder();
-      if(order_ticket == 0) {
-         PostResult(id, "failed", 0, "pending_no_order_ticket");
-         g_stats_rejected++;
-         return;
-      }
-      PendingOrder po;
-      po.action_id = id;
-      po.order_ticket = order_ticket;
-      po.isBuy = isBuyP;
-      po.entry = entryLimit;
-      po.sl = sl;
-      for(int kp = 0; kp < 3; kp++) po.tps[kp] = 0.0;
-      for(int kp = 0; kp < tpCount; kp++) po.tps[kp] = tps[kp];
-      po.tpCount = tpCount;
-      po.placedAt = TimeCurrent();
-      po.lastStatusCheck = TimeCurrent();
-      int nP = ArraySize(g_pending_orders);
-      ArrayResize(g_pending_orders, nP + 1);
-      g_pending_orders[nP] = po;
-      PersistPendingOrder(po);
-
-      // POST status='watching' — the action sits in this state until
-      // ManagePendingOrders detects a fill (-> executed) or the server
-      // CANCEL_PENDING handler flips us to rejected. If this transport-
-      // fails (HTTP 1003 etc.) the action would otherwise sit in
-      // 'claimed' until release_stale_claims (300s) flipped it back to
-      // 'sent', causing the EA to re-fire DoOpen and place a second
-      // pending order. Route through the retry queue so it resends
-      // until the API records the watching status.
-      string watchBody = StringFormat(
-         "{\"status\":\"watching\",\"error\":\"pending_order_ticket=%I64u\"}",
-         order_ticket);
-      string watchResp; int watchStatus;
-      string watchUrl = ApiBaseUrl + "/actions/" + IntegerToString(id) + "/result";
-      bool watchOk = HttpPostJsonWithStatus(watchUrl, watchBody, watchResp, watchStatus);
-      if(!watchOk) {
-         if(IsRetryableStatus(watchStatus)) {
-            Print("Watching POST failed for pending action ", id,
-                  " status=", watchStatus, " — queued for retry");
-            EnqueueRetry(watchUrl, watchBody);
-         } else {
-            Print("Watching POST terminal ", watchStatus,
-                  " for pending action ", id, " — not retrying");
-         }
-      }
-      Print("CT OPEN id=", id, " pending limit placed ticket=", order_ticket,
-            " entry=", entryLimit, " sl=", sl, " tp=", tpFinalP);
+      if(PlacePendingLimit(id, isBuyP, entryLimit, sl, tps, tpCount, lotsP, 0) == 0)
+         return;  // PlacePendingLimit already POSTed the failure
       return;
    }
 
@@ -4125,11 +4148,12 @@ void PersistPendingOrder(const PendingOrder &p) {
    GlobalVariableSet(PendingKey(p.order_ticket, "tp3"),      p.tps[2]);
    GlobalVariableSet(PendingKey(p.order_ticket, "tpCount"),  (double)p.tpCount);
    GlobalVariableSet(PendingKey(p.order_ticket, "placedAt"), (double)p.placedAt);
+   GlobalVariableSet(PendingKey(p.order_ticket, "resizeSeq"), (double)p.appliedResizeSeq);
 }
 
 void ErasePendingOrderState(ulong order_ticket) {
    string fields[] = {"actionId","isBuy","entry","sl","tp1","tp2","tp3",
-                      "tpCount","placedAt"};
+                      "tpCount","placedAt","resizeSeq"};
    for(int i = 0; i < ArraySize(fields); i++)
       GlobalVariableDel(PendingKey(order_ticket, fields[i]));
 }
@@ -4171,6 +4195,10 @@ void LoadPersistedPendingOrders() {
       p.tps[2]       = GlobalVariableGet(PendingKey(order_ticket, "tp3"));
       p.tpCount      = (int)GlobalVariableGet(PendingKey(order_ticket, "tpCount"));
       p.placedAt     = (datetime)GlobalVariableGet(PendingKey(order_ticket, "placedAt"));
+      // Round-trip the resize-idempotency seq. Orders persisted before this
+      // field existed have no "resizeSeq" GV; GlobalVariableGet returns 0.0
+      // for a missing name, which is the correct default (no resize applied).
+      p.appliedResizeSeq = (int)GlobalVariableGet(PendingKey(order_ticket, "resizeSeq"));
       p.lastStatusCheck = 0;  // force first OnTimer to do a status poll
       int m = ArraySize(g_pending_orders);
       ArrayResize(g_pending_orders, m + 1);
@@ -4259,6 +4287,60 @@ void ManagePendingOrders() {
       string statusBody;
       string statusUrl = ApiBaseUrl + "/actions/" + IntegerToString(p.action_id);
       if(!HttpGet(statusUrl, statusBody) || statusBody == "") continue;
+
+      // Resize request? The API writes pending_lot_override + a monotonic
+      // resize_seq into the payload. Apply the latest unseen seq by
+      // delete + re-place at the new lot (same entry/SL/TP, same magic).
+      string payloadBlock = JsonField(statusBody, "payload");
+      int newSeq = (int)StringToInteger(JsonField(payloadBlock, "resize_seq"));
+      double overrideLot = StringToDouble(JsonField(payloadBlock, "pending_lot_override"));
+      if(newSeq > p.appliedResizeSeq && overrideLot > 0.0) {
+         double newLot = NormalizeVolume(Symbol_Override, overrideLot);
+         // Feasibility: ensure free margin covers the new lot BEFORE deleting
+         // the existing order, so an infeasible request never leaves us naked.
+         double marginNeeded = 0.0;
+         ENUM_ORDER_TYPE otype = p.isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+         if(!OrderCalcMargin(otype, Symbol_Override, newLot, p.entry, marginNeeded)) {
+            // Broker hasn't reported margin rates yet — can't assess. Defer to
+            // the next tick WITHOUT burning the seq or touching the existing
+            // order — conservative pass-through (don't second-guess the broker).
+            Print("CT resize defer action=", p.action_id,
+                  " — OrderCalcMargin not ready; retry next tick");
+            continue;
+         }
+         if(marginNeeded > AccountInfoDouble(ACCOUNT_MARGIN_FREE)) {
+            PostResult(p.action_id, "failed", 0, "resize_insufficient_margin");
+            p.appliedResizeSeq = newSeq;            // don't retry an impossible resize
+            g_pending_orders[i] = p;
+            PersistPendingOrder(p);
+            Print("CT resize REJECT action=", p.action_id, " newLot=", newLot,
+                  " marginNeeded=", marginNeeded, " — kept existing order");
+            continue;
+         }
+         if(!trade.OrderDelete(p.order_ticket)) {
+            Print("CT resize OrderDelete FAILED action=", p.action_id,
+                  " ticket=", p.order_ticket, " retcode=", trade.ResultRetcode(),
+                  " — will retry next tick");
+            continue;  // leave seq unbumped; retry next tick
+         }
+         ErasePendingOrderState(p.order_ticket);
+         RemovePendingOrder(i);                     // drop the old struct entry
+         double tpsArr[];
+         ArrayResize(tpsArr, p.tpCount);
+         for(int k = 0; k < p.tpCount; k++) tpsArr[k] = p.tps[k];
+         ulong newTicket = PlacePendingLimit(p.action_id, p.isBuy, p.entry,
+                                             p.sl, tpsArr, p.tpCount, newLot, newSeq);
+         if(newTicket == 0) {
+            Print("CT resize CRITICAL action=", p.action_id,
+                  " — old order deleted but re-place FAILED; no broker order "
+                  "exists, action marked failed by helper");
+         } else {
+            Print("CT resize OK action=", p.action_id, " newLot=", newLot,
+                  " newTicket=", newTicket, " seq=", newSeq);
+         }
+         continue;
+      }
+
       if(StringFind(statusBody, "\"status\":\"rejected\"") >= 0) {
          // Server cancelled (CANCEL_PENDING). Delete broker pending order.
          if(trade.OrderDelete(p.order_ticket)) {

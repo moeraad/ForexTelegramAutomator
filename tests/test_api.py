@@ -1488,6 +1488,37 @@ def test_recover_is_idempotent(tmp_path):
     assert n == 1
 
 
+def test_rewatch_preserves_executed_at_and_updates_ticket(tmp_path):
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'claimed')",
+        (json.dumps({"symbol": "XAUUSD", "side": "BUY", "pending": True}),),
+    )
+    conn.commit()
+    aid = cur.lastrowid
+    client = TestClient(build_app(conn))
+    # initial placement: claimed -> watching, stamps executed_at + ticket 111
+    r1 = client.post(f"/actions/{aid}/result",
+                     json={"status": "watching", "error": "pending_order_ticket=111"})
+    assert r1.status_code == 200
+    first = conn.execute(
+        "SELECT executed_at, ea_response FROM actions WHERE id=?", (aid,)
+    ).fetchone()
+    assert first["executed_at"] is not None
+    assert "111" in first["ea_response"]
+    # resize re-place: watching -> watching with NEW ticket 222
+    r2 = client.post(f"/actions/{aid}/result",
+                     json={"status": "watching", "error": "pending_order_ticket=222"})
+    assert r2.status_code == 200
+    second = conn.execute(
+        "SELECT executed_at, ea_response, status FROM actions WHERE id=?", (aid,)
+    ).fetchone()
+    assert second["executed_at"] == first["executed_at"]  # NOT re-stamped on re-watch
+    assert "222" in second["ea_response"]                  # new ticket reflected
+    assert second["status"] == "watching"
+
+
 def test_recover_does_not_resurrect_closed_row(tmp_path):
     """A ticket already recorded as closed must never be flipped back to open
     by a recovery POST (first-insert-wins, same rule as post_result)."""
@@ -1537,3 +1568,163 @@ def test_recover_rejects_nonpositive_volume(tmp_path):
     client = TestClient(build_app(conn))
     r = client.post("/positions/recover", json=_recover_body(volume=0))
     assert r.status_code == 422  # pydantic Field(gt=0)
+
+
+def test_post_market_price_persists_balance(tmp_path):
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.post("/market/price", json={
+        "symbol": "XAUUSD", "bid": 4520.48, "ask": 4520.62,
+        "account_balance": 4340.0, "account_equity": 4351.5,
+    })
+    assert r.status_code == 200
+    rows = {row["key"]: row["value"] for row in conn.execute(
+        "SELECT key, value FROM settings WHERE key IN "
+        "('account_balance','account_equity','account_at')"
+    ).fetchall()}
+    assert rows["account_balance"] == "4340.0"
+    assert rows["account_equity"] == "4351.5"
+    assert "account_at" in rows and rows["account_at"].endswith("+00:00")
+
+
+def test_post_market_price_without_balance_is_backward_compatible(tmp_path):
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.post("/market/price", json={"symbol": "XAUUSD", "bid": 4520.0, "ask": 4520.2})
+    assert r.status_code == 200
+    n = conn.execute(
+        "SELECT COUNT(*) AS c FROM settings WHERE key='account_balance'"
+    ).fetchone()["c"]
+    assert n == 0  # no balance key written when EA omits the fields
+
+
+def test_pending_risk_dollars_and_pct():
+    from src.api import _pending_risk
+    # SL distance 7.23, lots 0.43, XAUUSD contract 100 -> 7.23*100*0.43 = 310.89
+    dollars, pct = _pending_risk(lots=0.43, entry=4501.49, sl=4494.26, balance=4340.0)
+    assert round(dollars, 2) == 310.89
+    assert round(pct, 2) == round(310.89 / 4340.0 * 100, 2)
+
+
+def test_pending_risk_pct_none_when_no_balance():
+    from src.api import _pending_risk
+    dollars, pct = _pending_risk(lots=0.06, entry=4501.49, sl=4494.26, balance=None)
+    assert round(dollars, 2) == round(7.23 * 100 * 0.06, 2)
+    assert pct is None
+
+
+def _insert_watching_open(conn, entry_price=4501.49, sl=4494.26):
+    payload = {
+        "symbol": "XAUUSD", "side": "BUY",
+        "entry_low": entry_price, "entry_high": entry_price,
+        "tps": [4544.0], "sl": sl, "pending": True, "pending_type": "limit",
+    }
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'watching')",
+        (json.dumps(payload),),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def test_resize_pending_writes_override_and_bumps_seq(tmp_path):
+    conn = _setup(tmp_path)
+    conn.execute("INSERT INTO settings(key,value) VALUES('account_balance','4340.0')")
+    conn.execute(
+        "INSERT INTO settings(key,value) VALUES('account_at', ?)",
+        (datetime.now(timezone.utc).isoformat(),),
+    )
+    aid = _insert_watching_open(conn)
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{aid}/resize_pending", json={"lots": 0.43})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["lots"] == 0.43
+    assert body["resize_seq"] == 1
+    assert round(body["risk_dollars"], 2) == 310.89
+    assert body["risk_pct_estimate"] is not None
+    row = conn.execute("SELECT payload_json, status FROM actions WHERE id=?", (aid,)).fetchone()
+    payload = json.loads(row["payload_json"])
+    assert payload["pending_lot_override"] == 0.43
+    assert payload["resize_seq"] == 1
+    assert row["status"] == "watching"  # unchanged
+    r2 = client.post(f"/actions/{aid}/resize_pending", json={"lots": 0.30})
+    assert r2.json()["resize_seq"] == 2
+
+
+def test_resize_pending_rejects_non_watching(tmp_path):
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'executed')",
+        (json.dumps({"pending": True, "entry_low": 1, "entry_high": 1, "sl": 1}),),
+    )
+    conn.commit()
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{cur.lastrowid}/resize_pending", json={"lots": 0.1})
+    assert r.status_code == 409
+
+
+def test_resize_pending_rejects_non_pending_open(tmp_path):
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'watching')",
+        (json.dumps({"entry_low": 1, "entry_high": 1, "sl": 1}),),  # no "pending"
+    )
+    conn.commit()
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{cur.lastrowid}/resize_pending", json={"lots": 0.1})
+    assert r.status_code == 409
+
+
+def test_resize_pending_unknown_id_404(tmp_path):
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.post("/actions/9999/resize_pending", json={"lots": 0.1})
+    assert r.status_code == 404
+
+
+def test_resize_pending_rejects_bad_lots(tmp_path):
+    conn = _setup(tmp_path)
+    aid = _insert_watching_open(conn)
+    client = TestClient(build_app(conn))
+    assert client.post(f"/actions/{aid}/resize_pending", json={"lots": 0}).status_code == 422
+    assert client.post(f"/actions/{aid}/resize_pending", json={"lots": -1}).status_code == 422
+    assert client.post(f"/actions/{aid}/resize_pending", json={"lots": 999}).status_code == 422
+
+
+def test_resize_pending_respects_risk_budget_cap(tmp_path):
+    conn = _setup(tmp_path)
+    conn.execute(
+        "INSERT INTO settings(key,value) VALUES('risk_budget', ?)",
+        (json.dumps({"max_open_lots": 5.0}),),
+    )
+    conn.commit()
+    aid = _insert_watching_open(conn)
+    client = TestClient(build_app(conn))
+    assert client.post(f"/actions/{aid}/resize_pending", json={"lots": 6.0}).status_code == 422
+    assert client.post(f"/actions/{aid}/resize_pending", json={"lots": 4.0}).status_code == 200
+
+
+def test_resize_pending_falls_back_when_risk_budget_unparseable(tmp_path):
+    conn = _setup(tmp_path)
+    conn.execute("INSERT INTO settings(key,value) VALUES('risk_budget','not-json')")
+    conn.commit()
+    aid = _insert_watching_open(conn)
+    client = TestClient(build_app(conn))
+    # fallback cap is 100.0, so a small lot is accepted
+    assert client.post(f"/actions/{aid}/resize_pending", json={"lots": 0.1}).status_code == 200
+
+
+def test_resize_pending_pct_none_when_balance_stale(tmp_path):
+    conn = _setup(tmp_path)
+    stale = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
+    conn.execute("INSERT INTO settings(key,value) VALUES('account_balance','4340.0')")
+    conn.execute("INSERT INTO settings(key,value) VALUES('account_at', ?)", (stale,))
+    aid = _insert_watching_open(conn)
+    client = TestClient(build_app(conn))
+    r = client.post(f"/actions/{aid}/resize_pending", json={"lots": 0.43})
+    assert r.status_code == 200
+    assert r.json()["risk_pct_estimate"] is None

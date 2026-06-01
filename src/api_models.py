@@ -132,10 +132,24 @@ class MarketPriceBody(BaseModel):
     """Heartbeat from the EA so the AI prompt has a current price for
     two-digit SL shorthand decoding (e.g. "ستوبك 56" -> 4856 only if we
     know gold is around 4850).
+
+    account_balance/account_equity are optional — added 2026-06-01 so the
+    GUI's pending-resize warning can express risk as a % of balance. Older
+    EA builds that POST without them keep working.
     """
     symbol: str = "XAUUSD"
     bid: float
     ask: float
+    account_balance: float | None = None
+    account_equity: float | None = None
+
+
+class ResizePendingBody(BaseModel):
+    """GUI -> API: set an explicit new lot for a pending (watching) OPEN.
+    The operator value bypasses the EA's per-trade risk cap by design; the
+    EA still clamps to broker VOLUME_MIN/STEP/MAX at placement.
+    """
+    lots: float = Field(gt=0)
 
 
 class MarketSnapshotStateBody(BaseModel):

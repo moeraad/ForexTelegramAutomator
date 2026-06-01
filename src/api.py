@@ -21,6 +21,7 @@ from src.api_models import (
     MarketSnapshotStateBody,
     PositionRecoverBody,
     PositionUpdateBody,
+    ResizePendingBody,
     ResultBody,
     TimeframeOhlcBody,
 )
@@ -44,6 +45,24 @@ trades = trades_log()
 _parse_payload = parse_payload
 _payload_has_signal_fields = payload_has_signal_fields
 _resolve_signal_payload = resolve_signal_payload
+
+
+# XAUUSD contract size in ounces: a 1.00 price move on 1.0 lot = $100.
+# Used only for the GUI resize warning — the EA does the broker-precise
+# clamp/feasibility check at placement time.
+_XAUUSD_CONTRACT_SIZE = 100.0
+
+
+def _pending_risk(
+    lots: float, entry: float, sl: float, balance: float | None
+) -> tuple[float, float | None]:
+    """Estimate the dollars-at-risk if the SL hits at `lots`, and that as a
+    percent of `balance`. `pct` is None when balance is unavailable.
+    """
+    sl_distance = abs(entry - sl)
+    dollars = sl_distance * _XAUUSD_CONTRACT_SIZE * lots
+    pct = (dollars / balance * 100.0) if balance and balance > 0 else None
+    return dollars, pct
 
 
 # Action types whose execution opens a new position and therefore makes
@@ -417,6 +436,13 @@ def build_app(
             raise HTTPException(404)
         now = datetime.now(timezone.utc).isoformat()
 
+        # A watching->watching re-post happens when the EA re-places a pending
+        # order after a resize: it updates ea_response with the new ticket but
+        # is NOT a terminal transition, so don't re-stamp executed_at or fire
+        # the terminal notification.
+        is_rewatch = body.status == "watching" and row["status"] == "watching"
+        result_executed_at = row["executed_at"] if is_rewatch else now
+
         # Resolve legs OUTSIDE the transaction so we don't hold a write lock
         # while doing trivial dict lookups. Legs are only relevant for the
         # executed branch; failed/rejected results have no position rows.
@@ -454,7 +480,7 @@ def build_app(
             cur = conn.execute(
                 "UPDATE actions SET status=?, executed_at=?, ea_response=? "
                 "WHERE id=? AND status IN ('claimed','watching')",
-                (body.status, now, body.error, action_id),
+                (body.status, result_executed_at, body.error, action_id),
             )
             claim_expired = cur.rowcount == 0
             if not claim_expired:
@@ -483,7 +509,7 @@ def build_app(
         # handles those via its existing actions.notified_at poll. Look
         # up the action's source_channel + route from the row so future
         # scope-aware bindings (Step 14) can match correctly.
-        if not claim_expired:
+        if not claim_expired and not is_rewatch:
             try:
                 from src.notification_dispatcher import dispatch_notification
                 meta = conn.execute(
@@ -1054,6 +1080,93 @@ def build_app(
             "executed_at": row["executed_at"],
         }
 
+    # Max lots accepted from the operator override. Pulled from
+    # settings.risk_budget.max_open_lots when present; otherwise a sane
+    # absolute ceiling so a fat-finger can't request 500 lots.
+    _RESIZE_MAX_LOTS_FALLBACK = 100.0
+    _BALANCE_STALE_SEC = 60
+
+    def _max_open_lots() -> float:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key='risk_budget'"
+        ).fetchone()
+        if row and row["value"]:
+            try:
+                return float(json.loads(row["value"]).get("max_open_lots")
+                             or _RESIZE_MAX_LOTS_FALLBACK)
+            except (ValueError, TypeError):
+                pass
+        return _RESIZE_MAX_LOTS_FALLBACK
+
+    def _fresh_balance() -> float | None:
+        rows = {
+            r["key"]: r["value"]
+            for r in conn.execute(
+                "SELECT key, value FROM settings WHERE key IN "
+                "('account_balance','account_at')"
+            ).fetchall()
+        }
+        bal, at = rows.get("account_balance"), rows.get("account_at")
+        if bal is None or at is None:
+            return None
+        try:
+            age = (datetime.now(timezone.utc)
+                   - datetime.fromisoformat(at)).total_seconds()
+        except ValueError:
+            return None
+        if age > _BALANCE_STALE_SEC:
+            return None
+        try:
+            return float(bal)
+        except ValueError:
+            return None
+
+    @app.post("/actions/{action_id}/resize_pending")
+    def resize_pending(action_id: int, body: ResizePendingBody):
+        """Set an explicit new lot on a pending (watching) OPEN. Writes
+        `pending_lot_override` + a monotonic `resize_seq` into the action
+        payload; the EA picks it up on its next /actions/{id} poll, deletes
+        the broker order, and re-places at the new lot. Status is unchanged.
+        """
+        if body.lots <= 0 or body.lots > _max_open_lots():
+            raise HTTPException(422, f"lots out of range: {body.lots}")
+        row = conn.execute(
+            "SELECT action_type, payload_json, status FROM actions WHERE id=?",
+            (action_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404)
+        payload = parse_payload(row["payload_json"]) or {}
+        if (row["status"] != "watching" or row["action_type"] != "OPEN"
+                or payload.get("pending") is not True):
+            raise HTTPException(
+                409,
+                f"action {action_id} is not a pending watching OPEN "
+                f"(status={row['status']}, type={row['action_type']}, "
+                f"pending={payload.get('pending')})",
+            )
+        payload["pending_lot_override"] = body.lots
+        payload["resize_seq"] = int(payload.get("resize_seq", 0)) + 1
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "UPDATE actions SET payload_json=? WHERE id=?",
+                (json.dumps(payload), action_id),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        entry = (float(payload.get("entry_low", 0)) + float(payload.get("entry_high", 0))) / 2.0
+        dollars, pct = _pending_risk(body.lots, entry, float(payload.get("sl", 0)),
+                                     _fresh_balance())
+        return {
+            "lots": body.lots,
+            "resize_seq": payload["resize_seq"],
+            "risk_dollars": dollars,
+            "risk_pct_estimate": pct,
+        }
+
     @app.get("/events/recent")
     def events_recent(limit: int = 20):
         """Recent action stream for the EA's LogPanel widget.
@@ -1228,13 +1341,19 @@ def build_app(
         # new bid with the old ask). The window is microseconds under WAL
         # but the AI prompt's MARKET block reads all three keys; an
         # inconsistent snapshot can mis-trigger the STALE marker logic.
+        rows_to_write = [
+            (f"market_{sym}_bid", str(body.bid)),
+            (f"market_{sym}_ask", str(body.ask)),
+            (f"market_{sym}_at", now),
+        ]
+        if body.account_balance is not None:
+            rows_to_write.append(("account_balance", str(body.account_balance)))
+            rows_to_write.append(("account_at", now))
+        if body.account_equity is not None:
+            rows_to_write.append(("account_equity", str(body.account_equity)))
         conn.execute("BEGIN")
         try:
-            for key, val in (
-                (f"market_{sym}_bid", str(body.bid)),
-                (f"market_{sym}_ask", str(body.ask)),
-                (f"market_{sym}_at", now),
-            ):
+            for key, val in rows_to_write:
                 conn.execute(
                     "INSERT INTO settings(key, value) VALUES(?,?) "
                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
