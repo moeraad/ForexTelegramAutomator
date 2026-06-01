@@ -1300,6 +1300,20 @@ string ExtractPayload(string obj) {
    return StringSubstr(obj, start, end - start + 1);
 }
 
+// Snap an arbitrary lot value to the symbol's volume step and clamp it to
+// the broker's min/max bounds. Used by the resize path before re-placing a
+// pending order at a new lot.
+double NormalizeVolume(string sym, double lots) {
+   double mn = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+   double mx = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
+   double st = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+   if(st <= 0) st = 0.01;
+   double v = MathFloor(lots / st) * st;
+   if(v < mn) v = mn;
+   if(v > mx) v = mx;
+   return NormalizeDouble(v, 2);
+}
+
 // Balance-based position sizing with optional risk-percentage cap.
 //
 //   lots = (ACCOUNT_BALANCE / 100) * LotsPer100Balance
@@ -4336,6 +4350,60 @@ void ManagePendingOrders() {
       string statusBody;
       string statusUrl = ApiBaseUrl + "/actions/" + IntegerToString(p.action_id);
       if(!HttpGet(statusUrl, statusBody) || statusBody == "") continue;
+
+      // Resize request? The API writes pending_lot_override + a monotonic
+      // resize_seq into the payload. Apply the latest unseen seq by
+      // delete + re-place at the new lot (same entry/SL/TP, same magic).
+      string payloadBlock = JsonField(statusBody, "payload");
+      int newSeq = (int)StringToInteger(JsonField(payloadBlock, "resize_seq"));
+      double overrideLot = StringToDouble(JsonField(payloadBlock, "pending_lot_override"));
+      if(newSeq > p.appliedResizeSeq && overrideLot > 0.0) {
+         double newLot = NormalizeVolume(Symbol_Override, overrideLot);
+         // Feasibility: ensure free margin covers the new lot BEFORE deleting
+         // the existing order, so an infeasible request never leaves us naked.
+         double marginNeeded = 0.0;
+         ENUM_ORDER_TYPE otype = p.isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+         bool feasible = OrderCalcMargin(otype, Symbol_Override, newLot, p.entry, marginNeeded)
+                         && marginNeeded <= AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+         if(!feasible) {
+            PostResult(p.action_id, "failed", 0, "resize_insufficient_margin");
+            p.appliedResizeSeq = newSeq;            // don't retry an impossible resize
+            g_pending_orders[i] = p;
+            PersistPendingOrder(p);
+            Print("CT resize REJECT action=", p.action_id, " newLot=", newLot,
+                  " marginNeeded=", marginNeeded, " — kept existing order");
+            continue;
+         }
+         if(!trade.OrderDelete(p.order_ticket)) {
+            Print("CT resize OrderDelete FAILED action=", p.action_id,
+                  " ticket=", p.order_ticket, " retcode=", trade.ResultRetcode(),
+                  " — will retry next tick");
+            continue;  // leave seq unbumped; retry next tick
+         }
+         ErasePendingOrderState(p.order_ticket);
+         RemovePendingOrder(i);                     // drop the old struct entry
+         double tpsArr[];
+         ArrayResize(tpsArr, p.tpCount);
+         for(int k = 0; k < p.tpCount; k++) tpsArr[k] = p.tps[k];
+         ulong newTicket = PlacePendingLimit(p.action_id, p.isBuy, p.entry,
+                                             p.sl, tpsArr, p.tpCount, newLot);
+         if(newTicket == 0) {
+            Print("CT resize re-place FAILED action=", p.action_id,
+                  " — old order already deleted; failure POSTed by helper");
+         } else {
+            // Stamp appliedResizeSeq on the freshly pushed struct entry so the
+            // same seq isn't applied twice.
+            int last = ArraySize(g_pending_orders) - 1;
+            if(last >= 0 && g_pending_orders[last].action_id == p.action_id) {
+               g_pending_orders[last].appliedResizeSeq = newSeq;
+               PersistPendingOrder(g_pending_orders[last]);
+            }
+            Print("CT resize OK action=", p.action_id, " newLot=", newLot,
+                  " newTicket=", newTicket, " seq=", newSeq);
+         }
+         continue;
+      }
+
       if(StringFind(statusBody, "\"status\":\"rejected\"") >= 0) {
          // Server cancelled (CANCEL_PENDING). Delete broker pending order.
          if(trade.OrderDelete(p.order_ticket)) {
