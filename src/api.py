@@ -1334,9 +1334,10 @@ def build_app(
             (f"market_{sym}_ask", str(body.ask)),
             (f"market_{sym}_at", now),
         ]
+        if body.account_balance is not None or body.account_equity is not None:
+            rows_to_write.append(("account_at", now))
         if body.account_balance is not None:
             rows_to_write.append(("account_balance", str(body.account_balance)))
-            rows_to_write.append(("account_at", now))
         if body.account_equity is not None:
             rows_to_write.append(("account_equity", str(body.account_equity)))
         conn.execute("BEGIN")

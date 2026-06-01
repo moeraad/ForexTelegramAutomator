@@ -149,7 +149,7 @@ class ResizePendingBody(BaseModel):
     The operator value bypasses the EA's per-trade risk cap by design; the
     EA still clamps to broker VOLUME_MIN/STEP/MAX at placement.
     """
-    lots: float
+    lots: float = Field(gt=0)
 
 
 class MarketSnapshotStateBody(BaseModel):

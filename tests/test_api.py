@@ -1582,10 +1582,10 @@ def test_pending_risk_pct_none_when_no_balance():
     assert pct is None
 
 
-def _insert_watching_open(conn, lots_entry=4501.49, sl=4494.26):
+def _insert_watching_open(conn, entry_price=4501.49, sl=4494.26):
     payload = {
         "symbol": "XAUUSD", "side": "BUY",
-        "entry_low": lots_entry, "entry_high": lots_entry,
+        "entry_low": entry_price, "entry_high": entry_price,
         "tps": [4544.0], "sl": sl, "pending": True, "pending_type": "limit",
     }
     cur = conn.execute(
@@ -1662,6 +1662,29 @@ def test_resize_pending_rejects_bad_lots(tmp_path):
     assert client.post(f"/actions/{aid}/resize_pending", json={"lots": 0}).status_code == 422
     assert client.post(f"/actions/{aid}/resize_pending", json={"lots": -1}).status_code == 422
     assert client.post(f"/actions/{aid}/resize_pending", json={"lots": 999}).status_code == 422
+
+
+def test_resize_pending_respects_risk_budget_cap(tmp_path):
+    conn = _setup(tmp_path)
+    conn.execute(
+        "INSERT INTO settings(key,value) VALUES('risk_budget', ?)",
+        (json.dumps({"max_open_lots": 5.0}),),
+    )
+    conn.commit()
+    aid = _insert_watching_open(conn)
+    client = TestClient(build_app(conn))
+    assert client.post(f"/actions/{aid}/resize_pending", json={"lots": 6.0}).status_code == 422
+    assert client.post(f"/actions/{aid}/resize_pending", json={"lots": 4.0}).status_code == 200
+
+
+def test_resize_pending_falls_back_when_risk_budget_unparseable(tmp_path):
+    conn = _setup(tmp_path)
+    conn.execute("INSERT INTO settings(key,value) VALUES('risk_budget','not-json')")
+    conn.commit()
+    aid = _insert_watching_open(conn)
+    client = TestClient(build_app(conn))
+    # fallback cap is 100.0, so a small lot is accepted
+    assert client.post(f"/actions/{aid}/resize_pending", json={"lots": 0.1}).status_code == 200
 
 
 def test_resize_pending_pct_none_when_balance_stale(tmp_path):
