@@ -21,8 +21,17 @@ def render_action_notification(
     reply = _reply_context_block(reply_parent_text)
     if action_type == "OPEN":
         tps = " / ".join(str(t) for t in payload.get("tps", []))
+        image_note = ""
+        if payload.get("image_corrected"):
+            reason = payload.get("image_fallback_reason", "")
+            reason_snippet = (reason[:100] + "…") if len(reason) > 100 else reason
+            image_note = (
+                f"⚠️ Values corrected from chart image\n"
+                f"   (text had: {reason_snippet})\n\n"
+            )
         return (
             f"🟢 NEW SIGNAL #{action_id}  (auto-execute {when})\n\n"
+            f"{image_note}"
             f"OPEN {payload['side']} {payload['symbol']}\n"
             f"Entry: {payload['entry_low']}–{payload['entry_high']}\n"
             f"SL:    {payload['sl']}\n"
