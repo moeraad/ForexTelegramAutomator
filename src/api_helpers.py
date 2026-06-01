@@ -267,7 +267,8 @@ def _run_orchestrator_for_incoming(
             halted=halted,
             failover_from_destination_id=body.failover_from_destination_id,
             reply_to_tg_message_id=body.reply_to_tg_message_id,
-            # TODO Task 4: image_bytes=image_bytes, has_image=(image_bytes is not None),
+            image_bytes=image_bytes,
+            has_image=(image_bytes is not None),
         )
     except Exception:
         log.exception(
