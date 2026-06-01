@@ -1488,6 +1488,37 @@ def test_recover_is_idempotent(tmp_path):
     assert n == 1
 
 
+def test_rewatch_preserves_executed_at_and_updates_ticket(tmp_path):
+    conn = _setup(tmp_path)
+    cur = conn.execute(
+        "INSERT INTO actions(action_type, payload_json, status) "
+        "VALUES('OPEN', ?, 'claimed')",
+        (json.dumps({"symbol": "XAUUSD", "side": "BUY", "pending": True}),),
+    )
+    conn.commit()
+    aid = cur.lastrowid
+    client = TestClient(build_app(conn))
+    # initial placement: claimed -> watching, stamps executed_at + ticket 111
+    r1 = client.post(f"/actions/{aid}/result",
+                     json={"status": "watching", "error": "pending_order_ticket=111"})
+    assert r1.status_code == 200
+    first = conn.execute(
+        "SELECT executed_at, ea_response FROM actions WHERE id=?", (aid,)
+    ).fetchone()
+    assert first["executed_at"] is not None
+    assert "111" in first["ea_response"]
+    # resize re-place: watching -> watching with NEW ticket 222
+    r2 = client.post(f"/actions/{aid}/result",
+                     json={"status": "watching", "error": "pending_order_ticket=222"})
+    assert r2.status_code == 200
+    second = conn.execute(
+        "SELECT executed_at, ea_response, status FROM actions WHERE id=?", (aid,)
+    ).fetchone()
+    assert second["executed_at"] == first["executed_at"]  # NOT re-stamped on re-watch
+    assert "222" in second["ea_response"]                  # new ticket reflected
+    assert second["status"] == "watching"
+
+
 def test_recover_does_not_resurrect_closed_row(tmp_path):
     """A ticket already recorded as closed must never be flipped back to open
     by a recovery POST (first-insert-wins, same rule as post_result)."""

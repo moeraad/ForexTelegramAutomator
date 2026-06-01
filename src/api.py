@@ -436,6 +436,13 @@ def build_app(
             raise HTTPException(404)
         now = datetime.now(timezone.utc).isoformat()
 
+        # A watching->watching re-post happens when the EA re-places a pending
+        # order after a resize: it updates ea_response with the new ticket but
+        # is NOT a terminal transition, so don't re-stamp executed_at or fire
+        # the terminal notification.
+        is_rewatch = body.status == "watching" and row["status"] == "watching"
+        result_executed_at = row["executed_at"] if is_rewatch else now
+
         # Resolve legs OUTSIDE the transaction so we don't hold a write lock
         # while doing trivial dict lookups. Legs are only relevant for the
         # executed branch; failed/rejected results have no position rows.
@@ -473,7 +480,7 @@ def build_app(
             cur = conn.execute(
                 "UPDATE actions SET status=?, executed_at=?, ea_response=? "
                 "WHERE id=? AND status IN ('claimed','watching')",
-                (body.status, now, body.error, action_id),
+                (body.status, result_executed_at, body.error, action_id),
             )
             claim_expired = cur.rowcount == 0
             if not claim_expired:
@@ -502,7 +509,7 @@ def build_app(
         # handles those via its existing actions.notified_at poll. Look
         # up the action's source_channel + route from the row so future
         # scope-aware bindings (Step 14) can match correctly.
-        if not claim_expired:
+        if not claim_expired and not is_rewatch:
             try:
                 from src.notification_dispatcher import dispatch_notification
                 meta = conn.execute(
