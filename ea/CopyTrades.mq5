@@ -1519,7 +1519,7 @@ double ApplyEvalSizing(long actionId, double baselineLots, string &skipReason) {
 // ticket, or 0 on failure (caller has already had a result POSTed for the
 // failure case). Shared by the initial open (DoOpen) and the resize path.
 ulong PlacePendingLimit(long id, bool isBuyP, double entryLimit, double sl,
-                        double &tps[], int tpCount, double lots) {
+                        double &tps[], int tpCount, double lots, int resizeSeq) {
    double tpFinalP = tps[tpCount - 1];
    bool okP = isBuyP
       ? trade.BuyLimit(lots, entryLimit, Symbol_Override, sl, tpFinalP,
@@ -1549,7 +1549,7 @@ ulong PlacePendingLimit(long id, bool isBuyP, double entryLimit, double sl,
    po.tpCount = tpCount;
    po.placedAt = TimeCurrent();
    po.lastStatusCheck = TimeCurrent();
-   po.appliedResizeSeq = 0;
+   po.appliedResizeSeq = resizeSeq;
    int nP = ArraySize(g_pending_orders);
    ArrayResize(g_pending_orders, nP + 1);
    g_pending_orders[nP] = po;
@@ -1665,7 +1665,7 @@ void DoOpen(long id, string payload) {
          g_stats_rejected++;
          return;
       }
-      if(PlacePendingLimit(id, isBuyP, entryLimit, sl, tps, tpCount, lotsP) == 0)
+      if(PlacePendingLimit(id, isBuyP, entryLimit, sl, tps, tpCount, lotsP, 0) == 0)
          return;  // PlacePendingLimit already POSTed the failure
       return;
    }
@@ -4363,9 +4363,15 @@ void ManagePendingOrders() {
          // the existing order, so an infeasible request never leaves us naked.
          double marginNeeded = 0.0;
          ENUM_ORDER_TYPE otype = p.isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-         bool feasible = OrderCalcMargin(otype, Symbol_Override, newLot, p.entry, marginNeeded)
-                         && marginNeeded <= AccountInfoDouble(ACCOUNT_MARGIN_FREE);
-         if(!feasible) {
+         if(!OrderCalcMargin(otype, Symbol_Override, newLot, p.entry, marginNeeded)) {
+            // Broker hasn't reported margin rates yet — can't assess. Defer to
+            // the next tick WITHOUT burning the seq or touching the existing
+            // order (mirrors CapLotsToFreeMargin's conservative pass-through).
+            Print("CT resize defer action=", p.action_id,
+                  " — OrderCalcMargin not ready; retry next tick");
+            continue;
+         }
+         if(marginNeeded > AccountInfoDouble(ACCOUNT_MARGIN_FREE)) {
             PostResult(p.action_id, "failed", 0, "resize_insufficient_margin");
             p.appliedResizeSeq = newSeq;            // don't retry an impossible resize
             g_pending_orders[i] = p;
@@ -4386,18 +4392,12 @@ void ManagePendingOrders() {
          ArrayResize(tpsArr, p.tpCount);
          for(int k = 0; k < p.tpCount; k++) tpsArr[k] = p.tps[k];
          ulong newTicket = PlacePendingLimit(p.action_id, p.isBuy, p.entry,
-                                             p.sl, tpsArr, p.tpCount, newLot);
+                                             p.sl, tpsArr, p.tpCount, newLot, newSeq);
          if(newTicket == 0) {
-            Print("CT resize re-place FAILED action=", p.action_id,
-                  " — old order already deleted; failure POSTed by helper");
+            Print("CT resize CRITICAL action=", p.action_id,
+                  " — old order deleted but re-place FAILED; no broker order "
+                  "exists, action marked failed by helper");
          } else {
-            // Stamp appliedResizeSeq on the freshly pushed struct entry so the
-            // same seq isn't applied twice.
-            int last = ArraySize(g_pending_orders) - 1;
-            if(last >= 0 && g_pending_orders[last].action_id == p.action_id) {
-               g_pending_orders[last].appliedResizeSeq = newSeq;
-               PersistPendingOrder(g_pending_orders[last]);
-            }
             Print("CT resize OK action=", p.action_id, " newLot=", newLot,
                   " newTicket=", newTicket, " seq=", newSeq);
          }
