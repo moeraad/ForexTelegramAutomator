@@ -103,6 +103,10 @@ class IncomingMessageBody(BaseModel):
     # SYSTEM STATE block — lets the AI resolve "cancel that order" etc.
     # None on normal (non-reply) messages.
     reply_to_tg_message_id: int | None = None
+    # Base64-encoded JPEG/PNG when the Telegram message included a photo.
+    # The image bytes are NOT stored in the DB; only used in-memory during
+    # AI processing for the geometric-inconsistency image fallback.
+    image_b64: str | None = None
 
 
 class PositionUpdateBody(BaseModel):

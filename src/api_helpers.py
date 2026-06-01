@@ -225,6 +225,16 @@ def _run_orchestrator_for_incoming(
                 "profile refresh failed for %s; using cached version",
                 profile.path,
             )
+    import base64 as _base64
+    image_bytes: bytes | None = None
+    if body.image_b64:
+        try:
+            image_bytes = _base64.b64decode(body.image_b64)
+        except Exception:
+            log.warning(
+                "image_b64 decode failed for tg_msg_id=%s — processing without image",
+                body.tg_message_id,
+            )
     try:
         process_message(
             conn,
@@ -246,6 +256,7 @@ def _run_orchestrator_for_incoming(
             halted=halted,
             failover_from_destination_id=body.failover_from_destination_id,
             reply_to_tg_message_id=body.reply_to_tg_message_id,
+            # TODO Task 4: image_bytes=image_bytes, has_image=(image_bytes is not None),
         )
     except Exception:
         log.exception(

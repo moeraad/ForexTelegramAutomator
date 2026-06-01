@@ -1743,3 +1743,31 @@ def test_resize_pending_pct_none_when_balance_stale(tmp_path):
     r = client.post(f"/actions/{aid}/resize_pending", json={"lots": 0.43})
     assert r.status_code == 200
     assert r.json()["risk_pct_estimate"] is None
+
+
+def test_incoming_message_body_image_b64_optional(tmp_path):
+    """Old callers that don't send image_b64 must still parse cleanly."""
+    from src.api_models import IncomingMessageBody
+    body = IncomingMessageBody(
+        channel_id="ch_test",
+        tg_chat_id=-100123,
+        tg_message_id=1,
+        text="test",
+        route_id="",
+    )
+    assert body.image_b64 is None
+
+
+def test_incoming_message_body_accepts_image_b64(tmp_path):
+    import base64
+    from src.api_models import IncomingMessageBody
+    b64 = base64.b64encode(b"fake_jpeg_bytes").decode()
+    body = IncomingMessageBody(
+        channel_id="ch_test",
+        tg_chat_id=-100123,
+        tg_message_id=1,
+        text="test",
+        route_id="",
+        image_b64=b64,
+    )
+    assert body.image_b64 == b64
