@@ -1537,3 +1537,31 @@ def test_recover_rejects_nonpositive_volume(tmp_path):
     client = TestClient(build_app(conn))
     r = client.post("/positions/recover", json=_recover_body(volume=0))
     assert r.status_code == 422  # pydantic Field(gt=0)
+
+
+def test_post_market_price_persists_balance(tmp_path):
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.post("/market/price", json={
+        "symbol": "XAUUSD", "bid": 4520.48, "ask": 4520.62,
+        "account_balance": 4340.0, "account_equity": 4351.5,
+    })
+    assert r.status_code == 200
+    rows = {row["key"]: row["value"] for row in conn.execute(
+        "SELECT key, value FROM settings WHERE key IN "
+        "('account_balance','account_equity','account_at')"
+    ).fetchall()}
+    assert rows["account_balance"] == "4340.0"
+    assert rows["account_equity"] == "4351.5"
+    assert "account_at" in rows and rows["account_at"].endswith("+00:00")
+
+
+def test_post_market_price_without_balance_is_backward_compatible(tmp_path):
+    conn = _setup(tmp_path)
+    client = TestClient(build_app(conn))
+    r = client.post("/market/price", json={"symbol": "XAUUSD", "bid": 4520.0, "ask": 4520.2})
+    assert r.status_code == 200
+    n = conn.execute(
+        "SELECT COUNT(*) AS c FROM settings WHERE key='account_balance'"
+    ).fetchone()["c"]
+    assert n == 0  # no balance key written when EA omits the fields

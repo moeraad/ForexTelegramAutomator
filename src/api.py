@@ -1228,13 +1228,19 @@ def build_app(
         # new bid with the old ask). The window is microseconds under WAL
         # but the AI prompt's MARKET block reads all three keys; an
         # inconsistent snapshot can mis-trigger the STALE marker logic.
+        rows_to_write = [
+            (f"market_{sym}_bid", str(body.bid)),
+            (f"market_{sym}_ask", str(body.ask)),
+            (f"market_{sym}_at", now),
+        ]
+        if body.account_balance is not None:
+            rows_to_write.append(("account_balance", str(body.account_balance)))
+            rows_to_write.append(("account_at", now))
+        if body.account_equity is not None:
+            rows_to_write.append(("account_equity", str(body.account_equity)))
         conn.execute("BEGIN")
         try:
-            for key, val in (
-                (f"market_{sym}_bid", str(body.bid)),
-                (f"market_{sym}_ask", str(body.ask)),
-                (f"market_{sym}_at", now),
-            ):
+            for key, val in rows_to_write:
                 conn.execute(
                     "INSERT INTO settings(key, value) VALUES(?,?) "
                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",

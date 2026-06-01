@@ -132,10 +132,16 @@ class MarketPriceBody(BaseModel):
     """Heartbeat from the EA so the AI prompt has a current price for
     two-digit SL shorthand decoding (e.g. "ستوبك 56" -> 4856 only if we
     know gold is around 4850).
+
+    account_balance/account_equity are optional — added 2026-06-01 so the
+    GUI's pending-resize warning can express risk as a % of balance. Older
+    EA builds that POST without them keep working.
     """
     symbol: str = "XAUUSD"
     bid: float
     ask: float
+    account_balance: float | None = None
+    account_equity: float | None = None
 
 
 class MarketSnapshotStateBody(BaseModel):
