@@ -250,3 +250,17 @@ class MarketCandlesBody(BaseModel):
     symbol: str = "XAUUSD"
     timeframe: Literal["M15", "H1", "H4"]
     bars: list[CandleBar] = Field(default_factory=list)
+
+
+class ManualOpenBody(BaseModel):
+    """GUI -> API: a manually placed OPEN. The GUI has already computed the
+    lot and chosen the levels on the chart; the server validates geometry
+    via validators.OpenAction and inserts at status='sent', flagged manual."""
+    symbol: str = "XAUUSD"
+    side: Literal["BUY", "SELL"]
+    entry: float
+    sl: float
+    tp: float
+    lot: float = Field(gt=0)
+    pending: bool = False
+    comment: str = "manual"
