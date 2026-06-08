@@ -124,6 +124,13 @@ input int    DashboardY              = 20;    // pixels from top
 // disable. Heartbeat is unconditional (runs even when kill switch is on).
 input int    MarketPriceHeartbeatSec = 15;
 input bool   EnableMarketSnapshot    = true;
+// Candle publishing: every CandlePublishSec seconds, POST the last
+// CandleCount OHLC bars of CandleTimeframe to /market/candles so the
+// GUI chart page has live data. Set CandlePublishEnabled=false to disable.
+input bool             CandlePublishEnabled = true;        // push OHLC candles to the GUI chart
+input ENUM_TIMEFRAMES  CandleTimeframe      = PERIOD_M15;  // timeframe to publish
+input int              CandleCount          = 200;         // bars per push
+input int              CandlePublishSec     = 5;           // publish cadence (seconds)
 // Break-even calculation: when the EA moves SL to "BE" (either via the
 // AI's MOVE_SL_BE action OR via the automated TP1-hit stage-0 move), it
 // targets a price that nets ZERO PnL after broker costs. The cost
@@ -388,6 +395,9 @@ void OnTimer() {
    // Heartbeat market price unconditionally (even when halted) — the AI
    // still needs a fresh quote to decode shorthand SL on incoming messages.
    HeartbeatMarketPrice();
+   // Publish OHLC candles for the GUI chart page. Unconditional (same
+   // rationale as HeartbeatMarketPrice — runs even when kill switch is on).
+   PublishCandles();
    // Paint the dashboard BEFORE the snapshot call. PostMarketSnapshot's
    // first invocation blocks on indicator-history loads (SMA200 on D1
    // needs 200+ daily bars; broker downloads on a fresh chart) plus the
@@ -427,6 +437,49 @@ void HeartbeatMarketPrice() {
    string resp; int status;
    HttpPostJsonWithStatus(ApiBaseUrl + "/market/price", body, resp, status);
    g_last_price_heartbeat = now;
+}
+
+// Map a timeframe enum to the string the GUI expects (M15/H1/H4).
+// Falls back to "M15" for any timeframe not explicitly listed — the
+// GUI only offers these three choices so only these three are needed.
+string TimeframeName(ENUM_TIMEFRAMES tf) {
+   if(tf == PERIOD_M15) return "M15";
+   if(tf == PERIOD_H1)  return "H1";
+   if(tf == PERIOD_H4)  return "H4";
+   return "M15";
+}
+
+// Throttled POST of recent OHLC bars to /market/candles so the GUI
+// chart page has live price data. Best-effort: failures are silent.
+void PublishCandles() {
+   if(!CandlePublishEnabled) return;
+   static datetime _last_candle_publish = 0;
+   datetime now = TimeCurrent();
+   if(now - _last_candle_publish < CandlePublishSec) return;
+   _last_candle_publish = now;
+
+   MqlRates rates[];
+   int got = CopyRates(Symbol_Override, CandleTimeframe, 0, CandleCount, rates);
+   if(got <= 0) return;
+
+   string bars = "[";
+   for(int i = 0; i < got; i++) {
+      if(i > 0) bars += ",";
+      string t = TimeToString(rates[i].time, TIME_DATE|TIME_SECONDS);
+      StringReplace(t, ".", "-");
+      StringReplace(t, " ", "T");
+      bars += StringFormat(
+         "{\"t\":\"%s+00:00\",\"o\":%.2f,\"h\":%.2f,\"l\":%.2f,\"c\":%.2f,\"v\":%d}",
+         t, rates[i].open, rates[i].high, rates[i].low, rates[i].close,
+         (int)rates[i].tick_volume);
+   }
+   bars += "]";
+
+   string body = StringFormat(
+      "{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"bars\":%s}",
+      Symbol_Override, TimeframeName(CandleTimeframe), bars);
+   string resp; int status;
+   HttpPostJsonWithStatus(ApiBaseUrl + "/market/candles", body, resp, status);
 }
 
 // Push M15/H1/H4 OHLC + ATR(14) to /market/snapshot. Consumed by the
@@ -1588,6 +1641,13 @@ void DoOpen(long id, string payload) {
    if(tpCount == 0) { PostResult(id, "failed", 0, "no_tps"); return; }
    if(tpCount > 3) tpCount = 3;  // strategy handles at most 3 stages
 
+   // Manual trades (submitted via the GUI) carry an explicit, GUI-computed
+   // lot size in the "lot" payload field. When present (> 0), it overrides
+   // LotsFromRisk/LotsFromBalance sizing. The broker's min/step/max limits
+   // and the free-margin cap in PlacePendingLimit / trade.Buy still apply.
+   double manualLot = StringToDouble(JsonField(payload, "lot"));
+   bool   hasManualLot = (manualLot > 0.0);
+
    // Phase 5: pending-limit flow. Channel-style "buy limit X SL Y Tp Z"
    // signals carry `pending: true` in the payload. EA places a real
    // broker-side BuyLimit / SellLimit at the entry-zone midpoint (or
@@ -1652,14 +1712,14 @@ void DoOpen(long id, string payload) {
       // for ladder synthesis so the stored PendingOrder.tps[] is ready
       // for RegisterPlan when ManagePendingOrders detects the fill.
       tpCount = MaybeSynthesizeLadder(isBuyP, entryLimit, sl, tps);
-      double lotsP = LotsFromRisk(sl, entryLimit);
+      double lotsP = hasManualLot ? manualLot : LotsFromRisk(sl, entryLimit);
       if(lotsP <= 0.0) {
          PostResult(id, "rejected", 0, "sl_too_wide_for_max_risk_pct");
          g_stats_rejected++;
          return;
       }
       string sizingSkipP = "";
-      lotsP = ApplyEvalSizing(id, lotsP, sizingSkipP);
+      if(!hasManualLot) lotsP = ApplyEvalSizing(id, lotsP, sizingSkipP);
       if(sizingSkipP != "") {
          PostResult(id, "rejected", 0, sizingSkipP);
          g_stats_rejected++;
@@ -1742,7 +1802,7 @@ void DoOpen(long id, string payload) {
 
    // Single full-lots position. Final TP set on MT5 so the last leg auto-closes
    // without EA involvement; intermediate TPs are handled by ManagePlans().
-   double lotsTotal = LotsFromRisk(sl, entry);
+   double lotsTotal = hasManualLot ? manualLot : LotsFromRisk(sl, entry);
    if(lotsTotal <= 0.0) {
       // Signal's SL is too wide for the configured per-trade risk cap
       // (MaxSlLossPercent). LotsFromRisk already logged the details.
@@ -1751,7 +1811,7 @@ void DoOpen(long id, string payload) {
       return;
    }
    string sizingSkipM = "";
-   lotsTotal = ApplyEvalSizing(id, lotsTotal, sizingSkipM);
+   if(!hasManualLot) lotsTotal = ApplyEvalSizing(id, lotsTotal, sizingSkipM);
    if(sizingSkipM != "") {
       PostResult(id, "rejected", 0, sizingSkipM);
       g_stats_rejected++;
