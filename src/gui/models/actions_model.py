@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import json as _json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,6 +13,17 @@ from pathlib import Path
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
+
+
+def manual_badge_text(payload_json: str | None) -> str:
+    """Return 'MANUAL' when the action payload is a GUI-placed manual trade."""
+    if not payload_json:
+        return ""
+    try:
+        p = _json.loads(payload_json)
+    except (ValueError, TypeError):
+        return ""
+    return "MANUAL" if isinstance(p, dict) and p.get("manual") else ""
 
 
 COL_ID = 0
@@ -477,7 +489,11 @@ class ActionsModel(QAbstractTableModel):
             if col == COL_AGE:
                 return _age_text(row.created_at)
             if col == COL_TYPE:
-                return row.action_type
+                badge = manual_badge_text(
+                    _json.dumps(row.payload) if row.payload else None
+                )
+                type_str = row.action_type
+                return f"{type_str}  [{badge}]" if badge else type_str
             if col == COL_SIDE:
                 if row.side in ("BUY", "SELL"):
                     return "↑ BUY" if row.side == "BUY" else "↓ SELL"
