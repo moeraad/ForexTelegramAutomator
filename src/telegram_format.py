@@ -1,3 +1,8 @@
+def render_manual_prefix(payload: dict) -> str:
+    """Prefix manual (GUI-placed) trades so DMs are unambiguous."""
+    return "🛠 MANUAL " if isinstance(payload, dict) and payload.get("manual") else ""
+
+
 def _reply_context_block(reply_parent_text: str | None) -> str:
     """Return a short '↳ in reply to' block for DM notifications, or
     an empty string when the action's source message wasn't a reply or
@@ -30,7 +35,7 @@ def render_action_notification(
                 f"   (text had: {reason_snippet})\n\n"
             )
         return (
-            f"🟢 NEW SIGNAL #{action_id}  (auto-execute {when})\n\n"
+            f"{render_manual_prefix(payload)}🟢 NEW SIGNAL #{action_id}  (auto-execute {when})\n\n"
             f"{image_note}"
             f"OPEN {payload['side']} {payload['symbol']}\n"
             f"Entry: {payload['entry_low']}–{payload['entry_high']}\n"

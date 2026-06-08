@@ -118,3 +118,10 @@ def test_image_corrected_note_shows_original_text():
         source_text="test", auto_execute_delay_sec=0,
     )
     assert "inconsistent" in text.lower() or "wrong side" in text.lower() or "below entry" in text.lower()
+
+
+def test_manual_trade_gets_prefix():
+    from src.telegram_format import render_manual_prefix
+    assert render_manual_prefix({"manual": True}) == "🛠 MANUAL "
+    assert render_manual_prefix({}) == ""
+    assert render_manual_prefix({"manual": False}) == ""
