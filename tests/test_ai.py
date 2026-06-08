@@ -166,3 +166,28 @@ def test_render_triage_prompt_uses_channel_triggers(tmp_path, monkeypatch):
     assert _SYNTH_SENTINELS["noise_patterns"] in rendered
     # Universal triage rules still present.
     assert "Direction words" in rendered or "UNIVERSAL" in rendered.upper()
+
+
+def test_system_prompt_cancel_pending_stale_parent_exception(tmp_path, monkeypatch):
+    """CANCEL_PENDING stale-parent exception must be present in the rendered
+    system prompt.
+
+    Root cause of 2026-06-03 incident: channel sent "This pending order close"
+    as a reply to an OLD message (not the signal). The AI saw the reply parent
+    was not in SYSTEM STATE and emitted ALERT instead of CANCEL_PENDING — even
+    though a [watching] OPEN was visible in PENDING OPEN SIGNALS.
+
+    The fix adds an explicit exception: when the message body contains
+    cancellation vocabulary AND a watching OPEN exists, emit CANCEL_PENDING
+    regardless of whether the reply parent is stale.
+    """
+    p = _write_synth_profile(tmp_path)
+    from src import ai
+    monkeypatch.setattr(ai, "_resolve_profile_path", lambda name=None: p)
+    rendered = ai._render_system_prompt()
+
+    # Exception clause must be present so the AI knows to override the
+    # stale-parent fallback for cancellation requests.
+    assert "Stale-parent exception" in rendered
+    assert "watching" in rendered
+    assert "CANCEL_PENDING" in rendered

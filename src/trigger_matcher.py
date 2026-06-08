@@ -967,6 +967,8 @@ def _read_profile(path: Path) -> tuple[list[TriggerRule], str]:
     for i, t in enumerate(raw_triggers):
         if not isinstance(t, dict):
             continue
+        if not t.get("enabled", True):
+            continue
         phrase = (t.get("phrase") or "").strip()
         if not phrase:
             continue
@@ -1231,6 +1233,8 @@ def _parse_raw_triggers(raw_triggers: list[dict]) -> list[TriggerRule]:
     out: list[TriggerRule] = []
     for t in raw_triggers:
         if not isinstance(t, dict):
+            continue
+        if not t.get("enabled", True):
             continue
         phrase = (t.get("phrase") or "").strip()
         if not phrase:

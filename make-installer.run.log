@@ -1,14 +1,12 @@
-iscc: C:\Program Files (x86)\Inno Setup 6\ISCC.exe
-[1/2] Running PyInstaller...
-227 INFO: PyInstaller: 6.20.0, contrib hooks: 2026.5
-227 INFO: Python: 3.13.9
-273 INFO: Platform: Windows-11-10.0.26200-SP0
-273 INFO: Python environment: C:\Users\Administrator\Documents\projects\copytrades\.venv
-279 INFO: Removing temporary files and cleaning cache in C:\Users\Administrator\AppData\Local\pyinstaller
-1176 WARNING: Failed to collect submodules for 'pyqtgraph.opengl' because importing 'pyqtgraph.opengl' raised: ModuleNotFoundError: No module named 'OpenGL'
-547 INFO: Failed to load SSL library: <class 'OSError'> (no library called "ssl" found)
-548 INFO: cryptg module not installed and libssl not found, falling back to (slower) Python encryption
-10676 INFO: Module search paths (PYTHONPATH):
+231 INFO: PyInstaller: 6.20.0, contrib hooks: 2026.5
+232 INFO: Python: 3.13.9
+299 INFO: Platform: Windows-11-10.0.26200-SP0
+299 INFO: Python environment: C:\Users\Administrator\Documents\projects\copytrades\.venv
+310 INFO: Removing temporary files and cleaning cache in C:\Users\Administrator\AppData\Local\pyinstaller
+942 WARNING: Failed to collect submodules for 'pyqtgraph.opengl' because importing 'pyqtgraph.opengl' raised: ModuleNotFoundError: No module named 'OpenGL'
+408 INFO: Failed to load SSL library: <class 'OSError'> (no library called "ssl" found)
+409 INFO: cryptg module not installed and libssl not found, falling back to (slower) Python encryption
+11424 INFO: Module search paths (PYTHONPATH):
 ['C:\\Users\\Administrator\\Documents\\projects\\copytrades',
  'C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python313\\python313.zip',
  'C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python313\\DLLs',
@@ -21,303 +19,302 @@ iscc: C:\Program Files (x86)\Inno Setup 6\ISCC.exe
  'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\win32\\lib',
  'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\Pythonwin',
  'C:\\Users\\Administrator\\Documents\\projects\\copytrades']
-11488 INFO: Appending 'binaries' from .spec
-11488 INFO: Appending 'datas' from .spec
-11489 INFO: checking Analysis
-11489 INFO: Building Analysis because Analysis-00.toc is non existent
-11489 INFO: Looking for Python shared library...
-11489 INFO: Using Python shared library: C:\Users\Administrator\AppData\Local\Programs\Python\Python313\python313.dll
-11489 INFO: Running Analysis Analysis-00.toc
-11489 INFO: Target bytecode optimization level: 0
-11490 INFO: Initializing module dependency graph...
-11491 INFO: Initializing module graph hook caches...
-11520 INFO: Analyzing modules for base_library.zip ...
-14294 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-17037 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-18468 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-19058 INFO: Caching module dependency graph...
-19117 INFO: Analyzing C:\Users\Administrator\Documents\projects\copytrades\gui_launcher.py
-19187 INFO: Processing standard module hook 'hook-sqlite3.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-20052 INFO: Processing standard module hook 'hook-anyio.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-20984 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
-20986 INFO: SetuptoolsInfo: initializing cached setuptools info...
-22368 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-22699 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-23201 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-24381 INFO: Processing standard module hook 'hook-pydantic.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-25104 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-25400 INFO: Processing standard module hook 'hook-rich.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-26488 INFO: Processing standard module hook 'hook-pygments.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-29755 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-30531 INFO: Processing standard module hook 'hook-zoneinfo.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-33849 INFO: Processing standard module hook 'hook-certifi.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-35348 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-40389 INFO: Processing standard module hook 'hook-websockets.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-41939 INFO: Processing standard module hook 'hook-numpy.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-45715 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-46340 INFO: Processing standard module hook 'hook-pandas.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-51193 INFO: Processing standard module hook 'hook-pandas.io.formats.style.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-54335 INFO: Processing standard module hook 'hook-pandas.plotting.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-55161 INFO: Processing standard module hook 'hook-dateutil.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-55402 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
-57145 INFO: Processing standard module hook 'hook-pandas.io.clipboard.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-57417 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-57447 INFO: Processing standard module hook 'hook-xml.dom.domreg.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-58006 INFO: Processing standard module hook 'hook-pytest.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-58369 INFO: Processing standard module hook 'hook-py.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-58677 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
-58897 INFO: Processing pre-safe-import-module hook 'hook-tomli.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
-58897 INFO: Setuptools: 'tomli' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.tomli'!
-58905 INFO: Processing standard module hook 'hook-setuptools.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-58923 INFO: Processing pre-safe-import-module hook 'hook-distutils.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
-58965 INFO: Processing pre-safe-import-module hook 'hook-jaraco.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
-58966 INFO: Setuptools: 'jaraco' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.jaraco'!
-58980 INFO: Processing pre-safe-import-module hook 'hook-more_itertools.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
-58980 INFO: Setuptools: 'more_itertools' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.more_itertools'!
-59802 INFO: Processing standard module hook 'hook-setuptools._vendor.jaraco.text.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-59805 INFO: Processing pre-safe-import-module hook 'hook-importlib_resources.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
-59821 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
-59822 INFO: Setuptools: 'backports' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.backports'!
-60190 INFO: Processing pre-safe-import-module hook 'hook-importlib_metadata.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
-60191 INFO: Setuptools: 'importlib_metadata' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.importlib_metadata'!
-60241 INFO: Processing standard module hook 'hook-setuptools._vendor.importlib_metadata.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-60286 INFO: Processing pre-safe-import-module hook 'hook-zipp.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
-60287 INFO: Setuptools: 'zipp' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.zipp'!
-61323 INFO: Processing pre-safe-import-module hook 'hook-wheel.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
-61324 INFO: Setuptools: 'wheel' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.wheel'!
-64259 INFO: Processing standard module hook 'hook-uvicorn.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-65355 INFO: Processing standard module hook 'hook-pytz.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-68701 INFO: Processing pre-safe-import-module hook 'hook-platformdirs.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
-68715 INFO: Processing standard module hook 'hook-platformdirs.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-70014 INFO: Processing standard module hook 'hook-urllib3.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-77603 INFO: Processing standard module hook 'hook-PySide6.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-77872 INFO: Processing standard module hook 'hook-shiboken6.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-78085 INFO: Processing standard module hook 'hook-PySide6.QtNetwork.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-86384 INFO: Processing standard module hook 'hook-PySide6.QtCore.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-94020 INFO: Processing standard module hook 'hook-PySide6.QtGui.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-132376 INFO: Processing standard module hook 'hook-PySide6.QtWidgets.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-139851 INFO: Processing standard module hook 'hook-PySide6.QtSvg.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-141813 INFO: Processing standard module hook 'hook-PySide6.QtXml.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-144322 INFO: Processing standard module hook 'hook-PySide6.QtSvgWidgets.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-148009 INFO: Processing standard module hook 'hook-PySide6.QtCharts.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-151675 INFO: Processing standard module hook 'hook-pyqtgraph.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-776 WARNING: Failed to collect submodules for 'pyqtgraph.opengl' because importing 'pyqtgraph.opengl' raised: ModuleNotFoundError: No module named 'OpenGL'
-153141 INFO: hook-pyqtgraph: selected 'PySide6' as Qt bindings because hook for 'PySide6' has been run before.
-153186 INFO: Processing standard module hook 'hook-PySide6.QtOpenGLWidgets.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-155317 INFO: Processing standard module hook 'hook-PySide6.QtTest.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-160894 INFO: Analyzing hidden import 'src.gui.windows.splash_window'
-160903 INFO: Analyzing hidden import 'src.gui.views._profile_readonly_widgets'
-160926 INFO: Analyzing hidden import 'src.gui.helpers._helper_log'
-160930 INFO: Analyzing hidden import 'src.gui.helpers.bootstrap_nssm_install'
-160933 INFO: Analyzing hidden import 'src.gui.helpers.bootstrap_services_install'
-160942 INFO: Analyzing hidden import 'src.gui.helpers.bootstrap_services_uninstall'
-160947 INFO: Analyzing hidden import 'src.gui.helpers.bootstrap_v2_install'
-160954 INFO: Analyzing hidden import 'anthropic.lib.bedrock._stream'
-160957 INFO: Analyzing hidden import 'anthropic.lib.tools.mcp'
-160972 INFO: Analyzing hidden import 'anthropic.tools'
-160976 INFO: Analyzing hidden import 'openai.__main__'
-161242 INFO: Analyzing hidden import 'openai.helpers'
-161284 INFO: Analyzing hidden import 'openai.types.beta.chat'
-161286 INFO: Analyzing hidden import 'openai.types.containers.files'
-161289 INFO: Analyzing hidden import 'openai.types.skills.versions'
-161290 INFO: Analyzing hidden import 'telegram.__main__'
-161294 INFO: Analyzing hidden import 'telegram._utils.warnings_transition'
-161298 INFO: Analyzing hidden import 'fastapi.__main__'
-161300 INFO: Analyzing hidden import 'fastapi.middleware.cors'
-161310 INFO: Analyzing hidden import 'fastapi.middleware.gzip'
-161320 INFO: Analyzing hidden import 'fastapi.middleware.httpsredirect'
-161323 INFO: Analyzing hidden import 'fastapi.middleware.trustedhost'
-161328 INFO: Analyzing hidden import 'fastapi.middleware.wsgi'
-161338 INFO: Analyzing hidden import 'fastapi.staticfiles'
-161349 INFO: Analyzing hidden import 'fastapi.templating'
-161356 INFO: Analyzing hidden import 'fastapi.testclient'
-161389 INFO: Analyzing hidden import 'uvicorn.__main__'
-161390 INFO: Analyzing hidden import 'uvicorn.lifespan'
-161391 INFO: Analyzing hidden import 'uvicorn.lifespan.off'
-161392 INFO: Analyzing hidden import 'uvicorn.lifespan.on'
-161399 INFO: Analyzing hidden import 'uvicorn.loops'
-161400 INFO: Analyzing hidden import 'uvicorn.loops.asyncio'
-161402 INFO: Analyzing hidden import 'uvicorn.loops.auto'
-161405 INFO: Analyzing hidden import 'uvicorn.protocols.http.auto'
-161406 INFO: Analyzing hidden import 'uvicorn.protocols.websockets.auto'
-161407 INFO: Analyzing hidden import 'uvicorn.workers'
-161413 INFO: Analyzing hidden import 'pyqtgraph.PlotData'
-161416 INFO: Analyzing hidden import 'pyqtgraph.configfile'
-161429 INFO: Analyzing hidden import 'pyqtgraph.dockarea'
-161486 INFO: Analyzing hidden import 'pyqtgraph.examples'
-161517 INFO: Analyzing hidden import 'pyqtgraph.examples.Arrow'
-161521 INFO: Analyzing hidden import 'pyqtgraph.examples.AxisItem_label_overlap'
-161525 INFO: Analyzing hidden import 'pyqtgraph.examples.BarGraphItem'
-161528 INFO: Analyzing hidden import 'pyqtgraph.examples.BoxplotItem'
-161531 INFO: Analyzing hidden import 'pyqtgraph.examples.CLIexample'
-161532 INFO: Analyzing hidden import 'pyqtgraph.examples.ColorBarItem'
-161538 INFO: Analyzing hidden import 'pyqtgraph.examples.ColorButton'
-161539 INFO: Analyzing hidden import 'pyqtgraph.examples.ColorGradientPlots'
-161548 INFO: Analyzing hidden import 'pyqtgraph.examples.ConsoleWidget'
-161549 INFO: Analyzing hidden import 'pyqtgraph.examples.CustomGraphItem'
-161555 INFO: Analyzing hidden import 'pyqtgraph.examples.DataSlicing'
-161559 INFO: Analyzing hidden import 'pyqtgraph.examples.DataTreeWidget'
-161561 INFO: Analyzing hidden import 'pyqtgraph.examples.DateAxisItem'
-161563 INFO: Analyzing hidden import 'pyqtgraph.examples.DateAxisItem_QtDesigner'
-161566 INFO: Analyzing hidden import 'pyqtgraph.examples.DiffTreeWidget'
-161568 INFO: Analyzing hidden import 'pyqtgraph.examples.Draw'
-161570 INFO: Analyzing hidden import 'pyqtgraph.examples.ErrorBarItem'
-161571 INFO: Analyzing hidden import 'pyqtgraph.examples.FillBetweenItem'
-161575 INFO: Analyzing hidden import 'pyqtgraph.examples.Flowchart'
-161760 INFO: Analyzing hidden import 'pyqtgraph.examples.FlowchartCustomNode'
-161765 INFO: Analyzing hidden import 'pyqtgraph.examples.GLBarGraphItem'
-161994 INFO: Analyzing hidden import 'pyqtgraph.examples.GLGradientLegendItem'
-161997 INFO: Analyzing hidden import 'pyqtgraph.examples.GLGraphItem'
-161999 INFO: Analyzing hidden import 'pyqtgraph.examples.GLImageItem'
-162003 INFO: Analyzing hidden import 'pyqtgraph.examples.GLIsosurface'
-162006 INFO: Analyzing hidden import 'pyqtgraph.examples.GLLinePlotItem'
-162009 INFO: Analyzing hidden import 'pyqtgraph.examples.GLMeshItem'
-162015 INFO: Analyzing hidden import 'pyqtgraph.examples.GLPainterItem'
-162021 INFO: Analyzing hidden import 'pyqtgraph.examples.GLScatterPlotItem'
-162027 INFO: Analyzing hidden import 'pyqtgraph.examples.GLSurfacePlot'
-162033 INFO: Analyzing hidden import 'pyqtgraph.examples.GLTextItem'
-162037 INFO: Analyzing hidden import 'pyqtgraph.examples.GLViewWidget'
-162040 INFO: Analyzing hidden import 'pyqtgraph.examples.GLVolumeItem'
-162044 INFO: Analyzing hidden import 'pyqtgraph.examples.GLshaders'
-162048 INFO: Analyzing hidden import 'pyqtgraph.examples.GradientEditor'
-162049 INFO: Analyzing hidden import 'pyqtgraph.examples.GradientWidget'
-162052 INFO: Analyzing hidden import 'pyqtgraph.examples.GraphItem'
-162054 INFO: Analyzing hidden import 'pyqtgraph.examples.GraphicsLayout'
-162058 INFO: Analyzing hidden import 'pyqtgraph.examples.GraphicsScene'
-162061 INFO: Analyzing hidden import 'pyqtgraph.examples.HistogramLUT'
-162064 INFO: Analyzing hidden import 'pyqtgraph.examples.ImageItem'
-162066 INFO: Analyzing hidden import 'pyqtgraph.examples.ImageView'
-162070 INFO: Analyzing hidden import 'pyqtgraph.examples.InfiniteLine'
-162073 INFO: Analyzing hidden import 'pyqtgraph.examples.InteractiveParameter'
-162077 INFO: Analyzing hidden import 'pyqtgraph.examples.JoystickButton'
-162080 INFO: Analyzing hidden import 'pyqtgraph.examples.Legend'
-162085 INFO: Analyzing hidden import 'pyqtgraph.examples.LogPlotTest'
-162087 INFO: Analyzing hidden import 'pyqtgraph.examples.MatrixDisplayExample'
-162090 INFO: Analyzing hidden import 'pyqtgraph.examples.MouseSelection'
-162093 INFO: Analyzing hidden import 'pyqtgraph.examples.MultiDataPlot'
-162098 INFO: Analyzing hidden import 'pyqtgraph.examples.MultiPlotSpeedTest'
-162102 INFO: Analyzing hidden import 'pyqtgraph.examples.MultiplePlotAxes'
-162105 INFO: Analyzing hidden import 'pyqtgraph.examples.NonUniformImage'
-162118 INFO: Analyzing hidden import 'pyqtgraph.examples.PColorMeshItem'
-162124 INFO: Analyzing hidden import 'pyqtgraph.examples.PanningPlot'
-162126 INFO: Analyzing hidden import 'pyqtgraph.examples.PlotAutoRange'
-162130 INFO: Analyzing hidden import 'pyqtgraph.examples.PlotSpeedTest'
-162138 INFO: Analyzing hidden import 'pyqtgraph.examples.PlotWidget'
-162143 INFO: Analyzing hidden import 'pyqtgraph.examples.Plotting'
-162148 INFO: Analyzing hidden import 'pyqtgraph.examples.ProgressDialog'
-162151 INFO: Analyzing hidden import 'pyqtgraph.examples.ROIExamples'
-162160 INFO: Analyzing hidden import 'pyqtgraph.examples.ROItypes'
-162167 INFO: Analyzing hidden import 'pyqtgraph.examples.RemoteGraphicsView'
-162169 INFO: Analyzing hidden import 'pyqtgraph.examples.RemoteSpeedTest'
-162174 INFO: Analyzing hidden import 'pyqtgraph.examples.RunExampleApp'
-162176 INFO: Analyzing hidden import 'pyqtgraph.examples.ScaleBar'
-162178 INFO: Analyzing hidden import 'pyqtgraph.examples.ScatterPlot'
-162187 INFO: Analyzing hidden import 'pyqtgraph.examples.ScatterPlotSpeedTest'
-162196 INFO: Analyzing hidden import 'pyqtgraph.examples.ScatterPlotWidget'
-162201 INFO: Analyzing hidden import 'pyqtgraph.examples.SimplePlot'
-162202 INFO: Analyzing hidden import 'pyqtgraph.examples.SpinBox'
-162207 INFO: Analyzing hidden import 'pyqtgraph.examples.Symbols'
-162212 INFO: Analyzing hidden import 'pyqtgraph.examples.TableWidget'
-162214 INFO: Analyzing hidden import 'pyqtgraph.examples.TreeWidget'
-162217 INFO: Analyzing hidden import 'pyqtgraph.examples.VideoSpeedTest'
-162235 INFO: Analyzing hidden import 'pyqtgraph.examples.VideoTemplate_generic'
-162255 INFO: Analyzing hidden import 'pyqtgraph.examples.ViewBox'
-162264 INFO: Analyzing hidden import 'pyqtgraph.examples.ViewBoxFeatures'
-162269 INFO: Analyzing hidden import 'pyqtgraph.examples.ViewLimits'
-162271 INFO: Analyzing hidden import 'pyqtgraph.examples.__main__'
-162272 INFO: Analyzing hidden import 'pyqtgraph.examples._buildParamTypes'
-162281 INFO: Analyzing hidden import 'pyqtgraph.examples._paramtreecfg'
-162286 INFO: Analyzing hidden import 'pyqtgraph.examples.beeswarm'
-162289 INFO: Analyzing hidden import 'pyqtgraph.examples.colorMaps'
-162294 INFO: Analyzing hidden import 'pyqtgraph.examples.colorMapsLinearized'
-162301 INFO: Analyzing hidden import 'pyqtgraph.examples.console_exception_inspection'
-162310 INFO: Analyzing hidden import 'pyqtgraph.examples.contextMenu'
-162317 INFO: Analyzing hidden import 'pyqtgraph.examples.crosshair'
-162323 INFO: Analyzing hidden import 'pyqtgraph.examples.customGraphicsItem'
-162327 INFO: Analyzing hidden import 'pyqtgraph.examples.customPlot'
-162334 INFO: Analyzing hidden import 'pyqtgraph.examples.designerExample'
-162337 INFO: Analyzing hidden import 'pyqtgraph.examples.dockarea'
-162342 INFO: Analyzing hidden import 'pyqtgraph.examples.exampleLoaderTemplate_generic'
-162349 INFO: Analyzing hidden import 'pyqtgraph.examples.fractal'
-162356 INFO: Analyzing hidden import 'pyqtgraph.examples.glow'
-162364 INFO: Analyzing hidden import 'pyqtgraph.examples.hdf5'
-162372 INFO: Analyzing hidden import 'pyqtgraph.examples.histogram'
-162375 INFO: Analyzing hidden import 'pyqtgraph.examples.imageAnalysis'
-162381 INFO: Analyzing hidden import 'pyqtgraph.examples.infiniteline_performance'
-162384 INFO: Analyzing hidden import 'pyqtgraph.examples.isocurve'
-162388 INFO: Analyzing hidden import 'pyqtgraph.examples.jupyter_console_example'
-162394 INFO: Analyzing hidden import 'pyqtgraph.examples.linkedViews'
-162396 INFO: Analyzing hidden import 'pyqtgraph.examples.logAxis'
-162400 INFO: Analyzing hidden import 'pyqtgraph.examples.multiplePlotSpeedTest'
-162405 INFO: Analyzing hidden import 'pyqtgraph.examples.multiprocess'
-162409 INFO: Analyzing hidden import 'pyqtgraph.examples.optics'
-162442 INFO: Analyzing hidden import 'pyqtgraph.examples.optics_demos'
-162452 INFO: Analyzing hidden import 'pyqtgraph.examples.parallelize'
-162456 INFO: Analyzing hidden import 'pyqtgraph.examples.parametertree'
-162465 INFO: Analyzing hidden import 'pyqtgraph.examples.relativity'
-162513 INFO: Analyzing hidden import 'pyqtgraph.examples.relativity_demo'
-162515 INFO: Analyzing hidden import 'pyqtgraph.examples.scrollingPlots'
-162521 INFO: Analyzing hidden import 'pyqtgraph.examples.syntax'
-162533 INFO: Analyzing hidden import 'pyqtgraph.examples.template'
-162534 INFO: Analyzing hidden import 'pyqtgraph.examples.test_examples'
-162549 INFO: Analyzing hidden import 'pyqtgraph.examples.text'
-162552 INFO: Analyzing hidden import 'pyqtgraph.examples.verlet_chain'
-162565 INFO: Analyzing hidden import 'pyqtgraph.examples.verlet_chain_demo'
-162573 INFO: Analyzing hidden import 'pyqtgraph.frozenSupport'
-162578 INFO: Analyzing hidden import 'pyqtgraph.multiprocess.bootstrap'
-162581 INFO: Analyzing hidden import 'pyqtgraph.util.garbage_collector'
-162585 INFO: Analyzing hidden import 'pyqtgraph.util.get_resolution'
-162587 INFO: Analyzing hidden import 'pyqtgraph.util.glinfo'
-162591 INFO: Analyzing hidden import 'telethon.sync'
-162596 INFO: Processing module hooks (post-graph stage)...
-168138 INFO: Processing standard module hook 'hook-PySide6.QtOpenGL.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-174876 INFO: Processing standard module hook 'hook-tzdata.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
-175479 INFO: Performing binary vs. data reclassification (1451 entries)
-175785 INFO: Looking for ctypes DLLs
-175855 WARNING: Ignoring AppKit.framework/AppKit imported from C:\Users\Administrator\Documents\projects\copytrades\.venv\Lib\site-packages\darkdetect\_mac_detect.py - only basenames are supported with ctypes imports!
-175925 INFO: Analyzing run-time hooks ...
-175945 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
-175949 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
-175953 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
-175957 INFO: Including run-time hook 'pyi_rth_setuptools.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
-175959 INFO: Including run-time hook 'pyi_rth_pyside6.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
-175963 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
-175965 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
-175968 INFO: Including run-time hook 'pyi_rth_pyqtgraph_multiprocess.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks'
-176066 INFO: Creating base_library.zip...
-176096 INFO: Looking for dynamic libraries
+12060 INFO: Appending 'binaries' from .spec
+12060 INFO: Appending 'datas' from .spec
+12060 INFO: checking Analysis
+12061 INFO: Building Analysis because Analysis-00.toc is non existent
+12061 INFO: Looking for Python shared library...
+12061 INFO: Using Python shared library: C:\Users\Administrator\AppData\Local\Programs\Python\Python313\python313.dll
+12061 INFO: Running Analysis Analysis-00.toc
+12061 INFO: Target bytecode optimization level: 0
+12061 INFO: Initializing module dependency graph...
+12063 INFO: Initializing module graph hook caches...
+12089 INFO: Analyzing modules for base_library.zip ...
+14143 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+16793 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+18110 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+18677 INFO: Caching module dependency graph...
+18725 INFO: Analyzing C:\Users\Administrator\Documents\projects\copytrades\gui_launcher.py
+18785 INFO: Processing standard module hook 'hook-sqlite3.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+19504 INFO: Processing standard module hook 'hook-anyio.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+20367 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+20368 INFO: SetuptoolsInfo: initializing cached setuptools info...
+21815 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+22208 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+22812 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+25083 INFO: Processing standard module hook 'hook-pydantic.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+26156 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+26602 INFO: Processing standard module hook 'hook-rich.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+28136 INFO: Processing standard module hook 'hook-pygments.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+32468 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+33264 INFO: Processing standard module hook 'hook-zoneinfo.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+37652 INFO: Processing standard module hook 'hook-certifi.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+38888 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+45564 INFO: Processing standard module hook 'hook-websockets.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+47700 INFO: Processing standard module hook 'hook-numpy.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+52572 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+53322 INFO: Processing standard module hook 'hook-pandas.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+60608 INFO: Processing standard module hook 'hook-pandas.io.formats.style.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+65309 INFO: Processing standard module hook 'hook-pandas.plotting.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+66690 INFO: Processing standard module hook 'hook-dateutil.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+66916 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+69393 INFO: Processing standard module hook 'hook-pandas.io.clipboard.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+69730 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+69747 INFO: Processing standard module hook 'hook-xml.dom.domreg.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+71735 INFO: Processing standard module hook 'hook-pytest.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+72765 INFO: Processing standard module hook 'hook-py.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+74059 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+75417 INFO: Processing pre-safe-import-module hook 'hook-tomli.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+75418 INFO: Setuptools: 'tomli' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.tomli'!
+75443 INFO: Processing standard module hook 'hook-setuptools.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+75504 INFO: Processing pre-safe-import-module hook 'hook-distutils.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+75680 INFO: Processing pre-safe-import-module hook 'hook-jaraco.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+75682 INFO: Setuptools: 'jaraco' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.jaraco'!
+75724 INFO: Processing pre-safe-import-module hook 'hook-more_itertools.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+75726 INFO: Setuptools: 'more_itertools' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.more_itertools'!
+76769 INFO: Processing standard module hook 'hook-setuptools._vendor.jaraco.text.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+76772 INFO: Processing pre-safe-import-module hook 'hook-importlib_resources.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+76789 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+76790 INFO: Setuptools: 'backports' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.backports'!
+77158 INFO: Processing pre-safe-import-module hook 'hook-importlib_metadata.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+77158 INFO: Setuptools: 'importlib_metadata' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.importlib_metadata'!
+77244 INFO: Processing standard module hook 'hook-setuptools._vendor.importlib_metadata.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+77385 INFO: Processing pre-safe-import-module hook 'hook-zipp.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+77386 INFO: Setuptools: 'zipp' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.zipp'!
+78906 INFO: Processing pre-safe-import-module hook 'hook-wheel.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+78907 INFO: Setuptools: 'wheel' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.wheel'!
+83748 INFO: Processing standard module hook 'hook-uvicorn.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+85863 INFO: Processing standard module hook 'hook-pytz.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+93432 INFO: Processing pre-safe-import-module hook 'hook-platformdirs.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+93468 INFO: Processing standard module hook 'hook-platformdirs.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+97973 INFO: Processing standard module hook 'hook-urllib3.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+112233 INFO: Processing standard module hook 'hook-PySide6.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+112609 INFO: Processing standard module hook 'hook-shiboken6.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+112917 INFO: Processing standard module hook 'hook-PySide6.QtNetwork.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+122597 INFO: Processing standard module hook 'hook-PySide6.QtCore.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+141298 INFO: Processing standard module hook 'hook-PySide6.QtGui.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+203394 INFO: Processing standard module hook 'hook-PySide6.QtWidgets.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+232824 INFO: Processing standard module hook 'hook-PySide6.QtSvg.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+237037 INFO: Processing standard module hook 'hook-PySide6.QtXml.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+240781 INFO: Processing standard module hook 'hook-PySide6.QtSvgWidgets.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+245179 INFO: Processing standard module hook 'hook-PySide6.QtCharts.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+249069 INFO: Processing standard module hook 'hook-pyqtgraph.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+1178 WARNING: Failed to collect submodules for 'pyqtgraph.opengl' because importing 'pyqtgraph.opengl' raised: ModuleNotFoundError: No module named 'OpenGL'
+251257 INFO: hook-pyqtgraph: selected 'PySide6' as Qt bindings because hook for 'PySide6' has been run before.
+251336 INFO: Processing standard module hook 'hook-PySide6.QtOpenGLWidgets.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+253464 INFO: Processing standard module hook 'hook-PySide6.QtTest.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+259170 INFO: Analyzing hidden import 'src.gui.windows.splash_window'
+259178 INFO: Analyzing hidden import 'src.gui.views._profile_readonly_widgets'
+259197 INFO: Analyzing hidden import 'src.gui.helpers._helper_log'
+259201 INFO: Analyzing hidden import 'src.gui.helpers.bootstrap_nssm_install'
+259203 INFO: Analyzing hidden import 'src.gui.helpers.bootstrap_services_install'
+259212 INFO: Analyzing hidden import 'src.gui.helpers.bootstrap_services_uninstall'
+259216 INFO: Analyzing hidden import 'src.gui.helpers.bootstrap_v2_install'
+259222 INFO: Analyzing hidden import 'anthropic.lib.bedrock._stream'
+259224 INFO: Analyzing hidden import 'anthropic.lib.tools.mcp'
+259238 INFO: Analyzing hidden import 'anthropic.tools'
+259242 INFO: Analyzing hidden import 'openai.__main__'
+259474 INFO: Analyzing hidden import 'openai.helpers'
+259514 INFO: Analyzing hidden import 'openai.types.beta.chat'
+259515 INFO: Analyzing hidden import 'openai.types.containers.files'
+259517 INFO: Analyzing hidden import 'openai.types.skills.versions'
+259518 INFO: Analyzing hidden import 'telegram.__main__'
+259521 INFO: Analyzing hidden import 'telegram._utils.warnings_transition'
+259524 INFO: Analyzing hidden import 'fastapi.__main__'
+259526 INFO: Analyzing hidden import 'fastapi.middleware.cors'
+259535 INFO: Analyzing hidden import 'fastapi.middleware.gzip'
+259545 INFO: Analyzing hidden import 'fastapi.middleware.httpsredirect'
+259548 INFO: Analyzing hidden import 'fastapi.middleware.trustedhost'
+259552 INFO: Analyzing hidden import 'fastapi.middleware.wsgi'
+259563 INFO: Analyzing hidden import 'fastapi.staticfiles'
+259576 INFO: Analyzing hidden import 'fastapi.templating'
+259584 INFO: Analyzing hidden import 'fastapi.testclient'
+259619 INFO: Analyzing hidden import 'uvicorn.__main__'
+259621 INFO: Analyzing hidden import 'uvicorn.lifespan'
+259622 INFO: Analyzing hidden import 'uvicorn.lifespan.off'
+259624 INFO: Analyzing hidden import 'uvicorn.lifespan.on'
+259632 INFO: Analyzing hidden import 'uvicorn.loops'
+259633 INFO: Analyzing hidden import 'uvicorn.loops.asyncio'
+259635 INFO: Analyzing hidden import 'uvicorn.loops.auto'
+259639 INFO: Analyzing hidden import 'uvicorn.protocols.http.auto'
+259640 INFO: Analyzing hidden import 'uvicorn.protocols.websockets.auto'
+259642 INFO: Analyzing hidden import 'uvicorn.workers'
+259648 INFO: Analyzing hidden import 'pyqtgraph.PlotData'
+259651 INFO: Analyzing hidden import 'pyqtgraph.configfile'
+259664 INFO: Analyzing hidden import 'pyqtgraph.dockarea'
+259720 INFO: Analyzing hidden import 'pyqtgraph.examples'
+259752 INFO: Analyzing hidden import 'pyqtgraph.examples.Arrow'
+259755 INFO: Analyzing hidden import 'pyqtgraph.examples.AxisItem_label_overlap'
+259759 INFO: Analyzing hidden import 'pyqtgraph.examples.BarGraphItem'
+259761 INFO: Analyzing hidden import 'pyqtgraph.examples.BoxplotItem'
+259765 INFO: Analyzing hidden import 'pyqtgraph.examples.CLIexample'
+259766 INFO: Analyzing hidden import 'pyqtgraph.examples.ColorBarItem'
+259771 INFO: Analyzing hidden import 'pyqtgraph.examples.ColorButton'
+259773 INFO: Analyzing hidden import 'pyqtgraph.examples.ColorGradientPlots'
+259782 INFO: Analyzing hidden import 'pyqtgraph.examples.ConsoleWidget'
+259784 INFO: Analyzing hidden import 'pyqtgraph.examples.CustomGraphItem'
+259790 INFO: Analyzing hidden import 'pyqtgraph.examples.DataSlicing'
+259794 INFO: Analyzing hidden import 'pyqtgraph.examples.DataTreeWidget'
+259796 INFO: Analyzing hidden import 'pyqtgraph.examples.DateAxisItem'
+259798 INFO: Analyzing hidden import 'pyqtgraph.examples.DateAxisItem_QtDesigner'
+259802 INFO: Analyzing hidden import 'pyqtgraph.examples.DiffTreeWidget'
+259804 INFO: Analyzing hidden import 'pyqtgraph.examples.Draw'
+259806 INFO: Analyzing hidden import 'pyqtgraph.examples.ErrorBarItem'
+259808 INFO: Analyzing hidden import 'pyqtgraph.examples.FillBetweenItem'
+259812 INFO: Analyzing hidden import 'pyqtgraph.examples.Flowchart'
+260013 INFO: Analyzing hidden import 'pyqtgraph.examples.FlowchartCustomNode'
+260019 INFO: Analyzing hidden import 'pyqtgraph.examples.GLBarGraphItem'
+260260 INFO: Analyzing hidden import 'pyqtgraph.examples.GLGradientLegendItem'
+260262 INFO: Analyzing hidden import 'pyqtgraph.examples.GLGraphItem'
+260265 INFO: Analyzing hidden import 'pyqtgraph.examples.GLImageItem'
+260268 INFO: Analyzing hidden import 'pyqtgraph.examples.GLIsosurface'
+260272 INFO: Analyzing hidden import 'pyqtgraph.examples.GLLinePlotItem'
+260275 INFO: Analyzing hidden import 'pyqtgraph.examples.GLMeshItem'
+260281 INFO: Analyzing hidden import 'pyqtgraph.examples.GLPainterItem'
+260287 INFO: Analyzing hidden import 'pyqtgraph.examples.GLScatterPlotItem'
+260293 INFO: Analyzing hidden import 'pyqtgraph.examples.GLSurfacePlot'
+260299 INFO: Analyzing hidden import 'pyqtgraph.examples.GLTextItem'
+260303 INFO: Analyzing hidden import 'pyqtgraph.examples.GLViewWidget'
+260305 INFO: Analyzing hidden import 'pyqtgraph.examples.GLVolumeItem'
+260310 INFO: Analyzing hidden import 'pyqtgraph.examples.GLshaders'
+260313 INFO: Analyzing hidden import 'pyqtgraph.examples.GradientEditor'
+260314 INFO: Analyzing hidden import 'pyqtgraph.examples.GradientWidget'
+260316 INFO: Analyzing hidden import 'pyqtgraph.examples.GraphItem'
+260319 INFO: Analyzing hidden import 'pyqtgraph.examples.GraphicsLayout'
+260322 INFO: Analyzing hidden import 'pyqtgraph.examples.GraphicsScene'
+260324 INFO: Analyzing hidden import 'pyqtgraph.examples.HistogramLUT'
+260327 INFO: Analyzing hidden import 'pyqtgraph.examples.ImageItem'
+260330 INFO: Analyzing hidden import 'pyqtgraph.examples.ImageView'
+260333 INFO: Analyzing hidden import 'pyqtgraph.examples.InfiniteLine'
+260337 INFO: Analyzing hidden import 'pyqtgraph.examples.InteractiveParameter'
+260341 INFO: Analyzing hidden import 'pyqtgraph.examples.JoystickButton'
+260344 INFO: Analyzing hidden import 'pyqtgraph.examples.Legend'
+260349 INFO: Analyzing hidden import 'pyqtgraph.examples.LogPlotTest'
+260351 INFO: Analyzing hidden import 'pyqtgraph.examples.MatrixDisplayExample'
+260354 INFO: Analyzing hidden import 'pyqtgraph.examples.MouseSelection'
+260357 INFO: Analyzing hidden import 'pyqtgraph.examples.MultiDataPlot'
+260362 INFO: Analyzing hidden import 'pyqtgraph.examples.MultiPlotSpeedTest'
+260366 INFO: Analyzing hidden import 'pyqtgraph.examples.MultiplePlotAxes'
+260369 INFO: Analyzing hidden import 'pyqtgraph.examples.NonUniformImage'
+260381 INFO: Analyzing hidden import 'pyqtgraph.examples.PColorMeshItem'
+260386 INFO: Analyzing hidden import 'pyqtgraph.examples.PanningPlot'
+260389 INFO: Analyzing hidden import 'pyqtgraph.examples.PlotAutoRange'
+260392 INFO: Analyzing hidden import 'pyqtgraph.examples.PlotSpeedTest'
+260400 INFO: Analyzing hidden import 'pyqtgraph.examples.PlotWidget'
+260405 INFO: Analyzing hidden import 'pyqtgraph.examples.Plotting'
+260411 INFO: Analyzing hidden import 'pyqtgraph.examples.ProgressDialog'
+260414 INFO: Analyzing hidden import 'pyqtgraph.examples.ROIExamples'
+260422 INFO: Analyzing hidden import 'pyqtgraph.examples.ROItypes'
+260429 INFO: Analyzing hidden import 'pyqtgraph.examples.RemoteGraphicsView'
+260430 INFO: Analyzing hidden import 'pyqtgraph.examples.RemoteSpeedTest'
+260434 INFO: Analyzing hidden import 'pyqtgraph.examples.RunExampleApp'
+260436 INFO: Analyzing hidden import 'pyqtgraph.examples.ScaleBar'
+260438 INFO: Analyzing hidden import 'pyqtgraph.examples.ScatterPlot'
+260445 INFO: Analyzing hidden import 'pyqtgraph.examples.ScatterPlotSpeedTest'
+260453 INFO: Analyzing hidden import 'pyqtgraph.examples.ScatterPlotWidget'
+260457 INFO: Analyzing hidden import 'pyqtgraph.examples.SimplePlot'
+260458 INFO: Analyzing hidden import 'pyqtgraph.examples.SpinBox'
+260462 INFO: Analyzing hidden import 'pyqtgraph.examples.Symbols'
+260466 INFO: Analyzing hidden import 'pyqtgraph.examples.TableWidget'
+260468 INFO: Analyzing hidden import 'pyqtgraph.examples.TreeWidget'
+260471 INFO: Analyzing hidden import 'pyqtgraph.examples.VideoSpeedTest'
+260487 INFO: Analyzing hidden import 'pyqtgraph.examples.VideoTemplate_generic'
+260502 INFO: Analyzing hidden import 'pyqtgraph.examples.ViewBox'
+260507 INFO: Analyzing hidden import 'pyqtgraph.examples.ViewBoxFeatures'
+260511 INFO: Analyzing hidden import 'pyqtgraph.examples.ViewLimits'
+260512 INFO: Analyzing hidden import 'pyqtgraph.examples.__main__'
+260513 INFO: Analyzing hidden import 'pyqtgraph.examples._buildParamTypes'
+260519 INFO: Analyzing hidden import 'pyqtgraph.examples._paramtreecfg'
+260523 INFO: Analyzing hidden import 'pyqtgraph.examples.beeswarm'
+260525 INFO: Analyzing hidden import 'pyqtgraph.examples.colorMaps'
+260529 INFO: Analyzing hidden import 'pyqtgraph.examples.colorMapsLinearized'
+260535 INFO: Analyzing hidden import 'pyqtgraph.examples.console_exception_inspection'
+260542 INFO: Analyzing hidden import 'pyqtgraph.examples.contextMenu'
+260547 INFO: Analyzing hidden import 'pyqtgraph.examples.crosshair'
+260552 INFO: Analyzing hidden import 'pyqtgraph.examples.customGraphicsItem'
+260555 INFO: Analyzing hidden import 'pyqtgraph.examples.customPlot'
+260561 INFO: Analyzing hidden import 'pyqtgraph.examples.designerExample'
+260564 INFO: Analyzing hidden import 'pyqtgraph.examples.dockarea'
+260569 INFO: Analyzing hidden import 'pyqtgraph.examples.exampleLoaderTemplate_generic'
+260575 INFO: Analyzing hidden import 'pyqtgraph.examples.fractal'
+260581 INFO: Analyzing hidden import 'pyqtgraph.examples.glow'
+260587 INFO: Analyzing hidden import 'pyqtgraph.examples.hdf5'
+260594 INFO: Analyzing hidden import 'pyqtgraph.examples.histogram'
+260597 INFO: Analyzing hidden import 'pyqtgraph.examples.imageAnalysis'
+260602 INFO: Analyzing hidden import 'pyqtgraph.examples.infiniteline_performance'
+260605 INFO: Analyzing hidden import 'pyqtgraph.examples.isocurve'
+260609 INFO: Analyzing hidden import 'pyqtgraph.examples.jupyter_console_example'
+260614 INFO: Analyzing hidden import 'pyqtgraph.examples.linkedViews'
+260616 INFO: Analyzing hidden import 'pyqtgraph.examples.logAxis'
+260619 INFO: Analyzing hidden import 'pyqtgraph.examples.multiplePlotSpeedTest'
+260623 INFO: Analyzing hidden import 'pyqtgraph.examples.multiprocess'
+260627 INFO: Analyzing hidden import 'pyqtgraph.examples.optics'
+260655 INFO: Analyzing hidden import 'pyqtgraph.examples.optics_demos'
+260664 INFO: Analyzing hidden import 'pyqtgraph.examples.parallelize'
+260668 INFO: Analyzing hidden import 'pyqtgraph.examples.parametertree'
+260675 INFO: Analyzing hidden import 'pyqtgraph.examples.relativity'
+260718 INFO: Analyzing hidden import 'pyqtgraph.examples.relativity_demo'
+260721 INFO: Analyzing hidden import 'pyqtgraph.examples.scrollingPlots'
+260726 INFO: Analyzing hidden import 'pyqtgraph.examples.syntax'
+260736 INFO: Analyzing hidden import 'pyqtgraph.examples.template'
+260738 INFO: Analyzing hidden import 'pyqtgraph.examples.test_examples'
+260752 INFO: Analyzing hidden import 'pyqtgraph.examples.text'
+260755 INFO: Analyzing hidden import 'pyqtgraph.examples.verlet_chain'
+260765 INFO: Analyzing hidden import 'pyqtgraph.examples.verlet_chain_demo'
+260772 INFO: Analyzing hidden import 'pyqtgraph.frozenSupport'
+260776 INFO: Analyzing hidden import 'pyqtgraph.multiprocess.bootstrap'
+260778 INFO: Analyzing hidden import 'pyqtgraph.util.garbage_collector'
+260781 INFO: Analyzing hidden import 'pyqtgraph.util.get_resolution'
+260783 INFO: Analyzing hidden import 'pyqtgraph.util.glinfo'
+260786 INFO: Analyzing hidden import 'telethon.sync'
+260790 INFO: Processing module hooks (post-graph stage)...
+266223 INFO: Processing standard module hook 'hook-PySide6.QtOpenGL.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+273022 INFO: Processing standard module hook 'hook-tzdata.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+273678 INFO: Performing binary vs. data reclassification (1451 entries)
+273946 INFO: Looking for ctypes DLLs
+274014 WARNING: Ignoring AppKit.framework/AppKit imported from C:\Users\Administrator\Documents\projects\copytrades\.venv\Lib\site-packages\darkdetect\_mac_detect.py - only basenames are supported with ctypes imports!
+274093 INFO: Analyzing run-time hooks ...
+274114 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+274119 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+274122 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+274126 INFO: Including run-time hook 'pyi_rth_setuptools.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+274129 INFO: Including run-time hook 'pyi_rth_pyside6.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+274132 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+274135 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+274139 INFO: Including run-time hook 'pyi_rth_pyqtgraph_multiprocess.py' from 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks'
+274250 INFO: Creating base_library.zip...
+274283 INFO: Looking for dynamic libraries
 
 [1;33m📢 Tips:[0m QFluentWidgets Pro is now released. Click [1;96mhttps://qfluentwidgets.com/pages/pro[0m to learn more about it.
 
-182703 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\shiboken6', 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\numpy.libs', 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\pandas.libs']
-182703 INFO: Extra DLL search directories (PATH): ['C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PySide6']
-185489 INFO: Warnings written to C:\Users\Administrator\Documents\projects\copytrades\build\CopyTrades\warn-CopyTrades.txt
-185908 INFO: Graph cross-reference written to C:\Users\Administrator\Documents\projects\copytrades\build\CopyTrades\xref-CopyTrades.html
-186437 INFO: checking PYZ
-186437 INFO: Building PYZ because PYZ-00.toc is non existent
-186437 INFO: Building PYZ (ZlibArchive) C:\Users\Administrator\Documents\projects\copytrades\build\CopyTrades\PYZ-00.pyz
-189460 INFO: Building PYZ (ZlibArchive) C:\Users\Administrator\Documents\projects\copytrades\build\CopyTrades\PYZ-00.pyz completed successfully.
-189804 INFO: checking PKG
-189804 INFO: Building PKG because PKG-00.toc is non existent
-189804 INFO: Building PKG (CArchive) CopyTrades.pkg
-189914 INFO: Building PKG (CArchive) CopyTrades.pkg completed successfully.
-189920 INFO: Bootloader C:\Users\Administrator\Documents\projects\copytrades\.venv\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
-189920 INFO: checking EXE
-189920 INFO: Building EXE because EXE-00.toc is non existent
-189920 INFO: Building EXE from EXE-00.toc
-189920 INFO: Copying bootloader EXE to C:\Users\Administrator\Documents\projects\copytrades\build\CopyTrades\CopyTrades.exe
-189996 INFO: Copying icon to EXE
-190013 INFO: Copying 0 resources to EXE
-190013 INFO: Embedding manifest in EXE
-190030 INFO: Appending PKG archive to EXE
-190206 INFO: Fixing EXE headers
-190361 INFO: Building EXE from EXE-00.toc completed successfully.
-190378 INFO: checking COLLECT
-190379 INFO: Building COLLECT because COLLECT-00.toc is non existent
-190379 INFO: Building COLLECT COLLECT-00.toc
-193696 INFO: Building COLLECT COLLECT-00.toc completed successfully.
-193733 INFO: Build complete! The results are available in: C:\Users\Administrator\Documents\projects\copytrades\dist
-[2/2] Compiling installer...
+280866 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\shiboken6', 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\numpy.libs', 'C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\pandas.libs']
+280866 INFO: Extra DLL search directories (PATH): ['C:\\Users\\Administrator\\Documents\\projects\\copytrades\\.venv\\Lib\\site-packages\\PySide6']
+283601 INFO: Warnings written to C:\Users\Administrator\Documents\projects\copytrades\build\CopyTrades\warn-CopyTrades.txt
+284043 INFO: Graph cross-reference written to C:\Users\Administrator\Documents\projects\copytrades\build\CopyTrades\xref-CopyTrades.html
+284610 INFO: checking PYZ
+284611 INFO: Building PYZ because PYZ-00.toc is non existent
+284611 INFO: Building PYZ (ZlibArchive) C:\Users\Administrator\Documents\projects\copytrades\build\CopyTrades\PYZ-00.pyz
+287633 INFO: Building PYZ (ZlibArchive) C:\Users\Administrator\Documents\projects\copytrades\build\CopyTrades\PYZ-00.pyz completed successfully.
+288007 INFO: checking PKG
+288007 INFO: Building PKG because PKG-00.toc is non existent
+288007 INFO: Building PKG (CArchive) CopyTrades.pkg
+288119 INFO: Building PKG (CArchive) CopyTrades.pkg completed successfully.
+288126 INFO: Bootloader C:\Users\Administrator\Documents\projects\copytrades\.venv\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+288126 INFO: checking EXE
+288126 INFO: Building EXE because EXE-00.toc is non existent
+288126 INFO: Building EXE from EXE-00.toc
+288126 INFO: Copying bootloader EXE to C:\Users\Administrator\Documents\projects\copytrades\build\CopyTrades\CopyTrades.exe
+288163 INFO: Copying icon to EXE
+288183 INFO: Copying 0 resources to EXE
+288183 INFO: Embedding manifest in EXE
+288201 INFO: Appending PKG archive to EXE
+288369 INFO: Fixing EXE headers
+288848 INFO: Building EXE from EXE-00.toc completed successfully.
+288868 INFO: checking COLLECT
+288868 INFO: Building COLLECT because COLLECT-00.toc is non existent
+288869 INFO: Building COLLECT COLLECT-00.toc
+292697 INFO: Building COLLECT COLLECT-00.toc completed successfully.
+292737 INFO: Build complete! The results are available in: C:\Users\Administrator\Documents\projects\copytrades\dist
 Inno Setup 6 Command-Line Compiler
 Copyright (C) 1997-2026 Jordan Russell. All rights reserved.
 Portions Copyright (C) 2000-2026 Martijn Laan. All rights reserved.
@@ -2084,9 +2081,5 @@ Creating setup files
    Updating manifest (Setup.exe)
 
 
-Successful compile (69.297 sec). Resulting Setup program filename is:
+Successful compile (79.250 sec). Resulting Setup program filename is:
 C:\Users\Administrator\Documents\projects\copytrades\installer\CopyTradesSetup-0.1.0.exe
-
-Installer ready:
-  C:\Users\Administrator\Documents\projects\copytrades\installer\CopyTradesSetup-0.1.0.exe
-  70.1 MB

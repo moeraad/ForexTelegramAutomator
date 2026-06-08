@@ -202,6 +202,9 @@ def normalize_triggers(raw) -> list[dict]:
         pending = entry.get("pending")
         if pending is not None and not isinstance(pending, bool):
             pending = None
+        enabled = entry.get("enabled")
+        if not isinstance(enabled, bool):
+            enabled = True
         for at in action_types:
             out.append({
                 "action_type": at,
@@ -210,6 +213,7 @@ def normalize_triggers(raw) -> list[dict]:
                 "note": note,
                 "context_tokens": context_tokens,
                 "pending": pending,
+                "enabled": enabled,
             })
     return out
 

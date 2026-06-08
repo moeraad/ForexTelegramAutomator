@@ -69,7 +69,7 @@ _FIELD_ORDER = (
     "worked_examples",
     "triage_keep_triggers",
 )
-_REQUIRED = ("name", "symbol", "header", "vocabulary_table", "worked_examples")
+_REQUIRED = ("name", "symbol", "header")
 
 # Logical groupings for the Editor — drives the SettingCardGroup layout
 # so the Editor uses the same Fluent shell as Settings → Tuning. Each
@@ -502,9 +502,18 @@ class ProfileView(QWidget):
             return
         ordered: OrderedDict[str, str] = OrderedDict()
         seen = set(_EDITOR_HIDDEN)
+        _required_set = set(_REQUIRED)
         for key in _FIELD_ORDER:
-            if key in data and key not in _EDITOR_HIDDEN:
+            if key in _EDITOR_HIDDEN:
+                continue
+            if key in data:
                 ordered[key] = str(data[key]) if data[key] is not None else ""
+                seen.add(key)
+            elif key in _required_set:
+                # Required field absent from JSON — show empty so the operator
+                # sees the field and can fill it in rather than getting a
+                # cryptic "required field X is empty" error with no way to fix.
+                ordered[key] = ""
                 seen.add(key)
         for key, value in data.items():
             if key in seen:
@@ -654,6 +663,12 @@ class ProfileView(QWidget):
         return None
 
     def _save(self) -> None:
+        # Triggers tab has its own save path — it writes only the triggers
+        # array and doesn't need editor validation.
+        if self._tabs.currentWidget() is self._triggers_tab:
+            self._triggers_tab._save()
+            return
+
         data = self._current()
         err = self._validate(data)
         if err:

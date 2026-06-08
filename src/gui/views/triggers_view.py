@@ -168,6 +168,37 @@ class _BulkClassifyWorker(QThread):
             self.failed.emit(f"{type(e).__name__}: {e}")
 
 
+def _pick_action_types(parent: QWidget, title: str, choices: list[str]) -> list[str]:
+    """Show a multi-select list dialog and return the checked action types.
+
+    Returns an empty list when the operator cancels or selects nothing.
+    """
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    dlg.resize(320, 420)
+    layout = QVBoxLayout(dlg)
+    layout.setSpacing(8)
+    layout.addWidget(QLabel("Select one or more destination action types:"))
+
+    lst = QListWidget()
+    lst.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+    for at in choices:
+        item = QListWidgetItem(at)
+        lst.addItem(item)
+    layout.addWidget(lst, 1)
+
+    buttons = QDialogButtonBox(
+        QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+    )
+    buttons.accepted.connect(dlg.accept)
+    buttons.rejected.connect(dlg.reject)
+    layout.addWidget(buttons)
+
+    if dlg.exec() != QDialog.DialogCode.Accepted:
+        return []
+    return [item.text() for item in lst.selectedItems()]
+
+
 class TriggersView(QWidget):
     """Per-profile triggers editor.
 
@@ -300,6 +331,7 @@ class TriggersView(QWidget):
         self._types_list = QListWidget()
         self._types_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._types_list.currentItemChanged.connect(self._on_type_selected)
+        self._types_list.itemChanged.connect(self._on_type_toggled)
         left_layout.addWidget(self._types_list, 1)
         splitter.addWidget(left)
 
@@ -324,9 +356,7 @@ class TriggersView(QWidget):
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
         self._table.itemChanged.connect(self._on_cell_edited)
-        # Multi-line cell editor for Phrase + Sample columns. Without
-        # this the default single-line editor strips newlines on paste
-        # and the stored phrase ends up truncated to its first line.
+        # Multi-line cell editor for Phrase + Sample columns.
         self._multiline_delegate = _MultilineCellDelegate(self._table)
         self._table.setItemDelegateForColumn(0, self._multiline_delegate)
         self._table.setItemDelegateForColumn(1, self._multiline_delegate)
@@ -839,9 +869,22 @@ class TriggersView(QWidget):
         self._types_list.clear()
         grouped = self._grouped()
         for at in ACTION_TYPES:
-            count = len(grouped.get(at, []))
-            item = QListWidgetItem(f"{at}  ({count})")
+            indices = grouped.get(at, [])
+            total = len(indices)
+            # A type is considered enabled when it has no triggers (nothing
+            # to block) OR all its triggers are individually enabled.
+            all_enabled = total == 0 or all(
+                self._triggers[i].get("enabled", True) for i in indices
+            )
+            item = QListWidgetItem(f"{at}  ({total})")
             item.setData(Qt.ItemDataRole.UserRole, at)
+            item.setFlags(
+                item.flags()
+                | Qt.ItemFlag.ItemIsUserCheckable
+            )
+            item.setCheckState(
+                Qt.CheckState.Checked if all_enabled else Qt.CheckState.Unchecked
+            )
             self._types_list.addItem(item)
         self._types_list.blockSignals(False)
         target = previous or ACTION_TYPES[0]
@@ -916,6 +959,19 @@ class TriggersView(QWidget):
     def _on_type_selected(self, *_args) -> None:
         self._refresh_table()
 
+    def _on_type_toggled(self, item: QListWidgetItem) -> None:
+        """Enable or disable all triggers belonging to the toggled action type."""
+        at = item.data(Qt.ItemDataRole.UserRole)
+        if not at:
+            return
+        enabled = item.checkState() == Qt.CheckState.Checked
+        indices = self._grouped().get(at, [])
+        if not indices:
+            return
+        for idx in indices:
+            self._triggers[idx]["enabled"] = enabled
+        self._mark_dirty()
+
     def _on_cell_edited(self, item: QTableWidgetItem) -> None:
         at = self._selected_type()
         if at is None:
@@ -926,8 +982,8 @@ class TriggersView(QWidget):
             return
         global_idx = type_indices[row]
         col = item.column()
-        value = item.text().strip()
         trigger = self._triggers[global_idx]
+        value = item.text().strip()
         if col == 0:
             trigger["phrase"] = value
         elif col == 1:
@@ -975,43 +1031,52 @@ class TriggersView(QWidget):
             return
         current = self._selected_type() or ""
         choices = [at for at in ACTION_TYPES if at != current]
-        new_type, ok = QInputDialog.getItem(
-            self, "Move triggers", "Move to action type:",
-            choices, 0, False,
-        )
-        if not ok or not new_type:
+        dest_types = _pick_action_types(self, "Move triggers", choices)
+        if not dest_types:
             return
-        for idx in targets:
-            self._triggers[idx]["action_type"] = new_type
+        if len(dest_types) == 1:
+            # Simple rename in place.
+            for idx in targets:
+                self._triggers[idx]["action_type"] = dest_types[0]
+        else:
+            # Multiple destinations: replace each original with N copies,
+            # one per destination type, then delete the originals.
+            new_rows = []
+            for idx in targets:
+                for at in dest_types:
+                    clone = copy.deepcopy(self._triggers[idx])
+                    clone["action_type"] = at
+                    new_rows.append(clone)
+            for idx in sorted(targets, reverse=True):
+                del self._triggers[idx]
+            self._triggers.extend(new_rows)
         self._mark_dirty()
         self._refresh_types_list(keep_current=True)
 
     def _on_copy(self) -> None:
-        """Duplicate the selected triggers under a different action type.
+        """Duplicate the selected triggers under one or more action types.
 
-        Unlike Move (which mutates `action_type` in place), Copy appends
-        deep copies so the original trigger keeps firing for its current
-        type. Useful when the same channel phrase legitimately maps to
-        more than one action (e.g. a compound "close half + BE" message
-        whose sample should produce both CLOSE_PARTIAL and MOVE_SL_BE —
-        the trigger_matcher's longest-match conflict policy fires both
-        when their action_types differ; see src/trigger_matcher.py:297).
+        Copy appends deep copies so the original trigger keeps firing for
+        its current type. Useful when the same channel phrase legitimately
+        maps to more than one action (e.g. a compound "close half + BE"
+        message whose sample should produce both CLOSE_PARTIAL and
+        MOVE_SL_BE — the trigger_matcher's longest-match conflict policy
+        fires both when their action_types differ; see
+        src/trigger_matcher.py:297).
         """
         targets = self._selected_global_indices()
         if not targets:
             return
         current = self._selected_type() or ""
         choices = [at for at in ACTION_TYPES if at != current]
-        new_type, ok = QInputDialog.getItem(
-            self, "Copy triggers", "Copy to action type:",
-            choices, 0, False,
-        )
-        if not ok or not new_type:
+        dest_types = _pick_action_types(self, "Copy triggers", choices)
+        if not dest_types:
             return
         for idx in targets:
-            clone = copy.deepcopy(self._triggers[idx])
-            clone["action_type"] = new_type
-            self._triggers.append(clone)
+            for at in dest_types:
+                clone = copy.deepcopy(self._triggers[idx])
+                clone["action_type"] = at
+                self._triggers.append(clone)
         self._mark_dirty()
         self._refresh_types_list(keep_current=True)
 
