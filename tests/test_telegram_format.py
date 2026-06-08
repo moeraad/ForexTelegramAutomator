@@ -125,3 +125,32 @@ def test_manual_trade_gets_prefix():
     assert render_manual_prefix({"manual": True}) == "🛠 MANUAL "
     assert render_manual_prefix({}) == ""
     assert render_manual_prefix({"manual": False}) == ""
+
+
+def test_terminal_dm_marks_manual_trade():
+    """The LIVE terminal DM path (render_action_terminal) must carry the
+    MANUAL prefix — this is what the bot actually sends for executed/
+    failed/rejected actions."""
+    payload = {
+        "symbol": "XAUUSD", "side": "BUY",
+        "entry_low": 4500, "entry_high": 4500,
+        "tps": [4530], "sl": 4490, "manual": True, "source": "manual_gui",
+    }
+    text = render_action_terminal(
+        action_id=99, action_type="OPEN", status="executed",
+        payload=payload, ea_response="",
+    )
+    assert text.startswith("🛠 MANUAL ")
+    assert "#99" in text and "OPEN" in text
+
+
+def test_terminal_dm_no_prefix_for_channel_trade():
+    payload = {
+        "symbol": "XAUUSD", "side": "BUY",
+        "entry_low": 4500, "entry_high": 4500, "tps": [4530], "sl": 4490,
+    }
+    text = render_action_terminal(
+        action_id=100, action_type="OPEN", status="executed",
+        payload=payload, ea_response="",
+    )
+    assert "MANUAL" not in text

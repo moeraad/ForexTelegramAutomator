@@ -174,7 +174,7 @@ def render_action_terminal(
         actual_entry=actual_entry,
         actual_volume=actual_volume,
     )
-    head = f"{glyph} #{action_id} {action_type} {status}"
+    head = f"{render_manual_prefix(payload)}{glyph} #{action_id} {action_type} {status}"
     if source_channel_name:
         head += f" [from: {source_channel_name}]"
     parts = [head]

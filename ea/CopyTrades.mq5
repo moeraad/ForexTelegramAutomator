@@ -1643,8 +1643,11 @@ void DoOpen(long id, string payload) {
 
    // Manual trades (submitted via the GUI) carry an explicit, GUI-computed
    // lot size in the "lot" payload field. When present (> 0), it overrides
-   // LotsFromRisk/LotsFromBalance sizing. The broker's min/step/max limits
-   // and the free-margin cap in PlacePendingLimit / trade.Buy still apply.
+   // LotsFromRisk/LotsFromBalance sizing AND the eval-resize step. The
+   // broker's own min/step/max volume limits still apply at order time; note
+   // DoOpen does NOT pre-cap to free margin (unlike DoOpenInstant), so an
+   // oversized manual lot is rejected by the broker (retcode 10019) and
+   // surfaces as a clean PostResult "failed" rather than being silently shrunk.
    double manualLot = StringToDouble(JsonField(payload, "lot"));
    bool   hasManualLot = (manualLot > 0.0);
 
