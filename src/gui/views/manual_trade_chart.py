@@ -7,8 +7,6 @@ submit the trade; the lines emit `lines_changed` while dragging.
 """
 from __future__ import annotations
 
-from datetime import datetime
-
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPicture, QPainter
