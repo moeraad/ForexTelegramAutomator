@@ -17,6 +17,7 @@ from src.api_models import (
     CloseBody,
     IncomingMessageBody,
     LegResult,
+    ManualOpenBody,
     MarketCandlesBody,
     MarketPriceBody,
     MarketSnapshotBody,
@@ -1122,6 +1123,53 @@ def build_app(
             return float(bal)
         except ValueError:
             return None
+
+    @app.post("/actions/manual")
+    def post_manual_open(body: ManualOpenBody):
+        """Inject a manually-placed OPEN straight into the pipeline at
+        status='sent'. Validates geometry with the same OpenAction model the
+        AI path uses, so a wrong-side SL or >2% SL distance is rejected with
+        422. source_msg_id stays NULL and the payload is flagged manual."""
+        from pydantic import ValidationError
+        from src.validators import OpenAction
+        try:
+            action = OpenAction(
+                symbol=body.symbol.upper(),
+                side=body.side,
+                entry_low=body.entry,
+                entry_high=body.entry,
+                tps=[body.tp],
+                sl=body.sl,
+                comment=body.comment,
+                pending=body.pending,
+            )
+        except ValidationError as e:
+            raise HTTPException(422, f"invalid manual open: {e.errors()}")
+        if body.lot > _max_open_lots():
+            raise HTTPException(422, f"lot exceeds max open lots: {body.lot}")
+        payload = action.model_dump()
+        payload["lot"] = body.lot
+        payload["manual"] = True
+        payload["source"] = "manual_gui"
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "INSERT INTO actions(source_msg_id, action_type, payload_json, "
+                "status, execute_after, created_at) "
+                "VALUES(NULL, 'OPEN', ?, 'sent', ?, ?)",
+                (json.dumps(payload), now, now),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        action_id = int(cur.lastrowid)
+        trades.info(
+            "manual_action_inserted action_id=%s side=%s lot=%s entry=%s sl=%s tp=%s pending=%s",
+            action_id, body.side, body.lot, body.entry, body.sl, body.tp, body.pending,
+        )
+        return {"action_id": action_id, "status": "sent"}
 
     @app.post("/actions/{action_id}/resize_pending")
     def resize_pending(action_id: int, body: ResizePendingBody):
