@@ -38,10 +38,11 @@ from src.gui.views.bot_bindings_view import BotBindingsView
 from src.gui.views.routes_matrix_view import RoutesMatrixView
 from src.gui.views.suggestions_view import SuggestionsView
 from src.gui.views.v2_config_view import V2ConfigView
+from src.gui.views.manual_trade_view import ManualTradeView
 
 
 _VIEW_KEYS = (
-    "live", "journal", "pipeline", "evaluation", "cost", "risk",
+    "live", "manual", "journal", "pipeline", "evaluation", "cost", "risk",
     "replay", "profile", "prompts", "v2_config", "routes", "audit",
     "bindings", "suggestions", "settings",
 )
@@ -202,6 +203,7 @@ class MainWindow(QMainWindow):
         replay_view = ReplayView(self._stack)
         self._views: dict[str, QWidget] = {
             "live": LiveView(self._stack),
+            "manual": ManualTradeView(self._stack),
             "journal": JournalView(self._stack),
             "pipeline": PipelineView(self._stack),
             "evaluation": EvaluationView(self._stack),

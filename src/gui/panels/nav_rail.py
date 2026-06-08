@@ -24,6 +24,7 @@ from qfluentwidgets import (
 # (route_key, FluentIcon, label)
 _ITEMS = [
     ("live",       FluentIcon.SPEED_HIGH,        "Live"),
+    ("manual",     FluentIcon.SEND,              "Manual Trade"),
     ("journal",    FluentIcon.HISTORY,           "Journal"),
     ("pipeline",   FluentIcon.FLAG,              "Pipeline"),
     ("evaluation", FluentIcon.SEARCH,            "Evaluation"),

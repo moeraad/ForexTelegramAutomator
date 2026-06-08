@@ -24,3 +24,38 @@ def test_chart_panel_instantiates_and_sets_candles(qapp):
     entry, a, b = panel.line_values()
     assert entry == 4503.0
     assert {a, b} == {4530.0, 4490.0}
+
+
+def _fake_stack(tmp_path):
+    from src.db import connect, init_schema
+    db = tmp_path / "stack.db"
+    conn = connect(str(db))
+    init_schema(conn)
+    conn.execute("INSERT INTO settings(key,value) VALUES('account_balance','1000')")
+    conn.commit()
+    conn.close()
+
+    class _Stack:
+        db_path = db
+        api_url = "http://127.0.0.1:8766"
+        name = "TEST"
+    return _Stack()
+
+
+def test_manual_trade_view_instantiates(qapp, tmp_path):
+    from src.gui.views.manual_trade_view import ManualTradeView
+    view = ManualTradeView(_fake_stack(tmp_path))
+    assert view is not None
+    # recompute with no armed lines must not raise
+    view._recompute()
+
+
+def test_manual_trade_view_computes_lot_when_armed(qapp, tmp_path):
+    from src.gui.views.manual_trade_view import ManualTradeView
+    view = ManualTradeView(_fake_stack(tmp_path))
+    view._chart.arm_order_lines(entry=4500.0, line_a=4530.0, line_b=4490.0)
+    view._side = "BUY"
+    view._recompute()
+    # balance 1000, default lot_per_100 0.01 -> base 0.10, well above min
+    assert view._last_sizing is not None
+    assert view._last_sizing.final_lot > 0
