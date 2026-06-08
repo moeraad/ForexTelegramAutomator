@@ -13,9 +13,11 @@ from src import config
 from src.api_models import (
     AlertBody,
     AttachSignalBody,
+    CandleBar,
     CloseBody,
     IncomingMessageBody,
     LegResult,
+    MarketCandlesBody,
     MarketPriceBody,
     MarketSnapshotBody,
     MarketSnapshotStateBody,
@@ -1389,6 +1391,63 @@ def build_app(
             "mid": (bid_f + ask_f) / 2.0,
             "recorded_at": at,
         }
+
+    _CANDLE_STALE_SEC = 120
+
+    @app.post("/market/candles")
+    def post_market_candles(body: MarketCandlesBody):
+        """EA pushes a bounded OHLC series for one symbol+timeframe. Stored
+        as a JSON blob in settings (mirrors /market/snapshot) so there is no
+        schema migration; the GUI chart polls GET /market/candles."""
+        if body.symbol.upper() not in config.SUPPORTED_SYMBOLS:
+            raise HTTPException(400, f"unsupported symbol: {body.symbol}")
+        sym = body.symbol.upper()
+        tf = body.timeframe
+        now = datetime.now(timezone.utc).isoformat()
+        bars_json = json.dumps([b.model_dump() for b in body.bars])
+        conn.execute("BEGIN")
+        try:
+            for key, val in (
+                (f"market_candles_{sym}_{tf}", bars_json),
+                (f"market_candles_{sym}_{tf}_at", now),
+            ):
+                conn.execute(
+                    "INSERT INTO settings(key, value) VALUES(?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, val),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        return {"ok": True, "recorded_at": now, "count": len(body.bars)}
+
+    @app.get("/market/candles")
+    def get_market_candles(symbol: str = "XAUUSD", timeframe: str = "M15"):
+        sym = symbol.upper()
+        tf = timeframe
+        rows = {
+            r["key"]: r["value"]
+            for r in conn.execute(
+                "SELECT key, value FROM settings WHERE key IN (?,?)",
+                (f"market_candles_{sym}_{tf}", f"market_candles_{sym}_{tf}_at"),
+            ).fetchall()
+        }
+        raw = rows.get(f"market_candles_{sym}_{tf}")
+        at = rows.get(f"market_candles_{sym}_{tf}_at")
+        if raw is None or at is None:
+            return {"symbol": sym, "timeframe": tf, "bars": [], "at": None, "stale": True}
+        try:
+            bars = json.loads(raw)
+        except (ValueError, TypeError):
+            bars = []
+        stale = True
+        try:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(at)).total_seconds()
+            stale = age > _CANDLE_STALE_SEC
+        except (ValueError, TypeError):
+            stale = True
+        return {"symbol": sym, "timeframe": tf, "bars": bars, "at": at, "stale": stale}
 
     return app
 
