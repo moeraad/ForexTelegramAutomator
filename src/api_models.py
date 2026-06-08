@@ -231,3 +231,22 @@ class AlertBody(BaseModel):
     """
     level: str = "warning"  # "info" | "warning" | "critical"
     text: str
+
+
+class CandleBar(BaseModel):
+    """One OHLC bar. `t` is the bar-open time, ISO-8601 UTC. `v` is tick volume."""
+    t: str
+    o: float
+    h: float
+    l: float
+    c: float
+    v: int = 0
+
+
+class MarketCandlesBody(BaseModel):
+    """EA -> API: a bounded series of OHLC bars for one symbol+timeframe.
+    Stored as a JSON blob in settings (no schema migration); the GUI chart
+    polls GET /market/candles to redraw."""
+    symbol: str = "XAUUSD"
+    timeframe: Literal["M15", "H1", "H4"]
+    bars: list[CandleBar] = Field(default_factory=list)
