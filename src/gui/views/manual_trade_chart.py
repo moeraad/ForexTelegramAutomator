@@ -4,13 +4,26 @@
 Draws OHLC candles, a live price line, and three draggable horizontal lines
 (entry / TP-or-SL / TP-or-SL). The view above reads line_values() to size and
 submit the trade; the lines emit `lines_changed` while dragging.
+
+Zoom/pan:
+  - Mouse wheel zooms the time axis; left-drag pans (pyqtgraph defaults).
+  - On-screen buttons (− / ＋ / Reset / Latest) make zoom discoverable.
+  - The price (y) axis auto-fits to whatever candles are currently visible,
+    so zooming the time axis keeps the bars framed.
+  - The first batch of candles frames the most recent `_DEFAULT_WINDOW` bars
+    instead of all 200, which is the useful view for placing an order.
 """
 from __future__ import annotations
 
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPicture, QPainter
-from PySide6.QtWidgets import QWidget, QVBoxLayout
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
+
+# How many of the most-recent bars to frame on first load / "Latest".
+_DEFAULT_WINDOW = 80
+# Per-click zoom factor for the − / ＋ buttons (time axis).
+_ZOOM_STEP = 1.35
 
 
 class _CandleItem(pg.GraphicsObject):
@@ -65,16 +78,79 @@ class ChartPanel(QWidget):
         self._entry_line: pg.InfiniteLine | None = None
         self._line_a: pg.InfiniteLine | None = None
         self._line_b: pg.InfiniteLine | None = None
+
+        # Price axis auto-fits to the candles currently in view; the time axis
+        # is driven manually (initial window + zoom buttons + wheel).
+        vb = self._plot.getViewBox()
+        vb.setMouseEnabled(x=True, y=True)
+        vb.setAutoVisible(y=True)
+        vb.enableAutoRange(axis="y", enable=True)
+
+        self._n_bars = 0
+        self._framed_once = False
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._build_toolbar())
         layout.addWidget(self._plot)
 
+    # ---- zoom toolbar ------------------------------------------------
+    def _build_toolbar(self) -> QWidget:
+        bar = QWidget()
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(2, 2, 2, 0)
+        row.setSpacing(4)
+
+        def _btn(text: str, tip: str, slot) -> QPushButton:
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.setFixedWidth(64)
+            b.clicked.connect(slot)
+            return b
+
+        row.addWidget(_btn("−", "Zoom out (time)", self.zoom_out))
+        row.addWidget(_btn("＋", "Zoom in (time)", self.zoom_in))
+        row.addWidget(_btn("Reset", "Fit all bars", self.reset_view))
+        row.addWidget(_btn("Latest", "Jump to the most recent bars", self.show_latest))
+        row.addStretch(1)
+        return bar
+
+    def zoom_in(self) -> None:
+        self._plot.getViewBox().scaleBy((1.0 / _ZOOM_STEP, 1.0))
+
+    def zoom_out(self) -> None:
+        self._plot.getViewBox().scaleBy((_ZOOM_STEP, 1.0))
+
+    def reset_view(self) -> None:
+        """Frame every bar on the time axis; price re-fits automatically."""
+        vb = self._plot.getViewBox()
+        if self._n_bars > 0:
+            vb.setXRange(-1, self._n_bars, padding=0.02)
+        else:
+            vb.autoRange()
+        vb.enableAutoRange(axis="y", enable=True)
+
+    def show_latest(self) -> None:
+        """Frame the most recent `_DEFAULT_WINDOW` bars."""
+        vb = self._plot.getViewBox()
+        if self._n_bars > 0:
+            lo = max(-1.0, self._n_bars - _DEFAULT_WINDOW)
+            vb.setXRange(lo, self._n_bars, padding=0.02)
+        vb.enableAutoRange(axis="y", enable=True)
+
+    # ---- data --------------------------------------------------------
     def set_candles(self, bars: list[dict]) -> None:
         parsed: list[tuple[float, float, float, float, float]] = []
         for i, b in enumerate(bars):
             parsed.append((float(i), float(b["o"]), float(b["h"]),
                            float(b["l"]), float(b["c"])))
         self._candles.set_bars(parsed)
+        self._n_bars = len(parsed)
+        # Frame the most recent window once, the first time real data lands.
+        # After that we leave the user's chosen zoom/pan alone.
+        if not self._framed_once and self._n_bars > 0:
+            self._framed_once = True
+            self.show_latest()
 
     def set_live_price(self, price: float) -> None:
         self._live_line.setValue(price)

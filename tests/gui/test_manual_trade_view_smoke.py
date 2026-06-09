@@ -26,6 +26,27 @@ def test_chart_panel_instantiates_and_sets_candles(qapp):
     assert {a, b} == {4530.0, 4490.0}
 
 
+def test_chart_panel_zoom_controls_do_not_raise(qapp):
+    from src.gui.views.manual_trade_chart import ChartPanel
+    panel = ChartPanel()
+    bars = [
+        {"t": f"2026-06-09T10:{m:02d}:00+00:00", "o": 4500 + i, "h": 4505 + i,
+         "l": 4498 + i, "c": 4502 + i, "v": 10}
+        for i, m in enumerate(range(0, 50))
+    ]
+    panel.set_candles(bars)
+    # Every zoom affordance must be callable without raising.
+    panel.zoom_in()
+    panel.zoom_out()
+    panel.show_latest()
+    panel.reset_view()
+    # Calling the controls before any data arrived must also be safe.
+    empty = ChartPanel()
+    empty.zoom_in()
+    empty.reset_view()
+    empty.show_latest()
+
+
 def _fake_stack(tmp_path):
     from src.db import connect, init_schema
     db = tmp_path / "stack.db"
